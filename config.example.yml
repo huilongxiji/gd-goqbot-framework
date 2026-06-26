@@ -1,0 +1,49 @@
+qq:
+  app_id: "your_app_id"
+  uin: 0                        # 机器人 QQ 号，use_uin=true 时作 self_id
+  use_uin: false                # true=self_id 用 uin, false=用 app_id
+  token: "your_app_token"       # 机器人令牌，仅留存
+  client_secret: "your_secret"  # = botgo AppSecret，用于鉴权取 token
+  sandbox: false
+  shard_count: 1                # 分片总数，最小为 1
+  shard_id: 0                   # 本进程分片号，从 0 开始
+  add_at_group: false           # 群消息上报是否在首段补 at self
+  # intents: 1073741824         # 可选：硬覆盖自动推导的 intent
+  # self_id: 0                  # 可选：覆盖上报用 self_id
+  # disabled: true              # 仅测试 OneBot 连接时可设为 true
+  text_intent:                  # 按 handler 名订阅事件，intent 自动推导
+    - "ReadyHandler"
+    - "ErrorNotifyHandler"
+    - "GroupATMessageEventHandler"
+    - "GroupMessageEventHandler"   # 群全量消息（需群主在手机QQ群设置开启"获取群内全部消息"）
+    - "C2CMessageEventHandler"
+    # 可选项（按需开启）：
+    # - "C2CFriendEventHandler"        # 好友添加/删除 -> notice friend_add / friend_decrease
+    # - "GroupAddRobotEventHandler"    # 机器人入群 -> notice group_increase
+    # - "GroupDelRobotEventHandler"    # 机器人退群 -> notice group_decrease
+    # - "GroupMsgRejectEventHandler"   # 群关闭主动消息推送 -> notice group_msg_reject(自定义)
+    # - "GroupMsgReceiveEventHandler"  # 群开启主动消息推送 -> notice group_msg_receive(自定义)
+    # - "C2CMsgRejectEventHandler"     # 用户关闭 C2C 推送 -> notice c2c_msg_reject(自定义)
+    # - "C2CMsgReceiveEventHandler"    # 用户开启 C2C 推送 -> notice c2c_msg_receive(自定义)
+    # - "InteractionHandler"           # 按钮交互：回传 notice(interaction)+message 事件；回复自动走被动 event_id；可用 put_interaction 回执
+    # - "ATMessageEventHandler"        # 频道 @（本期不转换）
+    # - "DirectMessageEventHandler"    # 频道私信（本期不转换）
+
+onebot:
+  access_token: ""
+  heartbeat_interval: 5000
+  message_format: "array"       # array=消息段数组(默认)，string=CQ 字符串
+  debug: false                  # true 时打印收到的 action 请求日志
+  downtime_message: ""          # 全下游(正/反向 WS)都掉线时回发 QQ 的兜底文本，空=关闭
+  servers:
+    # 正向 WS：NoneBot 作为客户端连入
+    - ws:
+        address: 0.0.0.0:6700
+    # 反向 WS：适配器主动连 NoneBot 官方 OneBot V11 适配器
+    - ws-reverse:
+        universal: ws://127.0.0.1:8080/onebot/v11/ws
+        reconnect-interval: 3000
+
+idmap:
+  # disabled: true     # 设为 true 则纯内存、不持久化（重启后 message_id/反查丢失）
+  path: "idmap.db"     # 持久化文件；相对路径=可执行文件同级目录；不存在则创建，存在则直接加载

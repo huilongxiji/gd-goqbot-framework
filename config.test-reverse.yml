@@ -1,0 +1,10 @@
+qq:
+  disabled: true
+
+onebot:
+  access_token: testtoken
+  heartbeat_interval: 0
+  servers:
+    - ws-reverse:
+        universal: ws://127.0.0.1:18080/onebot/v11/ws
+        reconnect-interval: 1000

@@ -8,6 +8,12 @@
 *.so
 *.dylib
 
+# Build output directory (cross-compiled binaries)
+dist/
+
+# Local development docs (not published to GitHub)
+docs/
+
 # Test binary, built with `go test -c`
 *.test
 
