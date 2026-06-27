@@ -47,6 +47,15 @@ type Message struct {
 	TTL uint `json:"ttl,omitempty"`
 	// 消息场景描述
 	MessageScene MessageScene `json:"message_scene,omitempty"`
+	// QQ 数字消息类型：0=普通,103=引用最近N条消息（与 OneBot 的 message_type 语义无关）
+	QQMessageType int `json:"message_type,omitempty"`
+	// 引用消息元素（最近N条消息正文等），仅在 message_type=103 等场景出现
+	MsgElements []*MsgElement `json:"msg_elements,omitempty"`
+}
+
+// MsgElement 引用消息元素（QQ message_type=103 的 msg_elements 项）
+type MsgElement struct {
+	Content string `json:"content,omitempty"`
 }
 
 // Embed 结构
@@ -88,6 +97,7 @@ type MessageReactionUsers struct {
 
 // MessageScene 消息场景
 type MessageScene struct {
-	Source       string `json:"source,omitempty"`        // 消息来源, realtime_voice: 实时通话场景, ai_search: AI搜索 其它默认为AIO消息
-	CallbackData string `json:"callback_data,omitempty"` // 回调数据
+	Source       string   `json:"source,omitempty"`        // 消息来源, realtime_voice: 实时通话场景, ai_search: AI搜索 其它默认为AIO消息
+	CallbackData string   `json:"callback_data,omitempty"` // 回调数据
+	Ext          []string `json:"ext,omitempty"`           // 扩展信息：msg_idx / ref_msg_idx 等
 }

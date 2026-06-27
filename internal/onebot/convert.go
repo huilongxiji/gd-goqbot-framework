@@ -129,6 +129,57 @@ func (c *Converter) markSeen(qqMsgID string) bool {
 	return false
 }
 
+// recentMsgSplitRE 按 "=== 消息 N ===" 分块（最近十条 msg_elements 摘要）
+var recentMsgSplitRE = regexp.MustCompile(`(?s)===\s*消息\s*\d+\s*===`)
+
+// parseRecentMessages 解析「最近十条」msg_elements 文本摘要为结构化数组。
+// 每条仅能拿到 content(文本) 与 sender(昵称)；其余字段 QQ 不提供。
+func (c *Converter) parseRecentMessages(elements []*dto.MsgElement) []map[string]any {
+	var out []map[string]any
+	idx := 0
+	for _, el := range elements {
+		if el == nil || el.Content == "" {
+			continue
+		}
+		for _, blk := range recentMsgSplitRE.Split(el.Content, -1) {
+			blk = strings.TrimSpace(blk)
+			if blk == "" {
+				continue
+			}
+			content, sender := parseRecentBlock(blk)
+			if content == "" && sender == "" {
+				continue
+			}
+			idx++
+			out = append(out, map[string]any{
+				"index":   idx,
+				"sender":  sender,
+				"content": content,
+				"message": c.messageField(Message{{Type: "text", Data: map[string]any{"text": content}}}, content),
+			})
+		}
+	}
+	return out
+}
+
+// parseRecentBlock 从单块中提取 [消息内容] 与 [发送者]
+func parseRecentBlock(blk string) (content, sender string) {
+	const cMark, sMark = "[消息内容]", "[发送者]"
+	ci := strings.Index(blk, cMark)
+	si := strings.LastIndex(blk, sMark)
+	if ci >= 0 {
+		end := len(blk)
+		if si > ci {
+			end = si
+		}
+		content = strings.TrimSpace(blk[ci+len(cMark) : end])
+	}
+	if si >= 0 {
+		sender = strings.TrimSpace(blk[si+len(sMark):])
+	}
+	return
+}
+
 // mentionedSelf 全量群消息 payload 中是否 @ 了当前机器人
 func mentionedSelf(data *dto.Message) bool {
 	for _, u := range data.Mentions {
@@ -278,20 +329,23 @@ func (c *Converter) GroupAll(data *dto.Message) {
 // pushGroupMessage 组装群 message 事件、写入 get_msg 缓存、推送下游并打印收消息日志块
 func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID string, groupID, userID, msgID int64, segs Message, raw string) {
 	ev := map[string]any{
-		"post_type":    "message",
-		"message_type": "group",
-		"sub_type":     "normal",
-		"time":         time.Now().Unix(),
-		"self_id":      c.selfID(),
-		"group_id":     groupID,
-		"user_id":      userID,
-		"message_id":   msgID,
-		"raw_message":  raw,
-		"font":         0,
-		"message":      c.messageField(segs, raw),
-		"user_openid":  userOpenID,
-		"group_openid": groupOpenID,
-		"qq_msg_id":    data.ID,
+		"post_type":       "message",
+		"message_type":    "group",
+		"sub_type":        "normal",
+		"time":            time.Now().Unix(),
+		"self_id":         c.selfID(),
+		"group_id":        groupID,
+		"user_id":         userID,
+		"message_id":      msgID,
+		"raw_message":     raw,
+		"font":            0,
+		"message":         c.messageField(segs, raw),
+		"user_openid":     userOpenID,
+		"group_openid":    groupOpenID,
+		"qq_msg_id":       data.ID,
+		"qq_message_type": data.QQMessageType,
+		"msg_elements":    data.MsgElements,
+		"msg_scene_ext":   data.MessageScene.Ext,
 		"sender": map[string]any{
 			"user_id":  userID,
 			"nickname": nick(data),
@@ -303,6 +357,9 @@ func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID 
 			"title":    "",
 			"role":     "member",
 		},
+	}
+	if rm := c.parseRecentMessages(data.MsgElements); len(rm) > 0 {
+		ev["recent_messages"] = rm
 	}
 	c.cacheForGetMsg(msgID, ev)
 	delivered, fellBack := c.pushFallback(ev, idmap.SceneGroup, groupOpenID, "", data.ID)
@@ -354,18 +411,21 @@ func (c *Converter) C2C(data *dto.Message) {
 
 	segs, raw := c.buildSegments(data, false)
 	ev := map[string]any{
-		"post_type":    "message",
-		"message_type": "private",
-		"sub_type":     "friend",
-		"time":         time.Now().Unix(),
-		"self_id":      c.selfID(),
-		"user_id":      userID,
-		"message_id":   msgID,
-		"raw_message":  raw,
-		"font":         0,
-		"message":      c.messageField(segs, raw),
-		"user_openid":  userOpenID,
-		"qq_msg_id":    data.ID,
+		"post_type":       "message",
+		"message_type":    "private",
+		"sub_type":        "friend",
+		"time":            time.Now().Unix(),
+		"self_id":         c.selfID(),
+		"user_id":         userID,
+		"message_id":      msgID,
+		"raw_message":     raw,
+		"font":            0,
+		"message":         c.messageField(segs, raw),
+		"user_openid":     userOpenID,
+		"qq_msg_id":       data.ID,
+		"qq_message_type": data.QQMessageType,
+		"msg_elements":    data.MsgElements,
+		"msg_scene_ext":   data.MessageScene.Ext,
 		"sender": map[string]any{
 			"user_id":  userID,
 			"nickname": nick(data),
@@ -425,6 +485,10 @@ func (c *Converter) logRecvMessage(scene string, sceneID int64, data *dto.Messag
 		blk.Row("内容", clip(content, 100))
 	}
 	blk.Row("段", segTypes(segs))
+	if data.QQMessageType != 0 || len(data.MsgElements) > 0 {
+		blk.Row("QQ类型", fmt.Sprintf("%d  msg_elements×%d  recent×%d",
+			data.QQMessageType, len(data.MsgElements), len(c.parseRecentMessages(data.MsgElements))))
+	}
 	blk.Row("msgid", fmt.Sprintf("%d  %s", msgID, prettylog.Dim("QQ "+midEllipsis(data.ID, 14, 8))))
 	if fellBack {
 		blk.Row("推送", prettylog.Warn(fmt.Sprintf("下游全断，已兜底回发 (×%d)", delivered)))
