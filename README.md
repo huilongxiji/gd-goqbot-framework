@@ -47,8 +47,12 @@
 ## 已支持功能
 
 - QQ **群 @ 消息**（`GROUP_AT_MESSAGE_CREATE`）与**单聊 C2C 消息**（`C2C_MESSAGE_CREATE`）双向收发
-- 群全量消息（需群主开启"获取群内全部消息"，`GROUP_MESSAGE_CREATE`），并据 `mentions.is_you` 还原 `to_me()`
+- 群全量消息（需群主授权"获取群内全部消息"，`GROUP_MESSAGE_CREATE`），并据 `mentions.is_you` 还原 `to_me()`；授权步骤见 [群全量消息授权](#群全量消息授权)
+- **"最近十条"摘要解析**：群设为"最近十条"时，QQ 在 @ 事件（`message_type=103`）随附的历史消息摘要会被解析为结构化 `recent_messages` 数组（含内容与发送者昵称）
+- **原始 QQ 事件字段透传**：群消息事件附带 `qq_message_type`、`msg_elements`、`msg_scene_ext`、`qq_msg_id`、`user_openid` 等原始字段，便于下游精细处理
+- **群成员真实角色**：群消息 `sender.role` 透传真实 `owner` / `admin` / `member`，可直接配合 NoneBot `GROUP_OWNER` / `GROUP_ADMIN` 权限
 - 文本 / at / 图片 / 视频 / 语音 / **Markdown + Keyboard（按钮）** 消息段
+- **单图文合一气泡**：一条消息恰含 1 张图片且无 markdown 时，文本自动并入该图片的富媒体消息，合并为一个气泡（文字在上、图在下），对齐手机 QQ 的图文混排观感
 - **互动按钮回调**闭环：点击事件上报 + 自动被动 `event_id` 回复 + `put_interaction` 回执
 - 入退群、好友增删、群 / C2C 主动推送开关等 **notice** 事件
 - 消息**撤回**（`delete_msg`）、消息**取回**（`get_msg`，内存缓存）
@@ -98,6 +102,7 @@
 
 - 入参支持 **array 段数组** 与 **CQ 字符串** 两种格式。
 - 输出为有序 `OutMessage.Parts`，**每个非文本段单独成一条 QQ 消息按序发出**（连续文本 / at 合并）。
+- **单图快路径**：当整条消息恰好为「文本 + 1 张图片」（无 markdown）时，所有文本并入该图片富媒体消息，合并成**一个气泡**，而非拆成图、文两条。
 
 ---
 
@@ -120,6 +125,24 @@
 | 连接成功 | 连接生命周期 / 心跳 | `meta_event/lifecycle`、`heartbeat` | `ReadyHandler` / 内部 |
 
 > 订阅哪些事件由 `qq.text_intent` 里启用的 handler 动态推导 intent，亦可用 `qq.intents` 硬覆盖。
+
+---
+
+## 群全量消息授权
+
+默认机器人只能收到 **@ 它** 的群消息。若要接收**群内全部实时消息**（`GROUP_MESSAGE_CREATE`，非 @ 消息也能收到），需要**群主**在手机 QQ 上完成一次授权：把"机器人可获取的群聊消息范围"设为 **获取群内全部消息**，并开启 **机器人主动在群聊内发言**，最后点击 **同意授权**。
+
+<p align="center">
+  <img alt="申请群全量消息权限" src="image/申请全量图片.jpg" width="360">
+</p>
+
+授权完成后：
+
+- 程序需启用 `GroupMessageEventHandler`（加进 `config.yml` 的 `qq.text_intent`），否则即便平台下发也不会上报。
+- 该群的所有消息都会以 `message/group` 上报；非 @ 消息的 `to_me()` 为 `False`。
+- 若群设置为"最近十条"而非全量，则只在被 @ 时随事件附带最近历史摘要，由本程序解析为 `recent_messages`（见上文「已支持功能」）。
+
+> 提示：该授权页为 QQ 客户端原生页面，目前实测**仅安卓手机 QQ** 能正常打开；iOS / 电脑端点击可能提示"加载失败，请检查网络之后重试"。
 
 ---
 
@@ -166,6 +189,8 @@ qq:
     - "ReadyHandler"
     - "ErrorNotifyHandler"
     - "GroupATMessageEventHandler"
+    # 需要接收群内全部消息时再启用（须群主先完成全量授权，见「群全量消息授权」）
+    # - "GroupMessageEventHandler"
     - "C2CMessageEventHandler"
 
 onebot:

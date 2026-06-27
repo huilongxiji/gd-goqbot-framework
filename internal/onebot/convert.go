@@ -327,6 +327,19 @@ func (c *Converter) GroupAll(data *dto.Message) {
 }
 
 // pushGroupMessage 组装群 message 事件、写入 get_msg 缓存、推送下游并打印收消息日志块
+// roleOf 返回真实群成员角色，未知/空回退 member
+func roleOf(data *dto.Message) string {
+	if data == nil || data.Author == nil {
+		return "member"
+	}
+	switch data.Author.MemberRole {
+	case "owner", "admin":
+		return data.Author.MemberRole
+	default:
+		return "member"
+	}
+}
+
 func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID string, groupID, userID, msgID int64, segs Message, raw string) {
 	ev := map[string]any{
 		"post_type":       "message",
@@ -355,7 +368,7 @@ func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID 
 			"area":     "",
 			"level":    "",
 			"title":    "",
-			"role":     "member",
+			"role":     roleOf(data),
 		},
 	}
 	if rm := c.parseRecentMessages(data.MsgElements); len(rm) > 0 {
