@@ -1,6 +1,6 @@
 // Package config 定义适配器的 YAML 配置结构，并负责加载、填充默认值与校验。
-// 配置分三段：qq（上游凭据与连接选项）、onebot（下游正/反向 WS 与行为开关）、
-// idmap（id 映射的持久化）。
+// 配置分四段：qq（上游凭据与连接选项）、onebot（下游正/反向 WS 与行为开关）、
+// idmap（id 映射的持久化）、log（本地文件日志）。
 package config
 
 import (
@@ -17,6 +17,21 @@ type Config struct {
 	QQ     QQConfig     `yaml:"qq"`
 	OneBot OneBotConfig `yaml:"onebot"`
 	IDMap  IDMapConfig  `yaml:"idmap"`
+	Log    LogConfig    `yaml:"log"`
+}
+
+// LogConfig 本地文件日志配置
+type LogConfig struct {
+	Enabled *bool  `yaml:"enabled"` // nil 或 true=开启；false=仅终端不落盘
+	Path    string `yaml:"path"`    // 日志目录，默认 logs；相对路径=可执行文件同级
+}
+
+// FileEnabled 是否写入本地日志文件（默认 true）。
+func (c *LogConfig) FileEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // IDMapConfig idmap 持久化配置
@@ -117,6 +132,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.IDMap.Path == "" {
 		c.IDMap.Path = "idmap.db"
+	}
+	if c.Log.Path == "" {
+		c.Log.Path = "logs"
 	}
 	for i := range c.OneBot.Servers {
 		if rev := c.OneBot.Servers[i].WSReverse; rev != nil && rev.ReconnectInterval == 0 {

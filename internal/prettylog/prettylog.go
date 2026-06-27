@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"goqbot/internal/filelog"
 )
 
 // colorOn 仅当 stderr 是终端时上色；写入文件/管道时关闭，避免文件中出现 ANSI 转义符。
@@ -137,9 +139,13 @@ func (b *Block) Row(key, val string) *Block {
 // minWidth 边框块最小宽度（列）
 const minWidth = 48
 
-// Emit 渲染整块并一次性写出到 stderr（单次 Write，避免被其它日志插断）。
+// Emit 渲染整块并一次性写出到 stderr（单次 Write，避免被其它日志插断）；同时去色写入本地日志文件。
 func (b *Block) Emit() {
-	fmt.Fprint(os.Stderr, b.render())
+	rendered := b.render()
+	fmt.Fprint(os.Stderr, rendered)
+	if filelog.Enabled() {
+		filelog.WriteFile([]byte(rendered))
+	}
 }
 
 // render 生成整块文本。

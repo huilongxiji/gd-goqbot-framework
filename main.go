@@ -21,6 +21,7 @@ import (
 
 	"goqbot/internal/botgo"
 	"goqbot/internal/config"
+	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
 	"goqbot/internal/onebot"
 	"goqbot/internal/qq"
@@ -73,6 +74,17 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("配置无效: %v", err)
 	}
+
+	logDir := cfg.Log.Path
+	if !filepath.IsAbs(logDir) {
+		logDir = filepath.Join(exeDir, logDir)
+	}
+	if err := filelog.Init(cfg.Log.FileEnabled(), logDir); err != nil {
+		log.Fatalf("初始化文件日志失败: %v", err)
+	}
+	defer filelog.Close()
+	log.SetFlags(0)
+	log.SetOutput(filelog.StdLogWriter())
 
 	selfID := cfg.QQ.SelfID
 	appID := cfg.QQ.AppID

@@ -17,6 +17,7 @@ import (
 	"goqbot/internal/botgo/dto/keyboard"
 	"github.com/tidwall/gjson"
 
+	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
 	"goqbot/internal/prettylog"
 	"goqbot/internal/stats"
@@ -689,7 +690,16 @@ func (c *Caller) HandleRequest(payload []byte) []byte {
 		if len(p) > 500 {
 			p = p[:500] + "..."
 		}
-		log.Printf("[onebot] 收到动作 action=%s params=%s echo=%v", action, p, j.Get("echo").Value())
+		_, _ = os.Stderr.WriteString(filelog.FormatInfo(fmt.Sprintf(
+			"[onebot] 收到动作 action=%s params=%s echo=%v",
+			action, p, j.Get("echo").Value(),
+		)))
+	}
+	if filelog.Enabled() {
+		filelog.WriteFile([]byte(filelog.FormatInfo(fmt.Sprintf(
+			"[onebot] action=%s params=%s echo=%v",
+			action, params.Raw, j.Get("echo").Value(),
+		))))
 	}
 	ret := c.Call(action, params)
 	if echo := j.Get("echo"); echo.Exists() {

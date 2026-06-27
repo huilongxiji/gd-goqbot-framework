@@ -59,6 +59,7 @@
 - `array`（消息段数组）与 `string`（CQ 码）两种上报格式
 - `/gateway/bot` 网关频控查询（启动日志 + `get_gateway` 动作）
 - 美化日志排版（收 / 发 / 通知边框块；终端着色，重定向到文件自动去色）
+- **本地文件日志**：默认可执行文件同级 `logs/goqbot-YYYY-MM-DD.log` 按天滚动；单行日志统一为 `[Level] 时间 [来源] 消息` 格式
 
 ---
 
@@ -146,6 +147,13 @@
 ```bash
 ./goqbot
 # 编辑同级生成的 config.yml，填入 app_id / client_secret 等后重启
+```
+
+运行后日志默认写入同级 `logs/goqbot-YYYY-MM-DD.log`（可在 `config.yml` 的 `log` 段关闭或改目录）。单行日志格式示例：
+
+```text
+[Info] 2026-06-27 03:15:05 [qq] 机器人: 某某  self_id: 123456
+[Info] 2026-06-27 03:15:05 [botgo] Listening connected to gateway
 ```
 
 ### 3. 最小配置示例

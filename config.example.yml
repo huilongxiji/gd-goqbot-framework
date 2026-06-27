@@ -47,3 +47,7 @@ onebot:
 idmap:
   # disabled: true     # 设为 true 则纯内存、不持久化（重启后 message_id/反查丢失）
   path: "idmap.db"     # 持久化文件；相对路径=可执行文件同级目录；不存在则创建，存在则直接加载
+
+log:
+  enabled: true        # false=仅终端输出，不写本地日志文件
+  path: "logs"           # 日志目录；相对路径=可执行文件同级；按天生成 goqbot-YYYY-MM-DD.log
