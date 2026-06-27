@@ -3,6 +3,7 @@ package qq
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"goqbot/internal/botgo/dto"
@@ -12,6 +13,32 @@ import (
 	"goqbot/internal/idmap"
 	"goqbot/internal/onebot"
 )
+
+// combineParts 判断能否把整条消息合并为「单图富媒体 + 文本」一个气泡：
+// 当恰好 1 张图片且无 markdown 段时，返回所有文本按原顺序拼接的字符串、该图片与 ok=true；
+// 否则返回 ok=false，交由调用方逐段发送。
+func combineParts(msg *onebot.OutMessage) (text string, img *onebot.OutImage, ok bool) {
+	var b strings.Builder
+	imageCount := 0
+	mdCount := 0
+	var theImage onebot.OutImage
+	for i := range msg.Parts {
+		p := &msg.Parts[i]
+		switch p.Kind {
+		case onebot.PartText:
+			b.WriteString(p.Text)
+		case onebot.PartImage:
+			imageCount++
+			theImage = p.Image
+		case onebot.PartMarkdown:
+			mdCount++
+		}
+	}
+	if imageCount == 1 && mdCount == 0 {
+		return b.String(), &theImage, true
+	}
+	return "", nil, false
+}
 
 // sender 基于 botgo openapi 实现 onebot.MessageSender
 type sender struct {
@@ -113,8 +140,19 @@ func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, even
 	return resp.ID, nil
 }
 
-// SendGroup 按 Parts 顺序逐条发送，每个段对应一条独立 QQ 消息
+// SendGroup 发群消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送
 func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.OutMessage) (string, error) {
+	if text, img, ok := combineParts(msg); ok {
+		fi, err := s.uploadGroupImage(ctx, groupOpenID, *img)
+		if err != nil {
+			return "", err
+		}
+		content := text
+		if content == "" {
+			content = " "
+		}
+		return s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, content, fi)
+	}
 	var lastID string
 	for _, p := range msg.Parts {
 		switch p.Kind {
@@ -219,8 +257,19 @@ func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID
 	return resp.ID, nil
 }
 
-// SendC2C 按 Parts 顺序逐条发送，每个段对应一条独立 QQ 消息
+// SendC2C 发单聊消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送
 func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.OutMessage) (string, error) {
+	if text, img, ok := combineParts(msg); ok {
+		fi, err := s.uploadC2CImage(ctx, userOpenID, *img)
+		if err != nil {
+			return "", err
+		}
+		content := text
+		if content == "" {
+			content = " "
+		}
+		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, content, fi)
+	}
 	var lastID string
 	for _, p := range msg.Parts {
 		switch p.Kind {
