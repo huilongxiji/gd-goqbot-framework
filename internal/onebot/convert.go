@@ -224,7 +224,9 @@ func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, stri
 	if atSelf {
 		self := strconv.FormatInt(c.selfID(), 10)
 		segs = append(segs, Segment{Type: "at", Data: map[string]any{"qq": self}})
-		raw.WriteString("[CQ:at,qq=" + self + "]")
+		raw.WriteString("[CQ:at,qq=")
+		raw.WriteString(self)
+		raw.WriteString("]")
 	}
 
 	if text := cleanMentionMarkup(data.Content); text != "" {
@@ -255,10 +257,18 @@ func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, stri
 				"subType": "0",
 				"url":     url,
 			}})
-			raw.WriteString("[CQ:image,file=" + cqEscape(file) + ",url=" + cqEscape(url) + "]")
+			raw.WriteString("[CQ:image,file=")
+			raw.WriteString(cqEscape(file))
+			raw.WriteString(",url=")
+			raw.WriteString(cqEscape(url))
+			raw.WriteString("]")
 		} else {
 			segs = append(segs, Segment{Type: typ, Data: map[string]any{"url": url, "file": url}})
-			raw.WriteString("[CQ:" + typ + ",file=" + cqEscape(url) + "]")
+			raw.WriteString("[CQ:")
+			raw.WriteString(typ)
+			raw.WriteString(",file=")
+			raw.WriteString(cqEscape(url))
+			raw.WriteString("]")
 		}
 	}
 
@@ -599,7 +609,8 @@ func (c *Converter) GroupAddRobot(data *dto.WSGroupRobotData) {
 		"self_id":     c.selfID(),
 		"group_id":    c.ids.ID(data.GroupOpenID),
 		"operator_id": c.ids.ID(data.OpMemberOpenID),
-		"user_id":     c.selfID(),
+		"user_id":     c.ids.ID(data.OpMemberOpenID),
+		"user_openid": data.OpMemberOpenID,
 	})
 }
 
@@ -616,7 +627,8 @@ func (c *Converter) GroupDelRobot(data *dto.WSGroupRobotData) {
 		"self_id":     c.selfID(),
 		"group_id":    c.ids.ID(data.GroupOpenID),
 		"operator_id": c.ids.ID(data.OpMemberOpenID),
-		"user_id":     c.selfID(),
+		"user_id":     c.ids.ID(data.OpMemberOpenID),
+		"user_openid": data.OpMemberOpenID,
 	})
 }
 
@@ -634,6 +646,7 @@ func (c *Converter) GroupMsgReject(data *dto.WSGroupRobotData) {
 		"group_id":    c.ids.ID(data.GroupOpenID),
 		"operator_id": opID,
 		"user_id":     opID,
+		"user_openid": data.OpMemberOpenID,
 	})
 }
 
@@ -651,6 +664,7 @@ func (c *Converter) GroupMsgReceive(data *dto.WSGroupRobotData) {
 		"group_id":    c.ids.ID(data.GroupOpenID),
 		"operator_id": opID,
 		"user_id":     opID,
+		"user_openid": data.OpMemberOpenID,
 	})
 }
 
@@ -665,6 +679,7 @@ func (c *Converter) FriendAdd(data *dto.WSC2CFriendData) {
 		"time":        tsToUnix(data.Timestamp),
 		"self_id":     c.selfID(),
 		"user_id":     c.ids.ID(data.OpenID),
+		"user_openid": data.OpenID,
 	})
 }
 
@@ -679,6 +694,7 @@ func (c *Converter) FriendDel(data *dto.WSC2CFriendData) {
 		"time":        tsToUnix(data.Timestamp),
 		"self_id":     c.selfID(),
 		"user_id":     c.ids.ID(data.OpenID),
+		"user_openid": data.OpenID,
 	})
 }
 
@@ -693,6 +709,7 @@ func (c *Converter) C2CMsgReject(data *dto.WSC2CManageData) {
 		"time":        tsToUnix(data.Timestamp),
 		"self_id":     c.selfID(),
 		"user_id":     c.ids.ID(data.OpenID),
+		"user_openid": data.OpenID,
 	})
 }
 
@@ -767,6 +784,7 @@ func (c *Converter) Interaction(data *dto.WSInteractionData) {
 		"time":           ts,
 		"self_id":        c.selfID(),
 		"user_id":        userID,
+		"user_openid":    userOpenID,
 		"chat_type":      data.ChatType,
 		"interaction_id": data.ID,
 		"data_type":      dataType,
@@ -814,5 +832,6 @@ func (c *Converter) C2CMsgReceive(data *dto.WSC2CManageData) {
 		"time":        tsToUnix(data.Timestamp),
 		"self_id":     c.selfID(),
 		"user_id":     c.ids.ID(data.OpenID),
+		"user_openid": data.OpenID,
 	})
 }

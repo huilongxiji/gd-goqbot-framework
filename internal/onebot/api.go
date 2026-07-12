@@ -531,7 +531,9 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				return
 			}
 			if openid, found := c.ids.OpenID(id); found {
-				text.WriteString("<@" + openid + ">")
+				text.WriteString("<@")
+				text.WriteString(openid)
+				text.WriteString(">")
 			}
 		case "image":
 			img := parseImageData(data.Get("file").String(), data.Get("url").String())
