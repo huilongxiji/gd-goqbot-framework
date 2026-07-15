@@ -30,6 +30,7 @@ type Client struct {
 	ids    *idmap.Store       // openid<->数字 id 映射，传给转换器/发送器
 	conv   *onebot.Converter  // 上游事件 -> OneBot 事件的转换器
 	caller *onebot.Caller     // OneBot 动作调用器，启动时注入 sender/网关查询器/昵称
+	api    openapi.OpenAPI    // QQ 官方 openapi 客户端，用于互动事件自动回执
 	cancel context.CancelFunc // 取消运行上下文以停止连接
 
 	mu      sync.RWMutex // 保护 botName/ready
@@ -69,6 +70,9 @@ func (c *Client) Start(ctx context.Context) error {
 		api = botgo.NewOpenAPI(c.cfg.AppID, tokenSource)
 	}
 
+	// 保存 openapi，供互动事件自动回执使用
+	c.api = api
+
 	// 注入发送通道
 	c.caller.SetSender(newSender(api, c.ids))
 
@@ -100,6 +104,21 @@ func (c *Client) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
+}
+
+// autoAckInteraction 异步回执互动事件（code=0 表示已收到），
+// 避免 QQ 客户端因未回应而一直 loading 直至超时。插件仍可再用 put_interaction 覆盖回执码。
+func (c *Client) autoAckInteraction(interactionID string) {
+	if c.api == nil || interactionID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.api.PutInteraction(ctx, interactionID, `{"code":0}`); err != nil {
+			log.Printf("[qq] 互动事件自动回执失败 id=%s: %v", interactionID, err)
+		}
+	}()
 }
 
 // registerHandlers 按 text_intent 注册 botgo handler 并推导 intent
@@ -198,7 +217,13 @@ func (c *Client) registerHandlers() dto.Intent {
 				}))
 		case "InteractionHandler", "InteractionEventHandler":
 			handlers = append(handlers, event.InteractionEventHandler(
-				func(_ *dto.WSPayload, data *dto.WSInteractionData) error {
+				func(p *dto.WSPayload, data *dto.WSInteractionData) error {
+					// 外层 payload.id 才是发被动消息用的 event_id；内层 data.ID 仅用于 PUT 回执
+					if p != nil && data.EventID == "" {
+						data.EventID = p.EventID
+					}
+					// 自动回执互动事件，否则 QQ 客户端会一直转圈直到超时（请求第三方失败）
+					c.autoAckInteraction(data.ID)
 					c.conv.Interaction(data)
 					return nil
 				}))

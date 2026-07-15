@@ -25,14 +25,14 @@ qq:
     # - "GroupMsgReceiveEventHandler"  # 群开启主动消息推送 -> notice group_msg_receive(自定义)
     # - "C2CMsgRejectEventHandler"     # 用户关闭 C2C 推送 -> notice c2c_msg_reject(自定义)
     # - "C2CMsgReceiveEventHandler"    # 用户开启 C2C 推送 -> notice c2c_msg_receive(自定义)
-    # - "InteractionHandler"           # 按钮交互：回传 notice(interaction)+message 事件；回复自动走被动 event_id；可用 put_interaction 回执
+    # - "InteractionHandler"           # 按钮交互：回传 notice(interaction)+message 事件；自动回执(PUT interactions)消除转圈；回复自动走被动 event_id；仍可用 put_interaction 覆盖回执码
     # - "ATMessageEventHandler"        # 频道 @（本期不转换）
     # - "DirectMessageEventHandler"    # 频道私信（本期不转换）
 
 onebot:
   access_token: ""
   heartbeat_interval: 5000
-  message_format: "array"       # array=消息段数组(默认)，string=CQ 字符串
+  message_format: "array"       # message 字段恒为消息段数组；设为 string 时额外输出 message_cq(CQ 字符串)，raw_message 始终包含 CQ
   debug: false                  # true 时打印收到的 action 请求日志
   downtime_message: ""          # 全下游(正/反向 WS)都掉线时回发 QQ 的兜底文本，空=关闭
   servers:

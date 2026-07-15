@@ -75,12 +75,18 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]Segment(m))
 }
 
-// messageField 按配置返回 message 字段值：默认 array 段数组，message_format=string 时才用 CQ 字符串
-func (c *Converter) messageField(segs Message, raw string) any {
-	if c.msgFormat == "string" {
-		return raw
-	}
+// messageField 返回 message 字段值，始终返回段数组（OneBot v11 标准要求）。
+// 若需 CQ 字符串，raw_message 字段始终包含；配置 message_format=string 时额外输出 message_cq 字段。
+func (c *Converter) messageField(segs Message, _ string) any {
 	return segs
+}
+
+// messageCQField 当 msgFormat 为 string 时返回 CQ 字符串，否则返回 nil（不输出该字段）
+func (c *Converter) messageCQField(raw string) map[string]any {
+	if c.msgFormat == "string" {
+		return map[string]any{"message_cq": raw}
+	}
+	return nil
 }
 
 // nick 提取发送者昵称：优先 Author.Username，回退 Member.Nick
@@ -252,11 +258,19 @@ func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, stri
 		if typ == "image" {
 			// 与 Gensokyo 对齐：file=<md5>.image, subType=0, url=真实链接
 			file := imageFileID(att.FileName)
-			segs = append(segs, Segment{Type: "image", Data: map[string]any{
+			imgData := map[string]any{
 				"file":    file,
 				"subType": "0",
 				"url":     url,
-			}})
+			}
+			// 透传图片宽高，便于下游（如 markdown 图片 #宽px #高px）按比例展示
+			if att.Width > 0 {
+				imgData["width"] = att.Width
+			}
+			if att.Height > 0 {
+				imgData["height"] = att.Height
+			}
+			segs = append(segs, Segment{Type: "image", Data: imgData})
 			raw.WriteString("[CQ:image,file=")
 			raw.WriteString(cqEscape(file))
 			raw.WriteString(",url=")
@@ -384,6 +398,9 @@ func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID 
 	if rm := c.parseRecentMessages(data.MsgElements); len(rm) > 0 {
 		ev["recent_messages"] = rm
 	}
+	for k, v := range c.messageCQField(raw) {
+		ev[k] = v
+	}
 	c.cacheForGetMsg(msgID, ev)
 	delivered, fellBack := c.pushFallback(ev, idmap.SceneGroup, groupOpenID, "", data.ID)
 	c.logRecvMessage("群", groupID, data, segs, msgID, delivered, fellBack)
@@ -411,6 +428,9 @@ func (c *Converter) cacheForGetMsg(msgID int64, ev map[string]any) {
 	}
 	if goid, ok := ev["group_openid"]; ok {
 		snap["group_openid"] = goid
+	}
+	if mcq, ok := ev["message_cq"]; ok {
+		snap["message_cq"] = mcq
 	}
 	c.caller.CacheMsg(msgID, snap)
 }
@@ -455,6 +475,9 @@ func (c *Converter) C2C(data *dto.Message) {
 			"sex":      "unknown",
 			"age":      0,
 		},
+	}
+	for k, v := range c.messageCQField(raw) {
+		ev[k] = v
 	}
 	c.cacheForGetMsg(msgID, ev)
 	delivered, fellBack := c.pushFallback(ev, idmap.SceneC2C, "", userOpenID, data.ID)
@@ -602,15 +625,16 @@ func (c *Converter) GroupAddRobot(data *dto.WSGroupRobotData) {
 		return
 	}
 	c.pushNotice(map[string]any{
-		"post_type":   "notice",
-		"notice_type": "group_increase",
-		"sub_type":    "invite",
-		"time":        tsToUnix(data.Timestamp),
-		"self_id":     c.selfID(),
-		"group_id":    c.ids.ID(data.GroupOpenID),
-		"operator_id": c.ids.ID(data.OpMemberOpenID),
-		"user_id":     c.ids.ID(data.OpMemberOpenID),
-		"user_openid": data.OpMemberOpenID,
+		"post_type":       "notice",
+		"notice_type":     "group_increase",
+		"sub_type":        "invite",
+		"time":            tsToUnix(data.Timestamp),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"operator_id":     c.ids.ID(data.OpMemberOpenID),
+		"operator_openid": data.OpMemberOpenID,
+		"user_id":         c.selfID(),
 	})
 }
 
@@ -620,15 +644,16 @@ func (c *Converter) GroupDelRobot(data *dto.WSGroupRobotData) {
 		return
 	}
 	c.pushNotice(map[string]any{
-		"post_type":   "notice",
-		"notice_type": "group_decrease",
-		"sub_type":    "kick_me",
-		"time":        tsToUnix(data.Timestamp),
-		"self_id":     c.selfID(),
-		"group_id":    c.ids.ID(data.GroupOpenID),
-		"operator_id": c.ids.ID(data.OpMemberOpenID),
-		"user_id":     c.ids.ID(data.OpMemberOpenID),
-		"user_openid": data.OpMemberOpenID,
+		"post_type":       "notice",
+		"notice_type":     "group_decrease",
+		"sub_type":        "kick_me",
+		"time":            tsToUnix(data.Timestamp),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"operator_id":     c.ids.ID(data.OpMemberOpenID),
+		"operator_openid": data.OpMemberOpenID,
+		"user_id":         c.selfID(),
 	})
 }
 
@@ -639,14 +664,16 @@ func (c *Converter) GroupMsgReject(data *dto.WSGroupRobotData) {
 	}
 	opID := c.ids.ID(data.OpMemberOpenID)
 	c.pushNotice(map[string]any{
-		"post_type":   "notice",
-		"notice_type": "group_msg_reject",
-		"time":        tsToUnix(data.Timestamp),
-		"self_id":     c.selfID(),
-		"group_id":    c.ids.ID(data.GroupOpenID),
-		"operator_id": opID,
-		"user_id":     opID,
-		"user_openid": data.OpMemberOpenID,
+		"post_type":       "notice",
+		"notice_type":     "group_msg_reject",
+		"time":            tsToUnix(data.Timestamp),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"operator_id":     opID,
+		"operator_openid": data.OpMemberOpenID,
+		"user_id":         opID,
+		"user_openid":     data.OpMemberOpenID,
 	})
 }
 
@@ -657,14 +684,16 @@ func (c *Converter) GroupMsgReceive(data *dto.WSGroupRobotData) {
 	}
 	opID := c.ids.ID(data.OpMemberOpenID)
 	c.pushNotice(map[string]any{
-		"post_type":   "notice",
-		"notice_type": "group_msg_receive",
-		"time":        tsToUnix(data.Timestamp),
-		"self_id":     c.selfID(),
-		"group_id":    c.ids.ID(data.GroupOpenID),
-		"operator_id": opID,
-		"user_id":     opID,
-		"user_openid": data.OpMemberOpenID,
+		"post_type":       "notice",
+		"notice_type":     "group_msg_receive",
+		"time":            tsToUnix(data.Timestamp),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"operator_id":     opID,
+		"operator_openid": data.OpMemberOpenID,
+		"user_id":         opID,
+		"user_openid":     data.OpMemberOpenID,
 	})
 }
 
@@ -770,11 +799,17 @@ func (c *Converter) Interaction(data *dto.WSInteractionData) {
 	userID := c.ids.ID(userOpenID)
 	ts := tsToUnix(data.Timestamp)
 
-	// 把 interaction.ID 作为被动 event_id 凭证存入 lazy 池，供后续回复走被动
+	// 把外层 payload 的 event_id 作为被动 event_id 凭证存入 lazy 池，供后续回复走被动。
+	// 注意：内层 data.ID（互动 id）仅用于 PUT /interactions 回执，不能当 event_id 发消息，
+	// 否则 QQ 会返回 40034025「请求参数event_id无效」。缺失时回退到 data.ID 以兼容旧行为。
+	passiveEventID := data.EventID
+	if passiveEventID == "" {
+		passiveEventID = data.ID
+	}
 	if isGroup {
-		c.ids.StoreLazyGroupEvent(groupOpenID, userOpenID, data.ID)
+		c.ids.StoreLazyGroupEvent(groupOpenID, userOpenID, passiveEventID)
 	} else {
-		c.ids.StoreLazyC2CEvent(userOpenID, data.ID)
+		c.ids.StoreLazyC2CEvent(userOpenID, passiveEventID)
 	}
 
 	notice := map[string]any{
@@ -798,6 +833,7 @@ func (c *Converter) Interaction(data *dto.WSInteractionData) {
 		"time":           ts,
 		"self_id":        c.selfID(),
 		"user_id":        userID,
+		"user_openid":    userOpenID,
 		"message_id":     fnvHash(data.ID),
 		"raw_message":    buttonData,
 		"font":           0,
@@ -809,12 +845,17 @@ func (c *Converter) Interaction(data *dto.WSInteractionData) {
 	if isGroup {
 		groupID := c.ids.ID(groupOpenID)
 		notice["group_id"] = groupID
+		notice["group_openid"] = groupOpenID
 		msg["message_type"] = "group"
 		msg["sub_type"] = "normal"
 		msg["group_id"] = groupID
+		msg["group_openid"] = groupOpenID
 	} else {
 		msg["message_type"] = "private"
 		msg["sub_type"] = "friend"
+	}
+	for k, v := range c.messageCQField(buttonData) {
+		msg[k] = v
 	}
 
 	c.pushNotice(notice)

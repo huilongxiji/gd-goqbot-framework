@@ -4,7 +4,8 @@ import "encoding/json"
 
 // Interaction 互动行为对象
 type Interaction struct {
-	ID                string           `json:"id,omitempty"`                  // 互动行为唯一标识
+	ID                string           `json:"id,omitempty"`                  // 互动行为唯一标识（用于 PUT /interactions 回执）
+	EventID           string           `json:"event_id,omitempty"`            // 外层 payload 的 id，用于发送被动消息的 event_id（由事件分发时注入，非来自 d）
 	ApplicationID     string           `json:"application_id,omitempty"`      // 应用ID
 	Type              InteractionType  `json:"type,omitempty"`                // 互动类型
 	Data              *InteractionData `json:"data,omitempty"`                // 互动数据
