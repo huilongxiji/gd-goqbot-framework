@@ -86,15 +86,24 @@ func (s *sender) uploadGroupImage(ctx context.Context, groupOpenID string, img o
 	return resp.FileInfo, nil
 }
 
+// msgReference 由要引用的 QQ msg_id 构造 message_reference（忽略取详情错误以免整条发不出），空则返回 nil
+func msgReference(refMsgID string) *dto.MessageReference {
+	if refMsgID == "" {
+		return nil
+	}
+	return &dto.MessageReference{MessageID: refMsgID, IgnoreGetMessageError: true}
+}
+
 // sendGroupText 发送群文本消息，返回 QQ 消息 id
-func (s *sender) sendGroupText(ctx context.Context, groupOpenID, msgID, eventID, content string) (string, error) {
+func (s *sender) sendGroupText(ctx context.Context, groupOpenID, msgID, eventID, refMsgID, content string) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:   content,
-		MsgType:   dto.TextMsg,
-		MsgID:     msgID,
-		EventID:   eventID,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+		Content:          content,
+		MsgType:          dto.TextMsg,
+		MsgID:            msgID,
+		EventID:          eventID,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
 	}
 	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, m)
 	if err != nil {
@@ -104,15 +113,16 @@ func (s *sender) sendGroupText(ctx context.Context, groupOpenID, msgID, eventID,
 }
 
 // sendGroupMedia 用已上传的 file_info 发送群富媒体（图片等）消息
-func (s *sender) sendGroupMedia(ctx context.Context, groupOpenID, msgID, eventID, content string, fileInfo []byte) (string, error) {
+func (s *sender) sendGroupMedia(ctx context.Context, groupOpenID, msgID, eventID, refMsgID, content string, fileInfo []byte) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:   content,
-		MsgType:   dto.RichMediaMsg,
-		Media:     &dto.MediaInfo{FileInfo: fileInfo},
-		MsgID:     msgID,
-		EventID:   eventID,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+		Content:          content,
+		MsgType:          dto.RichMediaMsg,
+		Media:            &dto.MediaInfo{FileInfo: fileInfo},
+		MsgID:            msgID,
+		EventID:          eventID,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
 	}
 	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, m)
 	if err != nil {
@@ -122,16 +132,17 @@ func (s *sender) sendGroupMedia(ctx context.Context, groupOpenID, msgID, eventID
 }
 
 // sendGroupMarkdown 发送群 markdown 消息（可带 keyboard 按钮）
-func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, eventID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
+func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, eventID, refMsgID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:   "markdown",
-		MsgType:   dto.MarkdownMsg,
-		Markdown:  md,
-		Keyboard:  kb,
-		MsgID:     msgID,
-		EventID:   eventID,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+		Content:          "markdown",
+		MsgType:          dto.MarkdownMsg,
+		Markdown:         md,
+		Keyboard:         kb,
+		MsgID:            msgID,
+		EventID:          eventID,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
 	}
 	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, m)
 	if err != nil {
@@ -151,7 +162,7 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 		if content == "" {
 			content = " "
 		}
-		return s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, content, fi)
+		return s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, content, fi)
 	}
 	var lastID string
 	for _, p := range msg.Parts {
@@ -160,7 +171,7 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 			if p.Text == "" {
 				continue
 			}
-			id, err := s.sendGroupText(ctx, groupOpenID, msg.MsgID, msg.EventID, p.Text)
+			id, err := s.sendGroupText(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, p.Text)
 			if err != nil {
 				return "", err
 			}
@@ -170,13 +181,13 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, " ", fi)
+			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, " ", fi)
 			if err != nil {
 				return "", err
 			}
 			lastID = id
 		case onebot.PartMarkdown:
-			id, err := s.sendGroupMarkdown(ctx, groupOpenID, msg.MsgID, msg.EventID, p.Markdown, p.Keyboard)
+			id, err := s.sendGroupMarkdown(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, p.Markdown, p.Keyboard)
 			if err != nil {
 				return "", err
 			}
@@ -204,14 +215,16 @@ func (s *sender) uploadC2CImage(ctx context.Context, userOpenID string, img oneb
 }
 
 // sendC2CText 发送单聊文本消息，返回 QQ 消息 id
-func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID, content string) (string, error) {
+func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, refMsgID, content string) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:   content,
-		MsgType:   dto.TextMsg,
-		MsgID:     msgID,
-		EventID:   eventID,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+		Content:          content,
+		MsgType:          dto.TextMsg,
+		MsgID:            msgID,
+		EventID:          eventID,
+		IsWakeup:         isWakeup,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
 	}
 	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
 	if err != nil {
@@ -221,15 +234,17 @@ func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID, co
 }
 
 // sendC2CMedia 用已上传的 file_info 发送单聊富媒体（图片等）消息
-func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID, content string, fileInfo []byte) (string, error) {
+func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, refMsgID, content string, fileInfo []byte) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:   content,
-		MsgType:   dto.RichMediaMsg,
-		Media:     &dto.MediaInfo{FileInfo: fileInfo},
-		MsgID:     msgID,
-		EventID:   eventID,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+		Content:          content,
+		MsgType:          dto.RichMediaMsg,
+		Media:            &dto.MediaInfo{FileInfo: fileInfo},
+		MsgID:            msgID,
+		EventID:          eventID,
+		IsWakeup:         isWakeup,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
 	}
 	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
 	if err != nil {
@@ -239,16 +254,18 @@ func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID, c
 }
 
 // sendC2CMarkdown 发送单聊 markdown 消息（可带 keyboard 按钮）
-func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
+func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, refMsgID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:   "markdown",
-		MsgType:   dto.MarkdownMsg,
-		Markdown:  md,
-		Keyboard:  kb,
-		MsgID:     msgID,
-		EventID:   eventID,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+		Content:          "markdown",
+		MsgType:          dto.MarkdownMsg,
+		Markdown:         md,
+		Keyboard:         kb,
+		MsgID:            msgID,
+		EventID:          eventID,
+		IsWakeup:         isWakeup,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
 	}
 	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
 	if err != nil {
@@ -268,7 +285,7 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 		if content == "" {
 			content = " "
 		}
-		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, content, fi)
+		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, content, fi)
 	}
 	var lastID string
 	for _, p := range msg.Parts {
@@ -277,7 +294,7 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 			if p.Text == "" {
 				continue
 			}
-			id, err := s.sendC2CText(ctx, userOpenID, msg.MsgID, msg.EventID, p.Text)
+			id, err := s.sendC2CText(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, p.Text)
 			if err != nil {
 				return "", err
 			}
@@ -287,13 +304,13 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, " ", fi)
+			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, " ", fi)
 			if err != nil {
 				return "", err
 			}
 			lastID = id
 		case onebot.PartMarkdown:
-			id, err := s.sendC2CMarkdown(ctx, userOpenID, msg.MsgID, msg.EventID, p.Markdown, p.Keyboard)
+			id, err := s.sendC2CMarkdown(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, p.Markdown, p.Keyboard)
 			if err != nil {
 				return "", err
 			}

@@ -51,6 +51,8 @@
 - **"最近十条"摘要解析**：群设为"最近十条"时，QQ 在 @ 事件（`message_type=103`）随附的历史消息摘要会被解析为结构化 `recent_messages` 数组（含内容与发送者昵称）
 - **原始 QQ 事件字段透传**：群消息事件附带 `qq_message_type`、`msg_elements`、`msg_scene_ext`、`qq_msg_id`、`user_openid` 等原始字段，便于下游精细处理
 - **群成员真实角色**：群消息 `sender.role` 透传真实 `owner` / `admin` / `member`，可直接配合 NoneBot `GROUP_OWNER` / `GROUP_ADMIN` 权限
+- **`union_openid` 跨 AppID 关联标识**：群 / 单聊消息在 QQ 下发时（需向平台申请配置）透传到事件级 `union_openid` 与 `sender.union_openid`，存在才写入
+- **单聊互动召回消息（`is_wakeup`）**：用户主动对话后 30 天内分 4 个周期每周期可下发 1 条（详见动作表）
 - 文本 / at / 图片 / 视频 / 语音 / **Markdown + Keyboard（按钮）** 消息段
 - **单图文合一气泡**：一条消息恰含 1 张图片且无 markdown 时，文本自动并入该图片的富媒体消息，合并为一个气泡（文字在上、图在下），对齐手机 QQ 的图文混排观感
 - **互动按钮回调**闭环：点击事件上报 + 自动被动 `event_id` 回复 + `put_interaction` 回执
@@ -77,10 +79,11 @@
 | `get_status` | - | `{ online: true, good: true }` |
 | `get_version_info` | - | 程序名 / 版本 / 协议版本 |
 | `send_group_msg` | `group_id`, `message`, (`user_id`) | 发群消息（被动优先） |
-| `send_private_msg` | `user_id`, `message` | 发单聊消息（被动优先） |
+| `send_private_msg` | `user_id`, `message`, (`is_wakeup`) | 发单聊消息（被动优先）；传 `is_wakeup=true` 走互动召回消息 |
 | `send_msg` | `message_type` / 自动判定 + 对应 id + `message` | 按类型分派到群 / 私聊 |
 | `send_group_active_msg` | `group_id`, `message` | **强制主动**发群（忽略 reply / lazy 凭证） |
 | `send_private_active_msg` | `user_id`, `message` | **强制主动**发单聊 |
+| `send_private_msg`（`is_wakeup=true`） | `user_id`, `message`, `is_wakeup` | **单聊互动召回消息**：用户主动对话后 30 天内每周期 1 条，与 reply / 被动 `event_id` 互斥 |
 | `delete_msg` | `message_id` | 撤回（按 message_id 反查 QQ 原始 msg_id） |
 | `get_msg` | `message_id` | 取回收到时缓存的消息（仅内存） |
 | `get_openid` | `user_id` / `group_id` | 把数字 id 反查回 QQ 原始 openid |

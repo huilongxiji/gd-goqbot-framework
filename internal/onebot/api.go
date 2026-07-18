@@ -293,16 +293,23 @@ func partSummary(out *OutMessage) string {
 	return strings.Join(parts, ", ")
 }
 
-// sendMode 描述发送模式：被动(msg_id/event)/主动
+// sendMode 描述发送模式：被动(msg_id/event)/互动召回/主动；带引用时附加 +引用
 func sendMode(out *OutMessage) string {
+	var mode string
 	switch {
+	case out.IsWakeup:
+		mode = "互动召回(is_wakeup)"
 	case out.EventID != "":
-		return "被动(event) " + midEllipsis(out.EventID, 14, 8)
+		mode = "被动(event) " + midEllipsis(out.EventID, 14, 8)
 	case out.MsgID != "":
-		return "被动 msg_id=" + midEllipsis(out.MsgID, 14, 8)
+		mode = "被动 msg_id=" + midEllipsis(out.MsgID, 14, 8)
 	default:
-		return "主动"
+		mode = "主动"
 	}
+	if out.RefMsgID != "" {
+		mode += " +引用"
+	}
+	return mode
 }
 
 // ok 构造 OneBot 成功响应（status=ok, retcode=0）
@@ -394,7 +401,13 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		return failed(1400, "未知 user_id（尚未收到该用户消息）")
 	}
 	out := c.parseMessage(params.Get("message"))
-	if active {
+	// is_wakeup：单聊互动召回消息，与 msg_id/event_id 互斥，故强制走主动语义（不套被动凭证）
+	wakeup := params.Get("is_wakeup").Bool()
+	if wakeup {
+		out.IsWakeup = true
+		out.MsgID = ""
+		out.EventID = ""
+	} else if active {
 		out.MsgID = "" // 强制主动：忽略 reply、不套 lazy
 	} else if out.MsgID == "" {
 		if id, kind, found := c.ids.LazyC2C(userOpenID); found {
@@ -409,7 +422,9 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		return failed(1400, "空消息")
 	}
 	action := "send_private_msg"
-	if active {
+	if wakeup {
+		action = "send_private_wakeup_msg"
+	} else if active {
 		action = "send_private_active_msg"
 	}
 	start := time.Now()
@@ -548,7 +563,8 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 			}
 		case "reply":
 			if meta, found := c.ids.Msg(data.Get("id").Int()); found && meta.MsgID != "" {
-				out.MsgID = meta.MsgID
+				out.MsgID = meta.MsgID   // 占用被动回复窗口（兼容既有语义）
+				out.RefMsgID = meta.MsgID // 额外设置 message_reference 产生可见引用气泡
 			}
 		}
 	}

@@ -73,6 +73,7 @@ type MessageToCreate struct {
 	ActionButton     *ActionButton             `json:"action_button,omitempty"`   // 消息操作结构
 	Stream           *Stream                   `json:"stream,omitempty"`          // 流式消息信息
 	FeatureID        uint                      `json:"feature_id,omitempty"`      // 控制消息发送
+	IsWakeup         bool                      `json:"is_wakeup,omitempty"`       // 单聊互动召回消息：用户主动对话后 30 天内可下发，与 msg_id/event_id 互斥
 }
 
 // Stream 流式消息信息

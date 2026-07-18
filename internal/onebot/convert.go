@@ -221,6 +221,25 @@ func userOpenIDOf(data *dto.Message) string {
 	return data.Author.MemberOpenID
 }
 
+// unionOpenIDOf 取发送者跨 AppID 关联标识 union_openid（需向平台申请配置后才会下发），无则空
+func unionOpenIDOf(data *dto.Message) string {
+	if data == nil || data.Author == nil {
+		return ""
+	}
+	return data.Author.UnionOpenID
+}
+
+// addUnionOpenID 若 union_openid 非空，则写入事件级与 sender 级字段（存在才写入，避免污染无该字段的事件）
+func addUnionOpenID(ev map[string]any, unionOpenID string) {
+	if unionOpenID == "" {
+		return
+	}
+	ev["union_openid"] = unionOpenID
+	if sender, ok := ev["sender"].(map[string]any); ok {
+		sender["union_openid"] = unionOpenID
+	}
+}
+
 // buildSegments 由 QQ 消息构造 OneBot message 段数组（主格式）与 raw_message（CQ 兜底）
 // atSelf 为 true 时在段首注入 at self（NoneBot to_me() 为真）
 func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, string) {
@@ -395,6 +414,7 @@ func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID 
 			"role":     roleOf(data),
 		},
 	}
+	addUnionOpenID(ev, unionOpenIDOf(data))
 	if rm := c.parseRecentMessages(data.MsgElements); len(rm) > 0 {
 		ev["recent_messages"] = rm
 	}
@@ -476,6 +496,7 @@ func (c *Converter) C2C(data *dto.Message) {
 			"age":      0,
 		},
 	}
+	addUnionOpenID(ev, unionOpenIDOf(data))
 	for k, v := range c.messageCQField(raw) {
 		ev[k] = v
 	}

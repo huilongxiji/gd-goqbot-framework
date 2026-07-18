@@ -51,3 +51,18 @@ idmap:
 log:
   enabled: true        # false=仅终端输出，不写本地日志文件
   path: "logs"           # 日志目录；相对路径=可执行文件同级；按天生成 goqbot-YYYY-MM-DD.log
+
+# ─── QQ Bot API v2 能力/频控说明（无需配置，仅备忘）───
+# 主动推送：
+#   * 群聊主动推送 2026/06/22 全量开放，需群主打开【机器人在群聊内发言】；每月每群最多 4 条主动消息，超额发送失败。
+#     （对应动作 send_group_active_msg / send_group_msg 未命中被动凭证时）
+#   * 单聊互动召回消息(is_wakeup)：用户主动对话后 30 天内分 4 个周期（当天 / 1-3天 / 3-7天 / 7-30天）
+#     每周期可下发 1 条，消息类型与机器人已有权限一致。
+#     用法：send_private_msg / send_msg 传 params.is_wakeup=true（与 reply/被动 event_id 互斥，自动走主动语义）。
+# 被动回复频控：开启互动召回后，被动回复(回复类)由「60分钟5次」调整为「60分钟4次」。
+# 自定义 Markdown：2026/04/23 起单聊/群聊自定义 markdown(content 原生语法)全量开放，无需申请模版（频道仍需内邀）。
+# 新增上报字段：
+#   * sender.role      群成员身份 owner/admin/member（来自 author.member_role）
+#   * union_openid     跨 AppID 关联标识；仅在向平台申请配置后 QQ 才下发，存在时写入事件级与 sender.union_openid
+#   * msg_scene_ext    message_scene.ext（含 msg_idx/auth_token 等）
+# 注意：所有 user_id/group_id/openid 均为机器人场景内标识，与真实 QQ号/群号无关，跨业务打通只能靠 union_openid。
