@@ -42,6 +42,7 @@ var DefaultHandlers struct {
 	GroupDelRobot   GroupDelRobotEventHandler
 	GroupMsgReject  GroupMsgRejectEventHandler
 	GroupMsgReceive GroupMsgReceiveEventHandler
+	GroupMember     GroupMemberEventHandler
 	C2CMsgReject    C2CMsgRejectEventHandler
 	C2CMsgReceive   C2CMsgReceiveEventHandler
 
@@ -147,6 +148,9 @@ type GroupMsgRejectEventHandler func(event *dto.WSPayload, data *dto.WSGroupRobo
 // GroupMsgReceiveEventHandler 群开启机器人主动消息推送事件 handler
 type GroupMsgReceiveEventHandler func(event *dto.WSPayload, data *dto.WSGroupRobotData) error
 
+// GroupMemberEventHandler 群成员进退群事件 handler（GROUP_MEMBER_ADD / GROUP_MEMBER_REMOVE）
+type GroupMemberEventHandler func(event *dto.WSPayload, data *dto.WSGroupMemberData) error
+
 // C2CMsgRejectEventHandler 用户关闭机器人 C2C 主动消息推送事件 handler
 type C2CMsgRejectEventHandler func(event *dto.WSPayload, data *dto.WSC2CManageData) error
 
@@ -191,6 +195,9 @@ func RegisterHandlers(handlers ...interface{}) dto.Intent {
 		case GroupMsgReceiveEventHandler:
 			DefaultHandlers.GroupMsgReceive = handle
 			i = i | dto.EventToIntent(dto.EventGroupMsgReceive)
+		case GroupMemberEventHandler:
+			DefaultHandlers.GroupMember = handle
+			i = i | dto.EventToIntent(dto.EventGroupMemberAdd, dto.EventGroupMemberRemove)
 		case C2CMsgRejectEventHandler:
 			DefaultHandlers.C2CMsgReject = handle
 			i = i | dto.EventToIntent(dto.EventC2CMsgReject)

@@ -139,5 +139,8 @@ type WSEnterAIOData EnterAIO
 // WSGroupRobotData 群机器人增减/群主动消息推送开关事件
 type WSGroupRobotData GroupRobotEvent
 
+// WSGroupMemberData 群成员进退群事件
+type WSGroupMemberData GroupMemberEvent
+
 // WSC2CManageData C2C 主动消息推送开关事件
 type WSC2CManageData C2CManageData

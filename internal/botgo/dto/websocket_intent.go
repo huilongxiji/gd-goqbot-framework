@@ -45,6 +45,11 @@ const (
 
 	IntentEnterAIO Intent = 1 << 23 // 进入aio事件
 
+	// IntentGroupMembers 群成员进退群事件
+	// - GROUP_MEMBER_ADD
+	// - GROUP_MEMBER_REMOVE
+	IntentGroupMembers Intent = 1 << 24 // 群成员进退群事件
+
 	// IntentGroupMessages 群消息事件
 	// - GROUP_AT_MESSAGE_CREATE // 群中@机器人时的消息
 	IntentGroupMessages Intent = 1 << 25 // 群消息事件

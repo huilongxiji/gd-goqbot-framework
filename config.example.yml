@@ -23,6 +23,7 @@ qq:
     # - "GroupDelRobotEventHandler"    # 机器人退群 -> notice group_decrease
     # - "GroupMsgRejectEventHandler"   # 群关闭主动消息推送 -> notice group_msg_reject(自定义)
     # - "GroupMsgReceiveEventHandler"  # 群开启主动消息推送 -> notice group_msg_receive(自定义)
+    # - "GroupMemberEventHandler"      # 群成员进退群 -> notice group_increase/decrease（intent 1<<24，需在开放平台开启群成员事件）
     # - "C2CMsgRejectEventHandler"     # 用户关闭 C2C 推送 -> notice c2c_msg_reject(自定义)
     # - "C2CMsgReceiveEventHandler"    # 用户开启 C2C 推送 -> notice c2c_msg_receive(自定义)
     # - "InteractionHandler"           # 按钮交互：回传 notice(interaction)+message 事件；自动回执(PUT interactions)消除转圈；回复自动走被动 event_id；仍可用 put_interaction 覆盖回执码

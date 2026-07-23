@@ -678,6 +678,56 @@ func (c *Converter) GroupDelRobot(data *dto.WSGroupRobotData) {
 	})
 }
 
+// GroupMemberAdd 群成员加入 -> notice/group_increase
+func (c *Converter) GroupMemberAdd(data *dto.WSGroupMemberData) {
+	if data == nil || data.MemberOpenID == "" {
+		return
+	}
+	userID := c.ids.ID(data.MemberOpenID)
+	opOpenID := data.OpMemberOpenID
+	if opOpenID == "" {
+		opOpenID = data.MemberOpenID
+	}
+	c.pushNotice(map[string]any{
+		"post_type":       "notice",
+		"notice_type":     "group_increase",
+		"sub_type":        "approve",
+		"time":            tsToUnix(data.Timestamp),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"user_id":         userID,
+		"user_openid":     data.MemberOpenID,
+		"operator_id":     c.ids.ID(opOpenID),
+		"operator_openid": opOpenID,
+	})
+}
+
+// GroupMemberRemove 群成员退出 -> notice/group_decrease
+func (c *Converter) GroupMemberRemove(data *dto.WSGroupMemberData) {
+	if data == nil || data.MemberOpenID == "" {
+		return
+	}
+	userID := c.ids.ID(data.MemberOpenID)
+	opOpenID := data.OpMemberOpenID
+	if opOpenID == "" {
+		opOpenID = data.MemberOpenID
+	}
+	c.pushNotice(map[string]any{
+		"post_type":       "notice",
+		"notice_type":     "group_decrease",
+		"sub_type":        "leave",
+		"time":            tsToUnix(data.Timestamp),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"user_id":         userID,
+		"user_openid":     data.MemberOpenID,
+		"operator_id":     c.ids.ID(opOpenID),
+		"operator_openid": opOpenID,
+	})
+}
+
 // GroupMsgReject 群关闭主动消息推送 -> notice/group_msg_reject（自定义）
 func (c *Converter) GroupMsgReject(data *dto.WSGroupRobotData) {
 	if data == nil {

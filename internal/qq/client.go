@@ -203,6 +203,19 @@ func (c *Client) registerHandlers() dto.Intent {
 					c.conv.GroupMsgReceive(data)
 					return nil
 				}))
+		case "GroupMemberEventHandler":
+			handlers = append(handlers, event.GroupMemberEventHandler(
+				func(p *dto.WSPayload, data *dto.WSGroupMemberData) error {
+					if c.debug && p != nil {
+						log.Printf("[qq] 群成员进退原始报文: %s", string(p.RawMessage))
+					}
+					if p != nil && p.Type == dto.EventGroupMemberAdd {
+						c.conv.GroupMemberAdd(data)
+					} else {
+						c.conv.GroupMemberRemove(data)
+					}
+					return nil
+				}))
 		case "C2CMsgRejectEventHandler":
 			handlers = append(handlers, event.C2CMsgRejectEventHandler(
 				func(_ *dto.WSPayload, data *dto.WSC2CManageData) error {

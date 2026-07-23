@@ -64,12 +64,14 @@ var eventParseFuncMap = map[dto.OPCode]map[dto.EventType]eventParseFunc{
 		dto.EventC2CFriendDel:         c2cFriendDelHandler,
 		dto.EventEnterAIO:             enterAIOHandler,
 
-		dto.EventGroupAddRobot:   groupAddRobotHandler,
-		dto.EventGroupDelRobot:   groupDelRobotHandler,
-		dto.EventGroupMsgReject:  groupMsgRejectHandler,
-		dto.EventGroupMsgReceive: groupMsgReceiveHandler,
-		dto.EventC2CMsgReject:    c2cMsgRejectHandler,
-		dto.EventC2CMsgReceive:   c2cMsgReceiveHandler,
+		dto.EventGroupAddRobot:     groupAddRobotHandler,
+		dto.EventGroupDelRobot:     groupDelRobotHandler,
+		dto.EventGroupMsgReject:    groupMsgRejectHandler,
+		dto.EventGroupMsgReceive:   groupMsgReceiveHandler,
+		dto.EventGroupMemberAdd:    groupMemberEventHandler,
+		dto.EventGroupMemberRemove: groupMemberEventHandler,
+		dto.EventC2CMsgReject:      c2cMsgRejectHandler,
+		dto.EventC2CMsgReceive:     c2cMsgReceiveHandler,
 	},
 }
 
@@ -415,6 +417,17 @@ func groupMsgReceiveHandler(payload *dto.WSPayload, message []byte) error {
 	}
 	if DefaultHandlers.GroupMsgReceive != nil {
 		return DefaultHandlers.GroupMsgReceive(payload, data)
+	}
+	return nil
+}
+
+func groupMemberEventHandler(payload *dto.WSPayload, message []byte) error {
+	data := &dto.WSGroupMemberData{}
+	if err := ParseData(message, data); err != nil {
+		return err
+	}
+	if DefaultHandlers.GroupMember != nil {
+		return DefaultHandlers.GroupMember(payload, data)
 	}
 	return nil
 }
