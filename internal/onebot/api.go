@@ -293,23 +293,23 @@ func partSummary(out *OutMessage) string {
 	return strings.Join(parts, ", ")
 }
 
-// sendMode 描述发送模式：被动(msg_id/event)/互动召回/主动；带引用时附加 +引用
+// sendMode 描述发送模式：被动(msg_id/event)/互动召回/主动，并标注是否带 message_reference 引用。
 func sendMode(out *OutMessage) string {
-	var mode string
+	var base string
 	switch {
 	case out.IsWakeup:
-		mode = "互动召回(is_wakeup)"
+		base = "互动召回(is_wakeup)"
 	case out.EventID != "":
-		mode = "被动(event) " + midEllipsis(out.EventID, 14, 8)
+		base = "被动(event) " + midEllipsis(out.EventID, 14, 8)
 	case out.MsgID != "":
-		mode = "被动 msg_id=" + midEllipsis(out.MsgID, 14, 8)
+		base = "被动 msg_id=" + midEllipsis(out.MsgID, 14, 8)
 	default:
-		mode = "主动"
+		base = "主动"
 	}
 	if out.RefMsgID != "" {
-		mode += " +引用"
+		base += " +引用=" + midEllipsis(out.RefMsgID, 14, 8)
 	}
-	return mode
+	return base
 }
 
 // ok 构造 OneBot 成功响应（status=ok, retcode=0）
@@ -562,9 +562,30 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				out.Parts = append(out.Parts, MessagePart{Kind: PartMarkdown, Markdown: md, Keyboard: kb})
 			}
 		case "reply":
-			if meta, found := c.ids.Msg(data.Get("id").Int()); found && meta.MsgID != "" {
-				out.MsgID = meta.MsgID   // 占用被动回复窗口（兼容既有语义）
-				out.RefMsgID = meta.MsgID // 额外设置 message_reference 产生可见引用气泡
+			// NoneBot MessageSegment.reply 的 id 多为字符串；兼容数字
+			rid := data.Get("id").Int()
+			if rid == 0 {
+				if s := strings.TrimSpace(data.Get("id").String()); s != "" {
+					rid, _ = strconv.ParseInt(s, 10, 64)
+				}
+			}
+			if rid == 0 {
+				log.Printf("[onebot] reply 段缺少有效 id，原始 data=%s", data.Raw)
+				break
+			}
+			if meta, found := c.ids.Msg(rid); found && meta.MsgID != "" {
+				// 被动 msg_id（ROBOT1.0_）占用 5 分钟被动回复窗口；
+				// message_reference 须用 REFIDX 引用索引令牌（来自入站 msg_idx）才能在群/单聊渲染「引用」气泡，
+				// 用 ROBOT1.0_ 消息 id 平台虽返回 200 但不渲染（对齐 nonebot-adapter-qq 实现）。
+				out.MsgID = meta.MsgID
+				out.RefMsgID = meta.RefIdx
+				if meta.RefIdx != "" {
+					log.Printf("[onebot] reply 命中缓存 message_id=%d → 被动 msg_id=%s，引用 REFIDX=%s", rid, meta.MsgID, meta.RefIdx)
+				} else {
+					log.Printf("[onebot] reply 命中缓存 message_id=%d → 被动 msg_id=%s，但无 REFIDX（该消息未带 msg_idx，无法渲染引用气泡）", rid, meta.MsgID)
+				}
+			} else {
+				log.Printf("[onebot] reply 段 message_id=%d 未命中本机缓存，无法引用（将退化为主动消息）", rid)
 			}
 		}
 	}

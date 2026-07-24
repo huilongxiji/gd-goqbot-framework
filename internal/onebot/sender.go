@@ -33,10 +33,10 @@ type MessagePart struct {
 
 // OutMessage 已解析、openid 已就绪的发送请求，Parts 保持 OneBot 段的原始顺序
 type OutMessage struct {
-	MsgID    string // 被动回复目标 QQ msg_id，可空
+	MsgID    string // 被动回复目标 QQ msg_id，可空；用于占用被动回复窗口（5 分钟时效）
 	EventID  string // 被动回复目标 event_id（互动事件），可空；与 MsgID 二选一，都空=主动消息
+	RefMsgID string // 引用回复目标 QQ msg_id，可空；置入 message_reference 渲染「引用」气泡
 	IsWakeup bool   // 单聊互动召回消息：与 MsgID/EventID 互斥，仅 C2C 生效
-	RefMsgID string // 要引用的 QQ 原始 msg_id（message_reference 引用气泡），可空
 	Parts    []MessagePart
 }
 

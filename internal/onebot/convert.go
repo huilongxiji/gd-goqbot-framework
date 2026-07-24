@@ -308,6 +308,20 @@ func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, stri
 	return segs, raw.String()
 }
 
+// refIdxFromScene 从 message_scene.ext 提取 msg_idx 的引用索引令牌（REFIDX_...）。
+// 群/单聊的 message_reference 必须用它渲染「引用」气泡，而非 ROBOT1.0_ 消息 id。
+func refIdxFromScene(data *dto.Message) string {
+	if data == nil {
+		return ""
+	}
+	for _, ext := range data.MessageScene.Ext {
+		if v, ok := strings.CutPrefix(ext, "msg_idx="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // Group 处理群 @ 消息（GROUP_AT_MESSAGE_CREATE）
 func (c *Converter) Group(data *dto.Message) {
 	if data == nil || userOpenIDOf(data) == "" {
@@ -328,6 +342,7 @@ func (c *Converter) Group(data *dto.Message) {
 	c.ids.StoreLazyGroup(groupOpenID, userOpenID, data.ID)
 	msgID := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID:       data.ID,
+		RefIdx:      refIdxFromScene(data),
 		GroupOpenID: groupOpenID,
 		UserOpenID:  userOpenID,
 		Scene:       idmap.SceneGroup,
@@ -358,6 +373,7 @@ func (c *Converter) GroupAll(data *dto.Message) {
 	c.ids.StoreLazyGroup(groupOpenID, userOpenID, data.ID)
 	msgID := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID:       data.ID,
+		RefIdx:      refIdxFromScene(data),
 		GroupOpenID: groupOpenID,
 		UserOpenID:  userOpenID,
 		Scene:       idmap.SceneGroup,
@@ -467,6 +483,7 @@ func (c *Converter) C2C(data *dto.Message) {
 	c.ids.StoreLazyC2C(userOpenID, data.ID)
 	msgID := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID:      data.ID,
+		RefIdx:     refIdxFromScene(data),
 		UserOpenID: userOpenID,
 		Scene:      idmap.SceneC2C,
 		Time:       time.Now(),

@@ -54,7 +54,7 @@ const (
 // MessageToCreate 发送消息结构体定义
 type MessageToCreate struct {
 	Content string      `json:"content,omitempty"`
-	MsgType MessageType `json:"msg_type,omitempty"` //消息类型: 0:文字消息, 2: md消息
+	MsgType MessageType `json:"msg_type"` // 消息类型: 0 文本, 2 md, 3 ark, 4 embed, 7 media；群/单聊接口必填，勿 omitempty（0 会被丢掉）
 	Embed   *Embed      `json:"embed,omitempty"`
 	Ark     *Ark        `json:"ark,omitempty"`
 	Image   string      `json:"image,omitempty"`

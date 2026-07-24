@@ -36,7 +36,8 @@ const (
 
 // MsgMeta 收到的 QQ 消息元信息，供发送侧被动回复使用
 type MsgMeta struct {
-	MsgID       string // QQ 原始消息 id
+	MsgID       string // QQ 原始消息 id（ROBOT1.0_...），用于占用被动回复窗口
+	RefIdx      string // 引用索引令牌（REFIDX_...，来自 message_scene.ext 的 msg_idx）；群/单聊 message_reference 须用它
 	GroupOpenID string
 	UserOpenID  string
 	Scene       Scene

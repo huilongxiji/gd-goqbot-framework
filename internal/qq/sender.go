@@ -69,6 +69,15 @@ func (s *sender) seqFor(key string) uint32 {
 	return s.ids.NextSeq(key)
 }
 
+// msgReference 构造 message_reference；refMsgID 为空返回 nil（omitempty 省略）。
+// ignore_get_message_error=true：即使拉取被引用消息详情失败也照常下发本条消息，不整条丢弃。
+func msgReference(refMsgID string) *dto.MessageReference {
+	if refMsgID == "" {
+		return nil
+	}
+	return &dto.MessageReference{MessageID: refMsgID, IgnoreGetMessageError: true}
+}
+
 // ---- 群聊 ----
 
 // uploadGroupImage 把图片上传为群富媒体（不立即发送），返回 file_info 供后续发送引用
@@ -86,15 +95,8 @@ func (s *sender) uploadGroupImage(ctx context.Context, groupOpenID string, img o
 	return resp.FileInfo, nil
 }
 
-// msgReference 由要引用的 QQ msg_id 构造 message_reference（忽略取详情错误以免整条发不出），空则返回 nil
-func msgReference(refMsgID string) *dto.MessageReference {
-	if refMsgID == "" {
-		return nil
-	}
-	return &dto.MessageReference{MessageID: refMsgID, IgnoreGetMessageError: true}
-}
-
-// sendGroupText 发送群文本消息，返回 QQ 消息 id
+// sendGroupText 发送群文本消息，返回 QQ 消息 id。
+// 被动 msgID 占用被动回复窗口；refMsgID 非空时置入 message_reference 渲染「引用」气泡。
 func (s *sender) sendGroupText(ctx context.Context, groupOpenID, msgID, eventID, refMsgID, content string) (string, error) {
 	m := &dto.MessageToCreate{
 		Content:          content,
@@ -131,18 +133,18 @@ func (s *sender) sendGroupMedia(ctx context.Context, groupOpenID, msgID, eventID
 	return resp.ID, nil
 }
 
-// sendGroupMarkdown 发送群 markdown 消息（可带 keyboard 按钮）
-func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, eventID, refMsgID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
+// sendGroupMarkdown 发送群 markdown 消息（可带 keyboard 按钮）。
+// 注意：markdown 不能附带 message_reference——群内二者同发会被平台降级成未渲染的纯文本。
+func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, eventID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:          "markdown",
-		MsgType:          dto.MarkdownMsg,
-		Markdown:         md,
-		Keyboard:         kb,
-		MsgID:            msgID,
-		EventID:          eventID,
-		MessageReference: msgReference(refMsgID),
-		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
-		Timestamp:        time.Now().Unix(),
+		Content:   "markdown",
+		MsgType:   dto.MarkdownMsg,
+		Markdown:  md,
+		Keyboard:  kb,
+		MsgID:     msgID,
+		EventID:   eventID,
+		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
+		Timestamp: time.Now().Unix(),
 	}
 	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, m)
 	if err != nil {
@@ -151,7 +153,8 @@ func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, even
 	return resp.ID, nil
 }
 
-// SendGroup 发群消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送
+// SendGroup 发群消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送。
+// 引用气泡只加在首条已发消息上，避免多段回复出现多个引用。
 func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.OutMessage) (string, error) {
 	if text, img, ok := combineParts(msg); ok {
 		fi, err := s.uploadGroupImage(ctx, groupOpenID, *img)
@@ -165,29 +168,33 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 		return s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, content, fi)
 	}
 	var lastID string
+	ref := msg.RefMsgID // 仅首条已发消息带引用，发出后清空
 	for _, p := range msg.Parts {
 		switch p.Kind {
 		case onebot.PartText:
 			if p.Text == "" {
 				continue
 			}
-			id, err := s.sendGroupText(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, p.Text)
+			id, err := s.sendGroupText(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, p.Text)
 			if err != nil {
 				return "", err
 			}
+			ref = ""
 			lastID = id
 		case onebot.PartImage:
 			fi, err := s.uploadGroupImage(ctx, groupOpenID, p.Image)
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, " ", fi)
+			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, " ", fi)
 			if err != nil {
 				return "", err
 			}
+			ref = ""
 			lastID = id
 		case onebot.PartMarkdown:
-			id, err := s.sendGroupMarkdown(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, p.Markdown, p.Keyboard)
+			// markdown 不带引用（见 sendGroupMarkdown 注释），故不消费 ref
+			id, err := s.sendGroupMarkdown(ctx, groupOpenID, msg.MsgID, msg.EventID, p.Markdown, p.Keyboard)
 			if err != nil {
 				return "", err
 			}
@@ -215,14 +222,14 @@ func (s *sender) uploadC2CImage(ctx context.Context, userOpenID string, img oneb
 }
 
 // sendC2CText 发送单聊文本消息，返回 QQ 消息 id
-func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, refMsgID, content string) (string, error) {
+func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID, refMsgID string, isWakeup bool, content string) (string, error) {
 	m := &dto.MessageToCreate{
 		Content:          content,
 		MsgType:          dto.TextMsg,
 		MsgID:            msgID,
 		EventID:          eventID,
-		IsWakeup:         isWakeup,
 		MessageReference: msgReference(refMsgID),
+		IsWakeup:         isWakeup,
 		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
 		Timestamp:        time.Now().Unix(),
 	}
@@ -234,15 +241,15 @@ func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID str
 }
 
 // sendC2CMedia 用已上传的 file_info 发送单聊富媒体（图片等）消息
-func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, refMsgID, content string, fileInfo []byte) (string, error) {
+func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID, refMsgID string, isWakeup bool, content string, fileInfo []byte) (string, error) {
 	m := &dto.MessageToCreate{
 		Content:          content,
 		MsgType:          dto.RichMediaMsg,
 		Media:            &dto.MediaInfo{FileInfo: fileInfo},
 		MsgID:            msgID,
 		EventID:          eventID,
-		IsWakeup:         isWakeup,
 		MessageReference: msgReference(refMsgID),
+		IsWakeup:         isWakeup,
 		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
 		Timestamp:        time.Now().Unix(),
 	}
@@ -253,19 +260,19 @@ func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID st
 	return resp.ID, nil
 }
 
-// sendC2CMarkdown 发送单聊 markdown 消息（可带 keyboard 按钮）
-func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, refMsgID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
+// sendC2CMarkdown 发送单聊 markdown 消息（可带 keyboard 按钮）。
+// 注意：markdown 不能附带 message_reference——与群同理，二者同发会被降级成未渲染的纯文本。
+func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, error) {
 	m := &dto.MessageToCreate{
-		Content:          "markdown",
-		MsgType:          dto.MarkdownMsg,
-		Markdown:         md,
-		Keyboard:         kb,
-		MsgID:            msgID,
-		EventID:          eventID,
-		IsWakeup:         isWakeup,
-		MessageReference: msgReference(refMsgID),
-		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
-		Timestamp:        time.Now().Unix(),
+		Content:   "markdown",
+		MsgType:   dto.MarkdownMsg,
+		Markdown:  md,
+		Keyboard:  kb,
+		MsgID:     msgID,
+		EventID:   eventID,
+		IsWakeup:  isWakeup,
+		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
+		Timestamp: time.Now().Unix(),
 	}
 	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
 	if err != nil {
@@ -285,32 +292,36 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 		if content == "" {
 			content = " "
 		}
-		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, content, fi)
+		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, msg.IsWakeup, content, fi)
 	}
 	var lastID string
+	ref := msg.RefMsgID // 仅首条已发消息带引用，发出后清空
 	for _, p := range msg.Parts {
 		switch p.Kind {
 		case onebot.PartText:
 			if p.Text == "" {
 				continue
 			}
-			id, err := s.sendC2CText(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, p.Text)
+			id, err := s.sendC2CText(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, p.Text)
 			if err != nil {
 				return "", err
 			}
+			ref = ""
 			lastID = id
 		case onebot.PartImage:
 			fi, err := s.uploadC2CImage(ctx, userOpenID, p.Image)
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, " ", fi)
+			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, " ", fi)
 			if err != nil {
 				return "", err
 			}
+			ref = ""
 			lastID = id
 		case onebot.PartMarkdown:
-			id, err := s.sendC2CMarkdown(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, msg.RefMsgID, p.Markdown, p.Keyboard)
+			// markdown 不带引用（见 sendC2CMarkdown 注释），故不消费 ref
+			id, err := s.sendC2CMarkdown(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, p.Markdown, p.Keyboard)
 			if err != nil {
 				return "", err
 			}
