@@ -135,55 +135,204 @@ func (c *Converter) markSeen(qqMsgID string) bool {
 	return false
 }
 
-// recentMsgSplitRE 按 "=== 消息 N ===" 分块（最近十条 msg_elements 摘要）
+// recentMsgSplitRE 按 "=== 消息 N ===" 分块（102 聊天记录 / 103 最近十条摘要共用）
 var recentMsgSplitRE = regexp.MustCompile(`(?s)===\s*消息\s*\d+\s*===`)
 
-// parseRecentMessages 解析「最近十条」msg_elements 文本摘要为结构化数组。
-// 每条仅能拿到 content(文本) 与 sender(昵称)；其余字段 QQ 不提供。
-func (c *Converter) parseRecentMessages(elements []*dto.MsgElement) []map[string]any {
-	var out []map[string]any
-	idx := 0
-	for _, el := range elements {
-		if el == nil || el.Content == "" {
-			continue
-		}
-		for _, blk := range recentMsgSplitRE.Split(el.Content, -1) {
-			blk = strings.TrimSpace(blk)
-			if blk == "" {
-				continue
-			}
-			content, sender := parseRecentBlock(blk)
-			if content == "" && sender == "" {
-				continue
-			}
-			idx++
-			out = append(out, map[string]any{
-				"index":   idx,
-				"sender":  sender,
-				"content": content,
-				"message": c.messageField(Message{{Type: "text", Data: map[string]any{"text": content}}}, content),
-			})
-		}
-	}
-	return out
+// faceMarkupRE 剥离 QQ 摘要内联表情标记 <faceType=...>
+var faceMarkupRE = regexp.MustCompile(`<faceType=[^>]*>`)
+
+// attachLineRE 匹配摘要中的附件行：[附件N] 类型:图片 ... URL:https://...
+var attachLineRE = regexp.MustCompile(`\[附件\d+\]\s*类型:(\S+)\s+.*?URL:(\S+)`)
+
+// forwardBlock 合并转发摘要中的单条消息
+type forwardBlock struct {
+	Content string          // 正文文本（已剥离 face 标记）
+	Sender  string          // 发送者昵称，103 场景常为空
+	Atts    []forwardAttach // 附件（102 可能有）
 }
 
-// parseRecentBlock 从单块中提取 [消息内容] 与 [发送者]
-func parseRecentBlock(blk string) (content, sender string) {
+// forwardAttach 摘要文本中解析出的附件
+type forwardAttach struct {
+	Type string // 图片 / 视频 / 语音 等
+	URL  string
+}
+
+// forwardSummaryOf 取 QQ 102/103 合并转发摘要纯文本。
+// 103：来自 msg_elements；102：来自顶层 content；兜底：content 含「=== 消息」亦视为摘要。
+func forwardSummaryOf(data *dto.Message) (text string, ok bool) {
+	if data == nil {
+		return "", false
+	}
+	switch {
+	case data.QQMessageType == 103 || len(data.MsgElements) > 0:
+		var b strings.Builder
+		for _, el := range data.MsgElements {
+			if el == nil || el.Content == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(el.Content)
+		}
+		text = b.String()
+		if text != "" {
+			return text, true
+		}
+	case data.QQMessageType == 102:
+		if strings.Contains(data.Content, "=== 消息") || strings.Contains(data.Content, "的聊天记录]") {
+			return data.Content, true
+		}
+	}
+	if strings.Contains(data.Content, "=== 消息") {
+		return data.Content, true
+	}
+	return "", false
+}
+
+// parseForwardSummary 统一解析 102/103 摘要纯文本为标题 + 分块。
+func parseForwardSummary(text string) (title string, blocks []forwardBlock) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", nil
+	}
+	loc := recentMsgSplitRE.FindStringIndex(text)
+	if loc != nil && loc[0] > 0 {
+		head := strings.TrimSpace(text[:loc[0]])
+		if strings.HasPrefix(head, "[") && strings.HasSuffix(head, "的聊天记录]") {
+			title = strings.TrimSuffix(strings.TrimPrefix(head, "["), "]")
+		}
+	}
+	for _, blk := range recentMsgSplitRE.Split(text, -1) {
+		blk = strings.TrimSpace(blk)
+		if blk == "" {
+			continue
+		}
+		fb := parseForwardBlock(blk)
+		if fb.Content == "" && fb.Sender == "" && len(fb.Atts) == 0 {
+			continue
+		}
+		blocks = append(blocks, fb)
+	}
+	return title, blocks
+}
+
+// parseForwardBlock 从单块提取 [消息内容]、[发送者]（按行）、[附件N]
+func parseForwardBlock(blk string) forwardBlock {
 	const cMark, sMark = "[消息内容]", "[发送者]"
+	var fb forwardBlock
+
+	// 先抽附件行，避免并入正文/发送者
+	for _, m := range attachLineRE.FindAllStringSubmatch(blk, -1) {
+		if len(m) >= 3 {
+			fb.Atts = append(fb.Atts, forwardAttach{Type: m[1], URL: m[2]})
+		}
+	}
+	blk = attachLineRE.ReplaceAllString(blk, "")
+
 	ci := strings.Index(blk, cMark)
-	si := strings.LastIndex(blk, sMark)
+	si := strings.Index(blk, sMark)
 	if ci >= 0 {
 		end := len(blk)
 		if si > ci {
 			end = si
 		}
-		content = strings.TrimSpace(blk[ci+len(cMark) : end])
+		content := strings.TrimSpace(blk[ci+len(cMark) : end])
+		content = faceMarkupRE.ReplaceAllString(content, "")
+		fb.Content = strings.TrimSpace(content)
 	}
 	if si >= 0 {
-		sender = strings.TrimSpace(blk[si+len(sMark):])
+		rest := blk[si+len(sMark):]
+		// 只取该行昵称，不贪到后续行
+		if i := strings.IndexAny(rest, "\r\n"); i >= 0 {
+			rest = rest[:i]
+		}
+		fb.Sender = strings.TrimSpace(rest)
 	}
-	return
+	return fb
+}
+
+// buildForwardNodes 把摘要分块转为 OneBot v11 node 数组
+func buildForwardNodes(blocks []forwardBlock, ts int64) []map[string]any {
+	nodes := make([]map[string]any, 0, len(blocks))
+	for _, b := range blocks {
+		var segs Message
+		if b.Content != "" {
+			segs = append(segs, Segment{Type: "text", Data: map[string]any{"text": b.Content}})
+		}
+		for _, a := range b.Atts {
+			url := a.URL
+			if url == "" {
+				continue
+			}
+			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+				url = "https://" + url
+			}
+			typ := "image"
+			switch {
+			case strings.Contains(a.Type, "视频"):
+				typ = "video"
+			case strings.Contains(a.Type, "语音"), strings.Contains(a.Type, "音频"):
+				typ = "record"
+			}
+			segs = append(segs, Segment{Type: typ, Data: map[string]any{"url": url, "file": url}})
+		}
+		if len(segs) == 0 {
+			segs = Message{{Type: "text", Data: map[string]any{"text": ""}}}
+		}
+		nick := b.Sender
+		if nick == "" {
+			nick = "群消息"
+		}
+		nodes = append(nodes, map[string]any{
+			"type": "node",
+			"data": map[string]any{
+				"user_id":  int64(0),
+				"nickname": nick,
+				"content":  segs,
+				"time":     ts,
+			},
+		})
+	}
+	return nodes
+}
+
+// parseRecentMessages 兼容旧字段：从 msg_elements 解析 recent_messages（103 向后兼容）
+func (c *Converter) parseRecentMessages(elements []*dto.MsgElement) []map[string]any {
+	var b strings.Builder
+	for _, el := range elements {
+		if el == nil || el.Content == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(el.Content)
+	}
+	_, blocks := parseForwardSummary(b.String())
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(blocks))
+	for i, fb := range blocks {
+		out = append(out, map[string]any{
+			"index":   i + 1,
+			"sender":  fb.Sender,
+			"content": fb.Content,
+			"message": c.messageField(Message{{Type: "text", Data: map[string]any{"text": fb.Content}}}, fb.Content),
+		})
+	}
+	return out
+}
+
+// eventUnix 取事件时间秒级 unix，解析失败则用当前时间
+func eventUnix(data *dto.Message) int64 {
+	if data != nil {
+		if t, err := data.Timestamp.Time(); err == nil && !t.IsZero() {
+			return t.Unix()
+		}
+	}
+	return time.Now().Unix()
 }
 
 // mentionedSelf 全量群消息 payload 中是否 @ 了当前机器人
@@ -400,6 +549,43 @@ func roleOf(data *dto.Message) string {
 }
 
 func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID string, groupID, userID, msgID int64, segs Message, raw string) {
+	// 102 聊天记录 / 103 最近十条：统一解析为 OneBot forward 段
+	var fwdTitle string
+	var fwdNodes []map[string]any
+	if summary, ok := forwardSummaryOf(data); ok {
+		title, blocks := parseForwardSummary(summary)
+		if len(blocks) > 0 {
+			fwdTitle = title
+			fwdNodes = buildForwardNodes(blocks, eventUnix(data))
+			fwdID := data.ID
+			if c.caller != nil {
+				c.caller.CacheForward(fwdID, fwdNodes)
+			}
+			fwdSeg := Segment{Type: "forward", Data: map[string]any{
+				"id":      fwdID,
+				"content": fwdNodes,
+			}}
+			fwdCQ := "[CQ:forward,id=" + cqEscape(fwdID) + "]"
+			if len(data.MsgElements) > 0 {
+				// 103 最近十条：content 是用户 @ 命令文本，msg_elements 才是附带上下文。
+				// 保留原文本段（命令仍可匹配），把 forward 追加在末尾。
+				segs = append(segs, fwdSeg)
+				if raw != "" {
+					raw += fwdCQ
+				} else {
+					raw = fwdCQ
+				}
+			} else {
+				// 102 全量聊天记录：content 本身就是整份记录，替换为单个 forward 段。
+				segs = Message{fwdSeg}
+				raw = fwdCQ
+				if fwdTitle != "" {
+					raw = "[" + fwdTitle + "]" + raw
+				}
+			}
+		}
+	}
+
 	ev := map[string]any{
 		"post_type":       "message",
 		"message_type":    "group",
@@ -433,6 +619,34 @@ func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID 
 	addUnionOpenID(ev, unionOpenIDOf(data))
 	if rm := c.parseRecentMessages(data.MsgElements); len(rm) > 0 {
 		ev["recent_messages"] = rm
+	}
+	// 102 无 msg_elements 时，也把分块结果挂到 recent_messages，便于下游统一消费
+	if len(fwdNodes) > 0 && ev["recent_messages"] == nil {
+		rm := make([]map[string]any, 0, len(fwdNodes))
+		for i, n := range fwdNodes {
+			dataMap, _ := n["data"].(map[string]any)
+			sender, _ := dataMap["nickname"].(string)
+			content := ""
+			if segs, ok := dataMap["content"].(Message); ok {
+				for _, s := range segs {
+					if s.Type == "text" {
+						if t, ok := s.Data["text"].(string); ok {
+							content += t
+						}
+					}
+				}
+			}
+			rm = append(rm, map[string]any{
+				"index":   i + 1,
+				"sender":  sender,
+				"content": content,
+				"message": dataMap["content"],
+			})
+		}
+		ev["recent_messages"] = rm
+	}
+	if fwdTitle != "" {
+		ev["forward_title"] = fwdTitle
 	}
 	for k, v := range c.messageCQField(raw) {
 		ev[k] = v
@@ -570,8 +784,13 @@ func (c *Converter) logRecvMessage(scene string, sceneID int64, data *dto.Messag
 	}
 	blk.Row("段", segTypes(segs))
 	if data.QQMessageType != 0 || len(data.MsgElements) > 0 {
-		blk.Row("QQ类型", fmt.Sprintf("%d  msg_elements×%d  recent×%d",
-			data.QQMessageType, len(data.MsgElements), len(c.parseRecentMessages(data.MsgElements))))
+		nBlocks := 0
+		if summary, ok := forwardSummaryOf(data); ok {
+			_, blocks := parseForwardSummary(summary)
+			nBlocks = len(blocks)
+		}
+		blk.Row("QQ类型", fmt.Sprintf("%d  msg_elements×%d  forward×%d",
+			data.QQMessageType, len(data.MsgElements), nBlocks))
 	}
 	blk.Row("msgid", fmt.Sprintf("%d  %s", msgID, prettylog.Dim("QQ "+midEllipsis(data.ID, 14, 8))))
 	if fellBack {

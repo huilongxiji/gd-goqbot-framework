@@ -26,6 +26,9 @@ import (
 // msgCacheLimit get_msg 内存缓存的最大条数，超出按 FIFO 淘汰最早的
 const msgCacheLimit = 10000
 
+// fwdCacheLimit get_forward_msg 内存缓存的最大条数，超出按 FIFO 淘汰最早的
+const fwdCacheLimit = 1000
+
 // Caller OneBot v11 API 动作调用器
 type Caller struct {
 	mu         sync.RWMutex   // 保护下列可在运行期被注入/更新的字段
@@ -44,6 +47,10 @@ type Caller struct {
 	cacheMu    sync.RWMutex
 	msgCache   map[int64]map[string]any
 	cacheOrder []int64 // 插入顺序，用于上限淘汰
+
+	// get_forward_msg 内存缓存：forward id (QQ msg_id) -> node 数组
+	fwdCache map[string][]map[string]any
+	fwdOrder []string
 }
 
 // NewCaller 创建 API 调用器
@@ -56,6 +63,7 @@ func NewCaller(selfID int64, appID string, ids *idmap.Store, debug bool, appName
 		ids:        ids,
 		debug:      debug,
 		msgCache:   make(map[int64]map[string]any),
+		fwdCache:   make(map[string][]map[string]any),
 	}
 }
 
@@ -75,6 +83,32 @@ func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 		}
 	}
 	c.msgCache[id] = snap
+}
+
+// CacheForward 缓存合并转发节点，供 get_forward_msg 取回（有界，FIFO 淘汰）
+func (c *Caller) CacheForward(id string, nodes []map[string]any) {
+	if id == "" || len(nodes) == 0 {
+		return
+	}
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if _, exists := c.fwdCache[id]; !exists {
+		c.fwdOrder = append(c.fwdOrder, id)
+		for len(c.fwdOrder) > fwdCacheLimit {
+			oldest := c.fwdOrder[0]
+			c.fwdOrder = c.fwdOrder[1:]
+			delete(c.fwdCache, oldest)
+		}
+	}
+	c.fwdCache[id] = nodes
+}
+
+// getForward 按 forward id 取回缓存的节点数组
+func (c *Caller) getForward(id string) ([]map[string]any, bool) {
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+	nodes, ok := c.fwdCache[id]
+	return nodes, ok
 }
 
 // getCachedMsg 按 message_id 取回缓存的事件快照
@@ -179,6 +213,8 @@ func (c *Caller) Call(action string, params gjson.Result) map[string]any {
 		return c.deleteMsg(params)
 	case "get_msg":
 		return c.getMsg(params)
+	case "get_forward_msg":
+		return c.getForwardMsg(params)
 	case "get_openid":
 		return c.getOpenid(params)
 	case "get_gateway", "get_gateway_bot", "_get_gateway", "get_session_limit":
@@ -221,6 +257,22 @@ func (c *Caller) getMsg(params gjson.Result) map[string]any {
 		return failed(1404, "消息不存在或未缓存")
 	}
 	return ok(snap)
+}
+
+// getForwardMsg 按 forward id 取回合并转发节点（go-cqhttp/NoneBot 兼容 messages 字段）
+func (c *Caller) getForwardMsg(params gjson.Result) map[string]any {
+	id := strings.TrimSpace(params.Get("id").String())
+	if id == "" {
+		id = strings.TrimSpace(params.Get("message_id").String())
+	}
+	if id == "" {
+		return failed(1400, "缺少 id")
+	}
+	nodes, found := c.getForward(id)
+	if !found || len(nodes) == 0 {
+		return failed(1404, "未知 forward id")
+	}
+	return ok(map[string]any{"messages": nodes})
 }
 
 // getGateway 查询 /gateway/bot，返回 ws 接入点与连接频控（剩余可建连次数等）
