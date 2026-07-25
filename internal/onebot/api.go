@@ -350,6 +350,12 @@ func partSummary(out *OutMessage) string {
 func sendMode(out *OutMessage) string {
 	var base string
 	switch {
+	case out.Stream != nil:
+		base = fmt.Sprintf("流式(state=%d,index=%d)", out.Stream.State, out.Stream.Index)
+		if out.Stream.ID != "" {
+			base += " id=" + midEllipsis(out.Stream.ID, 14, 8)
+		}
+		return base
 	case out.IsWakeup:
 		base = "互动召回(is_wakeup)"
 	case out.EventID != "":
@@ -518,7 +524,12 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		MsgID: qqMsgID, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(),
 	})
 	logSend(action, "私聊", userID, out, qqMsgID, mid, start, nil)
-	return ok(map[string]any{"message_id": mid})
+	data := map[string]any{"message_id": mid}
+	if out.Stream != nil {
+		// 流式：把原始 QQ 消息 id 作为 stream_id 回传，供插件在后续分片的 stream.id 里回填
+		data["stream_id"] = qqMsgID
+	}
+	return ok(data)
 }
 
 // ackInteraction 回执互动事件（按钮点击），由 NoneBot 决定 code（默认 0=成功）
@@ -653,6 +664,15 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 			if md, kb := parseMarkdownSeg(data); md != nil {
 				flushText()
 				out.Parts = append(out.Parts, MessagePart{Kind: PartMarkdown, Markdown: md, Keyboard: kb})
+			}
+		case "stream":
+			// 流式消息（仅 C2C）：state 1正文生成中/10正文结束/11引导生成中/20引导结束；
+			// 首帧不填 id，后续帧回传首帧返回的 stream_id，index 从 1 递增。分片文本走相邻 text 段。
+			out.Stream = &dto.Stream{
+				State: int32(data.Get("state").Int()),
+				ID:    data.Get("id").String(),
+				Index: int32(data.Get("index").Int()),
+				Reset: data.Get("reset").Bool(),
 			}
 		case "reply":
 			// NoneBot MessageSegment.reply 的 id 多为字符串；兼容数字

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -248,6 +249,9 @@ func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, even
 // SendGroup 发群消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送。
 // 引用气泡只加在首条已发消息上，避免多段回复出现多个引用。
 func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.OutMessage) (string, error) {
+	if msg.Stream != nil {
+		log.Printf("[qq] 群聊不支持流式消息（stream 仅 C2C），已忽略 stream 参数按普通消息发送")
+	}
 	if text, img, ok := combineParts(msg); ok {
 		fi, err := s.uploadGroupImage(ctx, groupOpenID, *img)
 		if err != nil {
@@ -392,6 +396,26 @@ func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID, re
 	return resp.ID, nil
 }
 
+// sendC2CStream 发送单聊流式文本分片（msg_type=0 + stream）。
+// 首帧 stream.ID 为空，返回的 resp.ID 即流式 ID，需由下游回传到后续帧的 stream.id。
+func (s *sender) sendC2CStream(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, content string, stream *dto.Stream) (string, error) {
+	m := &dto.MessageToCreate{
+		Content:   content,
+		MsgType:   dto.TextMsg,
+		MsgID:     msgID,
+		EventID:   eventID,
+		IsWakeup:  isWakeup,
+		Stream:    stream,
+		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
+		Timestamp: time.Now().Unix(),
+	}
+	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
 // sendC2CMedia 用已上传的 file_info 发送单聊富媒体（图片等）消息
 func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID, refMsgID string, isWakeup bool, content string, fileInfo []byte) (string, error) {
 	m := &dto.MessageToCreate{
@@ -435,6 +459,16 @@ func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID
 
 // SendC2C 发单聊消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送
 func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.OutMessage) (string, error) {
+	// 流式消息（仅 C2C）：整条按一帧分片发送，内容取所有文本段拼接，跳过常规逐段逻辑
+	if msg.Stream != nil {
+		var b strings.Builder
+		for _, p := range msg.Parts {
+			if p.Kind == onebot.PartText {
+				b.WriteString(p.Text)
+			}
+		}
+		return s.sendC2CStream(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, b.String(), msg.Stream)
+	}
 	if text, img, ok := combineParts(msg); ok {
 		fi, err := s.uploadC2CImage(ctx, userOpenID, *img)
 		if err != nil {
