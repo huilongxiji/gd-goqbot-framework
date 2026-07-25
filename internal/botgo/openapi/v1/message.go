@@ -1,10 +1,13 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/tidwall/gjson"
@@ -191,6 +194,107 @@ func (o *openAPI) PostC2CMessage(ctx context.Context, userID string, msg dto.API
 		return nil, err
 	}
 	return resp.Result().(*dto.Message), nil
+}
+
+// ---- 富媒体分片上传 ----
+
+// PostGroupUploadPrepare 群分片上传-准备，返回 upload_id 与预签名分片列表
+func (o *openAPI) PostGroupUploadPrepare(ctx context.Context, groupID string, req *dto.RichMediaPrepareReq,
+	opt ...options.Option) (*dto.RichMediaPrepareResp, error) {
+	reqCMD := o.request(ctx).
+		SetResult(dto.RichMediaPrepareResp{}).
+		SetPathParam("group_id", groupID).
+		SetBody(req)
+	resp, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(groupUploadPrepareURI), opt...)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.RichMediaPrepareResp), nil
+}
+
+// PostC2CUploadPrepare 单聊分片上传-准备
+func (o *openAPI) PostC2CUploadPrepare(ctx context.Context, userID string, req *dto.RichMediaPrepareReq,
+	opt ...options.Option) (*dto.RichMediaPrepareResp, error) {
+	reqCMD := o.request(ctx).
+		SetResult(dto.RichMediaPrepareResp{}).
+		SetPathParam("user_id", userID).
+		SetBody(req)
+	resp, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(c2cUploadPrepareURI), opt...)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.RichMediaPrepareResp), nil
+}
+
+// PostGroupUploadPartFinish 群分片上传-单片完成确认
+func (o *openAPI) PostGroupUploadPartFinish(ctx context.Context, groupID string, req *dto.RichMediaPartFinishReq,
+	opt ...options.Option) error {
+	reqCMD := o.request(ctx).
+		SetPathParam("group_id", groupID).
+		SetBody(req)
+	_, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(groupUploadPartFinishURI), opt...)
+	return err
+}
+
+// PostC2CUploadPartFinish 单聊分片上传-单片完成确认
+func (o *openAPI) PostC2CUploadPartFinish(ctx context.Context, userID string, req *dto.RichMediaPartFinishReq,
+	opt ...options.Option) error {
+	reqCMD := o.request(ctx).
+		SetPathParam("user_id", userID).
+		SetBody(req)
+	_, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(c2cUploadPartFinishURI), opt...)
+	return err
+}
+
+// PostGroupFileByUploadID 群分片全部完成后，用 upload_id 换取 file_info
+func (o *openAPI) PostGroupFileByUploadID(ctx context.Context, groupID, uploadID string,
+	opt ...options.Option) (*dto.Message, error) {
+	reqCMD := o.request(ctx).
+		SetResult(dto.Message{}).
+		SetPathParam("group_id", groupID).
+		SetBody(&dto.RichMediaByUploadIDReq{UploadID: uploadID})
+	resp, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(groupRichMediaURI), opt...)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.Message), nil
+}
+
+// PostC2CFileByUploadID 单聊分片全部完成后，用 upload_id 换取 file_info
+func (o *openAPI) PostC2CFileByUploadID(ctx context.Context, userID, uploadID string,
+	opt ...options.Option) (*dto.Message, error) {
+	reqCMD := o.request(ctx).
+		SetResult(dto.Message{}).
+		SetPathParam("user_id", userID).
+		SetBody(&dto.RichMediaByUploadIDReq{UploadID: uploadID})
+	resp, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(c2cRichMediaURI), opt...)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.Message), nil
+}
+
+// uploadPartClient 用于分片 PUT 到腾讯预签名地址：这些 URL 自带签名鉴权，
+// 不能附带 bot 的 Authorization 头（会与预签名冲突），故用独立裸 http.Client。
+var uploadPartClient = &http.Client{Timeout: 120 * time.Second}
+
+// PutUploadPart 将单个分片二进制 PUT 到预签名地址
+func (o *openAPI) PutUploadPart(ctx context.Context, presignedURL string, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, presignedURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := uploadPartClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload part failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 func baseRequest(ctx context.Context, reqCMD *resty.Request, method, url string, opt ...options.Option) (

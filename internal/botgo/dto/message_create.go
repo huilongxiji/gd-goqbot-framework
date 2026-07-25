@@ -24,6 +24,7 @@ type RichMediaMessage struct {
 	URL        string `json:"url,omitempty"`          // 需发送的富媒体文件，HTTP或者HTTPS链接
 	FileData   string `json:"file_data,omitempty"`    // 富媒体文件 base64 数据，与 URL 二选一；由 QQ 托管，无需自建图床
 	SrvSendMsg bool   `json:"srv_send_msg,omitempty"` // 为true时会直接发送到群/C2C，且会占用主动消息频率, 为false为上传富媒体文件
+	FileName   string `json:"file_name,omitempty"`    // 可选；file_type=4（文件）时透传文件名（含扩展名），图片/视频/语音不填以免被渲染成文件附件
 	Content    string `json:"content,omitempty"`
 	MsgSeq     int64  `json:"msg_seq,omitempty"` // 机器人对于回复一个msg_id或者event_id的消息序号，指定后根据这个字段和msg_id或者event_id进行去重
 }

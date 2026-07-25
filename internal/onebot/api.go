@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -426,7 +427,7 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		action = "send_group_active_msg"
 	}
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
 	qqMsgID, err := sender.SendGroup(ctx, groupOpenID, out)
 	if err != nil {
@@ -439,6 +440,31 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 	})
 	logSend(action, "群", groupID, out, qqMsgID, mid, start, nil)
 	return ok(map[string]any{"message_id": mid})
+}
+
+// sendTimeout 按消息里的富媒体体积估算发送整体超时。
+// 纯文本/小图仍是 30s 快速失败；带本地大文件（分片上传）时按体积放宽，
+// 保守速率 512KB/s 折算上传耗时，封顶 30 分钟，避免大视频被 30s 硬截断。
+func sendTimeout(out *OutMessage) time.Duration {
+	const base = 30 * time.Second
+	var mediaBytes int64
+	for i := range out.Parts {
+		p := &out.Parts[i]
+		switch p.Kind {
+		case PartImage:
+			mediaBytes += int64(len(p.Image.Base64)) * 3 / 4
+		case PartVideo, PartRecord, PartFile:
+			mediaBytes += int64(len(p.Media.Base64)) * 3 / 4
+		}
+	}
+	if mediaBytes <= 0 {
+		return base
+	}
+	d := base + time.Duration(mediaBytes/(512*1024))*time.Second
+	if max := 30 * time.Minute; d > max {
+		d = max
+	}
+	return d
 }
 
 // sendPrivate 发私聊(C2C)消息：逻辑同 sendGroup，按 user_id 定位 openid 与被动凭证
@@ -480,7 +506,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		action = "send_private_active_msg"
 	}
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
 	qqMsgID, err := sender.SendC2C(ctx, userOpenID, out)
 	if err != nil {
@@ -607,6 +633,21 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 			if img != nil {
 				flushText()
 				out.Parts = append(out.Parts, MessagePart{Kind: PartImage, Image: *img})
+			}
+		case "video":
+			if m := parseMediaData(data.Get("file").String(), data.Get("url").String(), data.Get("name").String()); m != nil {
+				flushText()
+				out.Parts = append(out.Parts, MessagePart{Kind: PartVideo, Media: *m})
+			}
+		case "record", "voice", "audio":
+			if m := parseMediaData(data.Get("file").String(), data.Get("url").String(), data.Get("name").String()); m != nil {
+				flushText()
+				out.Parts = append(out.Parts, MessagePart{Kind: PartRecord, Media: *m})
+			}
+		case "file":
+			if m := parseMediaData(data.Get("file").String(), data.Get("url").String(), data.Get("name").String()); m != nil {
+				flushText()
+				out.Parts = append(out.Parts, MessagePart{Kind: PartFile, Media: *m})
 			}
 		case "markdown":
 			if md, kb := parseMarkdownSeg(data); md != nil {
@@ -749,6 +790,76 @@ func readLocalImage(path string) *OutImage {
 		return nil
 	}
 	return &OutImage{Base64: base64.StdEncoding.EncodeToString(data)}
+}
+
+// parseMediaData 解析视频/语音/文件段的来源（base64://、http(s)、file://、本地绝对路径）为 OutMedia。
+// name 为下游显式文件名，缺省时从 URL/路径的 basename 兜底（供 file_type=4 透传/分片上传）。
+func parseMediaData(file, url, name string) *OutMedia {
+	src := file
+	if src == "" {
+		src = url
+	}
+	if src == "" {
+		return nil
+	}
+	m := &OutMedia{FileName: name}
+	switch {
+	case strings.HasPrefix(src, "base64://"):
+		m.Base64 = strings.TrimPrefix(src, "base64://")
+	case strings.HasPrefix(src, "http://"), strings.HasPrefix(src, "https://"):
+		m.URL = src
+		if m.FileName == "" {
+			m.FileName = fileNameFromURL(src)
+		}
+	case strings.HasPrefix(src, "file://"):
+		path := strings.TrimPrefix(src, "file://")
+		for strings.HasPrefix(path, "//") {
+			path = path[1:]
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("[onebot] 读取本地富媒体失败 %s: %v", path, err)
+			return nil
+		}
+		m.Base64 = base64.StdEncoding.EncodeToString(data)
+		if m.FileName == "" {
+			m.FileName = filepath.Base(path)
+		}
+	case strings.HasPrefix(src, "/"):
+		data, err := os.ReadFile(src)
+		if err != nil {
+			log.Printf("[onebot] 读取本地富媒体失败 %s: %v", src, err)
+			return nil
+		}
+		m.Base64 = base64.StdEncoding.EncodeToString(data)
+		if m.FileName == "" {
+			m.FileName = filepath.Base(src)
+		}
+	default:
+		if url != "" && (strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")) {
+			m.URL = url
+			if m.FileName == "" {
+				m.FileName = fileNameFromURL(url)
+			}
+		} else {
+			return nil
+		}
+	}
+	return m
+}
+
+// fileNameFromURL 从 URL 路径尾段取文件名（去掉 query），无法判定时返回空串
+func fileNameFromURL(u string) string {
+	s := u
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimRight(s, "/")
+	base := s[strings.LastIndex(s, "/")+1:]
+	if base == "" || !strings.Contains(base, ".") {
+		return ""
+	}
+	return base
 }
 
 // parseCQParams 解析 ",k=v,k=v" 为 map（值做 CQ 反转义）

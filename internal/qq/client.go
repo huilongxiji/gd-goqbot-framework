@@ -69,6 +69,9 @@ func (c *Client) Start(ctx context.Context) error {
 	} else {
 		api = botgo.NewOpenAPI(c.cfg.AppID, tokenSource)
 	}
+	// 默认 5s 对富媒体上传（base64 大体积 body + 服务端转存）过短，会 context deadline exceeded；
+	// 调大到 60s。文本等小请求正常仍毫秒级返回，不受影响。
+	api = api.WithTimeout(60 * time.Second)
 
 	// 保存 openapi，供互动事件自动回执使用
 	c.api = api

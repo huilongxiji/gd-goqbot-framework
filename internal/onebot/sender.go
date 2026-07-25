@@ -13,6 +13,14 @@ type OutImage struct {
 	Base64 string // base64 原始数据（不含 data: 前缀），走 FileData 直传
 }
 
+// OutMedia 待发送的富媒体（视频/语音/文件），URL 与 Base64 二选一。
+// Base64 承载本地/内联数据，据其大小决定走简单 JSON 上传还是分片上传。
+type OutMedia struct {
+	URL      string // http/https 链接，由 QQ 拉取
+	Base64   string // base64 原始数据（不含 data: 前缀），走 FileData 直传或分片上传
+	FileName string // 文件名（含扩展名），file_type=4 透传；分片上传必填
+}
+
 // PartKind 消息段类型
 type PartKind int
 
@@ -20,6 +28,9 @@ const (
 	PartText     PartKind = iota // 文本（含 <@openid> 形式的 at）
 	PartImage                    // 图片
 	PartMarkdown                 // markdown(+可选 keyboard)
+	PartVideo                    // 视频 file_type=2
+	PartRecord                   // 语音 file_type=3
+	PartFile                     // 文件 file_type=4
 )
 
 // MessagePart 一个有序消息段，对应一条独立 QQ 消息
@@ -27,6 +38,7 @@ type MessagePart struct {
 	Kind     PartKind
 	Text     string                    // PartText
 	Image    OutImage                  // PartImage
+	Media    OutMedia                  // PartVideo/PartRecord/PartFile
 	Markdown *dto.Markdown             // PartMarkdown
 	Keyboard *keyboard.MessageKeyboard // PartMarkdown 可选
 }

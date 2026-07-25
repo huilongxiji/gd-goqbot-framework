@@ -2,9 +2,15 @@ package qq
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/dto/keyboard"
@@ -21,6 +27,7 @@ func combineParts(msg *onebot.OutMessage) (text string, img *onebot.OutImage, ok
 	var b strings.Builder
 	imageCount := 0
 	mdCount := 0
+	otherCount := 0 // 视频/语音/文件等富媒体段，存在时不能并入单图气泡
 	var theImage onebot.OutImage
 	for i := range msg.Parts {
 		p := &msg.Parts[i]
@@ -32,9 +39,11 @@ func combineParts(msg *onebot.OutMessage) (text string, img *onebot.OutImage, ok
 			theImage = p.Image
 		case onebot.PartMarkdown:
 			mdCount++
+		default:
+			otherCount++
 		}
 	}
-	if imageCount == 1 && mdCount == 0 {
+	if imageCount == 1 && mdCount == 0 && otherCount == 0 {
 		return b.String(), &theImage, true
 	}
 	return "", nil, false
@@ -80,6 +89,39 @@ func msgReference(refMsgID string) *dto.MessageReference {
 
 // ---- 群聊 ----
 
+// chunkThreshold 本地 base64 数据超过该体积时改走分片上传（对齐 nonebot-adapter-qq 的 10MB 阈值）
+const chunkThreshold = 10 * 1024 * 1024
+
+// mediaFileType 把发送段类型映射为 QQ 富媒体 file_type：视频 2、语音 3、文件 4
+func mediaFileType(k onebot.PartKind) uint64 {
+	switch k {
+	case onebot.PartVideo:
+		return 2
+	case onebot.PartRecord:
+		return 3
+	default: // onebot.PartFile
+		return 4
+	}
+}
+
+// ensureMediaFileName 为分片上传补齐文件名。视频（file_type=2）缺扩展名时补 .mp4，
+// 否则 QQ 会按无后缀名当作普通文件下发，无法作为视频直接播放。
+func ensureMediaFileName(name string, fileType uint64) string {
+	if name == "" {
+		name = "file"
+	}
+	if fileType == 2 {
+		base := name
+		if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+			base = base[i+1:]
+		}
+		if !strings.Contains(base, ".") {
+			name += ".mp4"
+		}
+	}
+	return name
+}
+
 // uploadGroupImage 把图片上传为群富媒体（不立即发送），返回 file_info 供后续发送引用
 func (s *sender) uploadGroupImage(ctx context.Context, groupOpenID string, img onebot.OutImage) ([]byte, error) {
 	rm := &dto.RichMediaMessage{FileType: 1, SrvSendMsg: false}
@@ -89,6 +131,56 @@ func (s *sender) uploadGroupImage(ctx context.Context, groupOpenID string, img o
 		rm.FileData = img.Base64
 	}
 	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, rm)
+	if err != nil {
+		return nil, err
+	}
+	return resp.FileInfo, nil
+}
+
+// uploadGroupMedia 上传群富媒体（视频/语音/文件），返回 file_info。
+// URL 或小文件走简单 JSON 上传；本地大文件（>10MB base64）走分片上传。
+func (s *sender) uploadGroupMedia(ctx context.Context, groupOpenID string, fileType uint64, m onebot.OutMedia) ([]byte, error) {
+	if m.URL == "" && m.Base64 != "" {
+		if data, err := base64.StdEncoding.DecodeString(m.Base64); err == nil && len(data) > chunkThreshold {
+			return s.uploadGroupMediaChunked(ctx, groupOpenID, fileType, m.FileName, data)
+		}
+	}
+	rm := &dto.RichMediaMessage{FileType: fileType, SrvSendMsg: false}
+	if m.URL != "" {
+		rm.URL = m.URL
+	} else {
+		rm.FileData = m.Base64
+	}
+	if fileType == 4 {
+		rm.FileName = m.FileName // 仅文件透传文件名，避免图片/视频/语音被渲染成文件附件
+	}
+	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, rm)
+	if err != nil {
+		return nil, err
+	}
+	return resp.FileInfo, nil
+}
+
+// uploadGroupMediaChunked 群本地大文件分片上传：prepare → 并发 PUT 分片 + 逐片 finish → files(upload_id) 换 file_info
+func (s *sender) uploadGroupMediaChunked(ctx context.Context, groupOpenID string, fileType uint64, fileName string, data []byte) ([]byte, error) {
+	fileName = ensureMediaFileName(fileName, fileType)
+	prep, err := s.api.PostGroupUploadPrepare(ctx, groupOpenID, &dto.RichMediaPrepareReq{
+		FileType: fileType,
+		FileName: fileName,
+		FileSize: int64(len(data)),
+		MD5:      md5Hex(data),
+		SHA1:     sha1Hex(data),
+		MD510M:   md5Hex(first10M(data)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := uploadParts(ctx, prep, data, func(c context.Context, fin *dto.RichMediaPartFinishReq) error {
+		return s.api.PostGroupUploadPartFinish(c, groupOpenID, fin)
+	}, s.api.PutUploadPart); err != nil {
+		return nil, err
+	}
+	resp, err := s.api.PostGroupFileByUploadID(ctx, groupOpenID, prep.UploadID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +284,17 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 			}
 			ref = ""
 			lastID = id
+		case onebot.PartVideo, onebot.PartRecord, onebot.PartFile:
+			fi, err := s.uploadGroupMedia(ctx, groupOpenID, mediaFileType(p.Kind), p.Media)
+			if err != nil {
+				return "", err
+			}
+			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, " ", fi)
+			if err != nil {
+				return "", err
+			}
+			ref = ""
+			lastID = id
 		case onebot.PartMarkdown:
 			// markdown 不带引用（见 sendGroupMarkdown 注释），故不消费 ref
 			id, err := s.sendGroupMarkdown(ctx, groupOpenID, msg.MsgID, msg.EventID, p.Markdown, p.Keyboard)
@@ -215,6 +318,55 @@ func (s *sender) uploadC2CImage(ctx context.Context, userOpenID string, img oneb
 		rm.FileData = img.Base64
 	}
 	resp, err := s.api.PostC2CMessage(ctx, userOpenID, rm)
+	if err != nil {
+		return nil, err
+	}
+	return resp.FileInfo, nil
+}
+
+// uploadC2CMedia 上传单聊富媒体（视频/语音/文件），返回 file_info。规则同 uploadGroupMedia。
+func (s *sender) uploadC2CMedia(ctx context.Context, userOpenID string, fileType uint64, m onebot.OutMedia) ([]byte, error) {
+	if m.URL == "" && m.Base64 != "" {
+		if data, err := base64.StdEncoding.DecodeString(m.Base64); err == nil && len(data) > chunkThreshold {
+			return s.uploadC2CMediaChunked(ctx, userOpenID, fileType, m.FileName, data)
+		}
+	}
+	rm := &dto.RichMediaMessage{FileType: fileType, SrvSendMsg: false}
+	if m.URL != "" {
+		rm.URL = m.URL
+	} else {
+		rm.FileData = m.Base64
+	}
+	if fileType == 4 {
+		rm.FileName = m.FileName
+	}
+	resp, err := s.api.PostC2CMessage(ctx, userOpenID, rm)
+	if err != nil {
+		return nil, err
+	}
+	return resp.FileInfo, nil
+}
+
+// uploadC2CMediaChunked 单聊本地大文件分片上传，流程同群聊。
+func (s *sender) uploadC2CMediaChunked(ctx context.Context, userOpenID string, fileType uint64, fileName string, data []byte) ([]byte, error) {
+	fileName = ensureMediaFileName(fileName, fileType)
+	prep, err := s.api.PostC2CUploadPrepare(ctx, userOpenID, &dto.RichMediaPrepareReq{
+		FileType: fileType,
+		FileName: fileName,
+		FileSize: int64(len(data)),
+		MD5:      md5Hex(data),
+		SHA1:     sha1Hex(data),
+		MD510M:   md5Hex(first10M(data)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := uploadParts(ctx, prep, data, func(c context.Context, fin *dto.RichMediaPartFinishReq) error {
+		return s.api.PostC2CUploadPartFinish(c, userOpenID, fin)
+	}, s.api.PutUploadPart); err != nil {
+		return nil, err
+	}
+	resp, err := s.api.PostC2CFileByUploadID(ctx, userOpenID, prep.UploadID)
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +471,17 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 			}
 			ref = ""
 			lastID = id
+		case onebot.PartVideo, onebot.PartRecord, onebot.PartFile:
+			fi, err := s.uploadC2CMedia(ctx, userOpenID, mediaFileType(p.Kind), p.Media)
+			if err != nil {
+				return "", err
+			}
+			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, " ", fi)
+			if err != nil {
+				return "", err
+			}
+			ref = ""
+			lastID = id
 		case onebot.PartMarkdown:
 			// markdown 不带引用（见 sendC2CMarkdown 注释），故不消费 ref
 			id, err := s.sendC2CMarkdown(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, p.Markdown, p.Keyboard)
@@ -344,4 +507,71 @@ func (s *sender) RetractC2C(ctx context.Context, userOpenID, qqMsgID string) err
 // AckInteraction 回执互动事件（按钮点击），code 0=成功，非0=失败/频繁/无权限等
 func (s *sender) AckInteraction(ctx context.Context, interactionID string, code int) error {
 	return s.api.PutInteraction(ctx, interactionID, fmt.Sprintf(`{"code":%d}`, code))
+}
+
+// ---- 分片上传辅助 ----
+
+// uploadParts 按 prepare 返回的分片信息并发上传每一片：PUT 到预签名地址后调用 finish 确认。
+// 切片偏移用枚举位置 i×block_size（对齐 nonebot），finish 的 part_index 用服务端返回的 part.Index。
+func uploadParts(
+	ctx context.Context,
+	prep *dto.RichMediaPrepareResp,
+	data []byte,
+	finish func(context.Context, *dto.RichMediaPartFinishReq) error,
+	put func(context.Context, string, []byte) error,
+) error {
+	blockSize := int64(prep.BlockSize)
+	if blockSize <= 0 {
+		return fmt.Errorf("分片上传 block_size 非法: %d", blockSize)
+	}
+	conc := int(prep.UploadConfig.Concurrency)
+	if conc <= 0 {
+		conc = 1
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(conc)
+	for i, part := range prep.Parts {
+		i, part := i, part
+		start := int64(i) * blockSize
+		if start >= int64(len(data)) {
+			continue
+		}
+		end := start + blockSize
+		if end > int64(len(data)) {
+			end = int64(len(data))
+		}
+		chunk := data[start:end]
+		g.Go(func() error {
+			if err := put(gctx, part.PresignedURL, chunk); err != nil {
+				return fmt.Errorf("分片 %d PUT 失败: %w", int(part.Index), err)
+			}
+			return finish(gctx, &dto.RichMediaPartFinishReq{
+				UploadID:  prep.UploadID,
+				PartIndex: int(part.Index),
+				BlockSize: int64(len(chunk)),
+				MD5:       md5Hex(chunk),
+			})
+		})
+	}
+	return g.Wait()
+}
+
+// md5Hex 返回数据的 md5 十六进制字符串
+func md5Hex(data []byte) string {
+	sum := md5.Sum(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// sha1Hex 返回数据的 sha1 十六进制字符串
+func sha1Hex(data []byte) string {
+	sum := sha1.Sum(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// first10M 返回前 10MB（不足则全部），用于 prepare 的 md5_10m 校验
+func first10M(data []byte) []byte {
+	if len(data) > 10*1024*1024 {
+		return data[:10*1024*1024]
+	}
+	return data
 }

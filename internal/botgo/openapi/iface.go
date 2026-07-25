@@ -102,6 +102,29 @@ type MessageAPI interface {
 
 	// RetractGroupMessage 撤回群消息
 	RetractGroupMessage(ctx context.Context, groupID, msgID string, opt ...options.Option) error
+
+	// PostGroupUploadPrepare 群富媒体分片上传-准备
+	PostGroupUploadPrepare(ctx context.Context, groupID string, req *dto.RichMediaPrepareReq, opt ...options.Option) (
+		*dto.RichMediaPrepareResp, error)
+
+	// PostC2CUploadPrepare 单聊富媒体分片上传-准备
+	PostC2CUploadPrepare(ctx context.Context, userID string, req *dto.RichMediaPrepareReq, opt ...options.Option) (
+		*dto.RichMediaPrepareResp, error)
+
+	// PostGroupUploadPartFinish 群富媒体分片上传-单片完成
+	PostGroupUploadPartFinish(ctx context.Context, groupID string, req *dto.RichMediaPartFinishReq, opt ...options.Option) error
+
+	// PostC2CUploadPartFinish 单聊富媒体分片上传-单片完成
+	PostC2CUploadPartFinish(ctx context.Context, userID string, req *dto.RichMediaPartFinishReq, opt ...options.Option) error
+
+	// PostGroupFileByUploadID 群分片上传完成后用 upload_id 换 file_info
+	PostGroupFileByUploadID(ctx context.Context, groupID, uploadID string, opt ...options.Option) (*dto.Message, error)
+
+	// PostC2CFileByUploadID 单聊分片上传完成后用 upload_id 换 file_info
+	PostC2CFileByUploadID(ctx context.Context, userID, uploadID string, opt ...options.Option) (*dto.Message, error)
+
+	// PutUploadPart 将分片二进制 PUT 到预签名地址
+	PutUploadPart(ctx context.Context, presignedURL string, data []byte) error
 }
 
 // GuildAPI guild 相关接口

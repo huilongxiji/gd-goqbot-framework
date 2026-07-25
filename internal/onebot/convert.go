@@ -418,10 +418,15 @@ func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, stri
 		}
 		typ := "image"
 		switch {
+		case att.ContentType == "", strings.HasPrefix(att.ContentType, "image"):
+			typ = "image"
 		case strings.HasPrefix(att.ContentType, "video"):
 			typ = "video"
 		case strings.HasPrefix(att.ContentType, "voice"), strings.HasPrefix(att.ContentType, "audio"):
 			typ = "record"
+		default:
+			// application/* 等文档类附件：作为文件段，避免误标为 image
+			typ = "file"
 		}
 		if typ == "image" {
 			// 与 Gensokyo 对齐：file=<md5>.image, subType=0, url=真实链接
@@ -443,6 +448,22 @@ func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, stri
 			raw.WriteString(cqEscape(file))
 			raw.WriteString(",url=")
 			raw.WriteString(cqEscape(url))
+			raw.WriteString("]")
+		} else if typ == "file" {
+			fileData := map[string]any{"url": url, "file": url}
+			if att.FileName != "" {
+				fileData["name"] = att.FileName
+			}
+			if att.Size > 0 {
+				fileData["file_size"] = att.Size
+			}
+			segs = append(segs, Segment{Type: "file", Data: fileData})
+			raw.WriteString("[CQ:file,file=")
+			raw.WriteString(cqEscape(url))
+			if att.FileName != "" {
+				raw.WriteString(",name=")
+				raw.WriteString(cqEscape(att.FileName))
+			}
 			raw.WriteString("]")
 		} else {
 			segs = append(segs, Segment{Type: typ, Data: map[string]any{"url": url, "file": url}})

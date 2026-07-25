@@ -27,8 +27,14 @@ const (
 	groupMessagesURI  uri = "/v2/groups/{group_id}/messages"
 	groupRichMediaURI uri = "/v2/groups/{group_id}/files"
 
+	groupUploadPrepareURI    uri = "/v2/groups/{group_id}/upload_prepare"     // 分片上传-准备
+	groupUploadPartFinishURI uri = "/v2/groups/{group_id}/upload_part_finish" // 分片上传-单片完成
+
 	c2cMessagesURI  uri = "/v2/users/{user_id}/messages"
 	c2cRichMediaURI uri = "/v2/users/{user_id}/files"
+
+	c2cUploadPrepareURI    uri = "/v2/users/{user_id}/upload_prepare"     // 分片上传-准备
+	c2cUploadPartFinishURI uri = "/v2/users/{user_id}/upload_part_finish" // 分片上传-单片完成
 
 	retractC2cMessageURI   uri = "/v2/users/{user_id}/messages/{message_id}"
 	retractGroupMessageURI uri = "/v2/groups/{group_id}/messages/{message_id}"
