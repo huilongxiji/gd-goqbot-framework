@@ -30,7 +30,7 @@ import (
 // 项目名称与版本，随时在此修改（上报给 NoneBot 的 get_version_info 及启动日志均取此值）
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.2.0"
+	AppVersion = "1.5.0"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -60,7 +60,7 @@ func main() {
 	// 配置文件不存在则按模板生成，提示用户填写后重启
 	if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
 		if werr := os.WriteFile(*configPath, configTemplate, 0o644); werr != nil {
-			log.Fatalf("未找到配置文件且自动创建失败: %v", werr)
+			filelog.Fatalf("未找到配置文件且自动创建失败: %v", werr)
 		}
 		fmt.Printf("未找到配置文件，已在同级目录生成模板：\n  %s\n请填写 app_id / client_secret 等字段后重新启动本程序。\n按回车键退出...", *configPath)
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
@@ -69,10 +69,10 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("加载配置失败: %v", err)
+		filelog.Fatalf("加载配置失败: %v", err)
 	}
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("配置无效: %v", err)
+		filelog.Fatalf("配置无效: %v", err)
 	}
 
 	logDir := cfg.Log.Path
@@ -80,7 +80,7 @@ func main() {
 		logDir = filepath.Join(exeDir, logDir)
 	}
 	if err := filelog.Init(cfg.Log.FileEnabled(), logDir); err != nil {
-		log.Fatalf("初始化文件日志失败: %v", err)
+		filelog.Fatalf("初始化文件日志失败: %v", err)
 	}
 	defer filelog.Close()
 	log.SetFlags(0)
@@ -104,7 +104,7 @@ func main() {
 		}
 		ids, err = idmap.Open(p)
 		if err != nil {
-			log.Fatalf("打开 idmap 失败: %v", err)
+			filelog.Fatalf("打开 idmap 失败: %v", err)
 		}
 		defer ids.Close()
 		log.Printf("idmap: 持久化已启用 -> %s", p)
@@ -125,7 +125,7 @@ func main() {
 			go func() {
 				defer wg.Done()
 				if err := s.Run(); err != nil {
-					log.Printf("[onebot] 正向 WS 服务退出: %v", err)
+					filelog.Errorf("[onebot] 正向 WS 服务退出: %v", err)
 				}
 			}()
 		}
@@ -142,7 +142,7 @@ func main() {
 	// 启动 QQ 上游连接
 	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
 	if err := qqClient.Start(ctx); err != nil {
-		log.Fatalf("启动 QQ 客户端失败: %v", err)
+		filelog.Fatalf("启动 QQ 客户端失败: %v", err)
 	}
 
 	log.Printf("%s %s 已启动，等待连接...", AppName, AppVersion)

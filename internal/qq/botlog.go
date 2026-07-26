@@ -35,10 +35,11 @@ func isHeartbeat(msg string) bool {
 }
 
 // emit 输出统一格式：[Level] 2006-01-02 15:04:05 [botgo] msg
+// 统一写到 stderr（与 app 标准 log、prettylog 保持同一输出流，避免 stdout/stderr 混用）。
 func (l *botLogger) emit(level, msg string) {
 	line := filelog.FormatBotgo(level, msg)
 	if l.debug || !isHeartbeat(msg) {
-		_, _ = os.Stdout.WriteString(line)
+		_, _ = os.Stderr.WriteString(line)
 	}
 	if filelog.Enabled() {
 		filelog.WriteFile([]byte(line))

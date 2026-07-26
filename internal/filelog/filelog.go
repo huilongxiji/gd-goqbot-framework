@@ -59,9 +59,39 @@ func Close() error {
 	return err
 }
 
+// colorOn 仅当 stderr 是终端时给级别标签上色；重定向到文件/管道/journald 时关闭，
+// 避免终端外出现 ANSI 转义符（写文件另有 StripANSI 兜底去色）。
+var colorOn = func() bool {
+	fi, err := os.Stderr.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}()
+
+// ANSI 颜色码（仅用于级别标签）
+const (
+	cReset  = "\x1b[0m"
+	cRed    = "\x1b[31m"
+	cYellow = "\x1b[33m"
+)
+
+// colorLevel 按级别给标签上色（仅终端）：Error 红、Warning 黄，其余原样。
+// 写入文件时该 ANSI 会被 WriteFile 的 StripANSI 统一去掉，文件保持纯文本。
+func colorLevel(level string) string {
+	if !colorOn {
+		return level
+	}
+	switch level {
+	case "Error":
+		return cRed + level + cReset
+	case "Warning":
+		return cYellow + level + cReset
+	}
+	return level
+}
+
 // FormatLine 生成统一单行格式：[Level] 2006-01-02 15:04:05 message
+// 级别标签在终端上色，文件写入时去色。
 func FormatLine(level, msg string) string {
-	return fmt.Sprintf("[%s] %s %s\n", level, time.Now().Format(timeLayout), msg)
+	return fmt.Sprintf("[%s] %s %s\n", colorLevel(level), time.Now().Format(timeLayout), msg)
 }
 
 // FormatBotgo 生成 botgo 来源的统一单行日志。
@@ -72,6 +102,29 @@ func FormatBotgo(level, msg string) string {
 // FormatInfo 生成 Info 级别的统一单行日志（标准 log 用）。
 func FormatInfo(msg string) string {
 	return FormatLine("Info", strings.TrimSuffix(msg, "\n"))
+}
+
+// emitLevel 以指定级别输出一行到 stderr + 文件，格式与标准 log 一致（[Level] date time msg）。
+// 供 app 代码分级日志使用，弥补标准 log.Printf 恒为 Info 的问题。
+func emitLevel(level, msg string) {
+	line := FormatLine(level, strings.TrimSuffix(msg, "\n"))
+	_, _ = os.Stderr.WriteString(line)
+	WriteFile([]byte(line))
+}
+
+// Infof 输出 Info 级别日志（等价于标准 log.Printf，但级别显式）。
+func Infof(format string, v ...interface{}) { emitLevel("Info", fmt.Sprintf(format, v...)) }
+
+// Warnf 输出 Warning 级别日志。
+func Warnf(format string, v ...interface{}) { emitLevel("Warning", fmt.Sprintf(format, v...)) }
+
+// Errorf 输出 Error 级别日志。
+func Errorf(format string, v ...interface{}) { emitLevel("Error", fmt.Sprintf(format, v...)) }
+
+// Fatalf 输出 Error 级别日志后退出进程（等价于 log.Fatalf，但级别显式为 Error）。
+func Fatalf(format string, v ...interface{}) {
+	emitLevel("Error", fmt.Sprintf(format, v...))
+	os.Exit(1)
 }
 
 // StripANSI 去掉 ANSI 转义序列。

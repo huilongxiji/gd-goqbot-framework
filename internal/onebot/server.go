@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"goqbot/internal/config"
+	"goqbot/internal/filelog"
 )
 
 // upgrader 把 HTTP 请求升级为 WebSocket，放开同源校验（下游可任意来源接入）
@@ -90,13 +91,13 @@ func (c *wsConn) close() error {
 func (c *wsConn) handleRequest(payload []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[onebot] API handler panic: %v", r)
+			filelog.Errorf("[onebot] API handler panic: %v", r)
 			_ = c.close()
 		}
 	}()
 	resp := c.caller.HandleRequest(payload)
 	if err := c.writeText(resp); err != nil {
-		log.Printf("[onebot] write API response failed: %v", err)
+		filelog.Errorf("[onebot] write API response failed: %v", err)
 	}
 }
 
@@ -225,7 +226,7 @@ func (s *WSServer) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[onebot] upgrade /event failed: %v", err)
+		filelog.Errorf("[onebot] upgrade /event failed: %v", err)
 		return
 	}
 	if err = c.WriteMessage(websocket.TextMessage, s.handshake(false)); err != nil {

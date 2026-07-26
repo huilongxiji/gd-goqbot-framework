@@ -683,7 +683,7 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				}
 			}
 			if rid == 0 {
-				log.Printf("[onebot] reply 段缺少有效 id，原始 data=%s", data.Raw)
+				filelog.Warnf("[onebot] reply 段缺少有效 id，原始 data=%s", data.Raw)
 				break
 			}
 			if meta, found := c.ids.Msg(rid); found && meta.MsgID != "" {
@@ -698,7 +698,7 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 					log.Printf("[onebot] reply 命中缓存 message_id=%d → 被动 msg_id=%s，但无 REFIDX（该消息未带 msg_idx，无法渲染引用气泡）", rid, meta.MsgID)
 				}
 			} else {
-				log.Printf("[onebot] reply 段 message_id=%d 未命中本机缓存，无法引用（将退化为主动消息）", rid)
+				filelog.Warnf("[onebot] reply 段 message_id=%d 未命中本机缓存，无法引用（将退化为主动消息）", rid)
 			}
 		}
 	}
@@ -758,7 +758,7 @@ func parseMarkdownSeg(data gjson.Result) (*dto.Markdown, *keyboard.MessageKeyboa
 		Rows     []*keyboard.Row           `json:"rows"`
 	}
 	if err := json.Unmarshal([]byte(raw), &tmp); err != nil {
-		log.Printf("[onebot] 解析 markdown 段失败: %v", err)
+		filelog.Warnf("[onebot] 解析 markdown 段失败: %v", err)
 		return nil, nil
 	}
 	if tmp.Markdown == nil {
@@ -806,7 +806,7 @@ func readLocalImage(path string) *OutImage {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Printf("[onebot] 读取本地图片失败 %s: %v", path, err)
+		filelog.Errorf("[onebot] 读取本地图片失败 %s: %v", path, err)
 		return nil
 	}
 	return &OutImage{Base64: base64.StdEncoding.EncodeToString(data)}
@@ -838,7 +838,7 @@ func parseMediaData(file, url, name string) *OutMedia {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("[onebot] 读取本地富媒体失败 %s: %v", path, err)
+			filelog.Errorf("[onebot] 读取本地富媒体失败 %s: %v", path, err)
 			return nil
 		}
 		m.Base64 = base64.StdEncoding.EncodeToString(data)
@@ -848,7 +848,7 @@ func parseMediaData(file, url, name string) *OutMedia {
 	case strings.HasPrefix(src, "/"):
 		data, err := os.ReadFile(src)
 		if err != nil {
-			log.Printf("[onebot] 读取本地富媒体失败 %s: %v", src, err)
+			filelog.Errorf("[onebot] 读取本地富媒体失败 %s: %v", src, err)
 			return nil
 		}
 		m.Base64 = base64.StdEncoding.EncodeToString(data)

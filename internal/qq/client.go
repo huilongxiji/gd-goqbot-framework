@@ -19,6 +19,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"goqbot/internal/config"
+	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
 	"goqbot/internal/onebot"
 )
@@ -119,7 +120,7 @@ func (c *Client) autoAckInteraction(interactionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.api.PutInteraction(ctx, interactionID, `{"code":0}`); err != nil {
-			log.Printf("[qq] 互动事件自动回执失败 id=%s: %v", interactionID, err)
+			filelog.Warnf("[qq] 互动事件自动回执失败 id=%s: %v", interactionID, err)
 		}
 	}()
 }
@@ -138,7 +139,7 @@ func (c *Client) registerHandlers() dto.Intent {
 		log.Printf("[qq] =========================")
 	})
 	errNotify := event.ErrorNotifyHandler(func(err error) {
-		log.Printf("[qq] WebSocket 错误: %v", err)
+		filelog.Errorf("[qq] WebSocket 错误: %v", err)
 	})
 
 	// Ready / ErrorNotify 始终注册（不影响 intent）
@@ -256,7 +257,7 @@ func (c *Client) registerHandlers() dto.Intent {
 					return nil
 				}))
 		default:
-			log.Printf("[qq] 未知 text_intent 条目，忽略: %s", name)
+			filelog.Warnf("[qq] 未知 text_intent 条目，忽略: %s", name)
 		}
 	}
 
@@ -272,7 +273,7 @@ func (c *Client) registerHandlers() dto.Intent {
 func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.TokenSource, intent dto.Intent) {
 	wsAP, err := api.WS(ctx, nil, "")
 	if err != nil {
-		log.Printf("[qq] 获取 WebSocket 接入点失败: %v", err)
+		filelog.Errorf("[qq] 获取 WebSocket 接入点失败: %v", err)
 		return
 	}
 	log.Printf("[qq] WebSocket 接入点: url=%s shards=%d", wsAP.URL, wsAP.Shards)
@@ -310,12 +311,12 @@ func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.To
 func (c *Client) connectOnce(session *dto.Session) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[qq] 连接 panic: %v", r)
+			filelog.Errorf("[qq] 连接 panic: %v", r)
 		}
 	}()
 	wsClient := websocket.ClientImpl.New(*session)
 	if err := wsClient.Connect(); err != nil {
-		log.Printf("[qq] 连接失败: %v", err)
+		filelog.Errorf("[qq] 连接失败: %v", err)
 		return
 	}
 	var err error
@@ -325,18 +326,18 @@ func (c *Client) connectOnce(session *dto.Session) {
 		err = wsClient.Identify()
 	}
 	if err != nil {
-		log.Printf("[qq] Identify/Resume 失败: %v", err)
+		filelog.Errorf("[qq] Identify/Resume 失败: %v", err)
 		return
 	}
 	if err = wsClient.Listening(); err != nil {
-		log.Printf("[qq] Listening 退出: %v", err)
+		filelog.Warnf("[qq] Listening 退出: %v", err)
 		cur := wsClient.Session()
 		if manager.CanNotResume(err) {
 			cur.ID = ""
 			cur.LastSeq = 0
 		}
 		if manager.CanNotIdentify(err) {
-			log.Printf("[qq] 无法重新鉴权（可能被封禁/下架），停止该分片重连")
+			filelog.Errorf("[qq] 无法重新鉴权（可能被封禁/下架），停止该分片重连")
 			cur.ID = ""
 			cur.LastSeq = 0
 		}

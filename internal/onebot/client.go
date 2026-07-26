@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"goqbot/internal/config"
+	"goqbot/internal/filelog"
 )
 
 // WSClient 反向 OneBot v11 WebSocket 客户端
@@ -107,7 +108,7 @@ func (c *WSClient) connectLoop(typ, addr string, conptr **wsConn, sendHandshake 
 		default:
 		}
 		if err := c.connect(typ, addr, conptr, sendHandshake); err != nil {
-			log.Printf("[onebot] 反向 WS %s 连接失败 %s: %v", typ, addr, err)
+			filelog.Warnf("[onebot] 反向 WS %s 连接失败 %s: %v", typ, addr, err)
 		}
 		select {
 		case <-c.stop:
@@ -181,7 +182,7 @@ func (c *WSClient) listenAPI(typ string, conn *wsConn) {
 		}
 		t, reader, err := conn.conn.NextReader()
 		if err != nil {
-			log.Printf("[onebot] 反向 WS %s 读取失败: %v", typ, err)
+			filelog.Warnf("[onebot] 反向 WS %s 读取失败: %v", typ, err)
 			return
 		}
 		buf := bytes.NewBuffer(nil)
@@ -205,7 +206,7 @@ func (c *WSClient) onEventPush(ev *Event) int {
 			return
 		}
 		if err := conn.writeText(ev.Raw); err != nil {
-			log.Printf("[onebot] 向反向 WS %s 推送事件失败: %v", typ, err)
+			filelog.Warnf("[onebot] 向反向 WS %s 推送事件失败: %v", typ, err)
 			_ = conn.close()
 			return
 		}

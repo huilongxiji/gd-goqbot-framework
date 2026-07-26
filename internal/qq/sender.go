@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"goqbot/internal/botgo/dto/keyboard"
 	"goqbot/internal/botgo/openapi"
 
+	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
 	"goqbot/internal/onebot"
 )
@@ -250,7 +250,7 @@ func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, even
 // 引用气泡只加在首条已发消息上，避免多段回复出现多个引用。
 func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.OutMessage) (string, error) {
 	if msg.Stream != nil {
-		log.Printf("[qq] 群聊不支持流式消息（stream 仅 C2C），已忽略 stream 参数按普通消息发送")
+		filelog.Warnf("[qq] 群聊不支持流式消息（stream 仅 C2C），已忽略 stream 参数按普通消息发送")
 	}
 	if text, img, ok := combineParts(msg); ok {
 		fi, err := s.uploadGroupImage(ctx, groupOpenID, *img)
