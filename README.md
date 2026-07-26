@@ -53,19 +53,21 @@
 - **群成员真实角色**：群消息 `sender.role` 透传真实 `owner` / `admin` / `member`，可直接配合 NoneBot `GROUP_OWNER` / `GROUP_ADMIN` 权限
 - **`union_openid` 跨 AppID 关联标识**：群 / 单聊消息在 QQ 下发时（需向平台申请配置）透传到事件级 `union_openid` 与 `sender.union_openid`，存在才写入
 - **单聊互动召回消息（`is_wakeup`）**：用户主动对话后 30 天内分 4 个周期每周期可下发 1 条（详见动作表）
-- 文本 / at / 图片 / 视频 / 语音 / **Markdown + Keyboard（按钮）** 消息段
+- **富媒体收发（图片 / 视频 / 语音 / 文件）**：群 / 单聊均支持**双向**收发；发送支持 `http(s)://` / `file://` / 本地绝对路径 / `base64://`，无需自建图床；**本地大文件（>10MB）自动走分片上传**
+- **单聊流式消息**：C2C 支持 `stream` 段分帧下发，实现打字机式实时输出（首帧建流并返回 `stream_id`，续帧串联，末帧收尾）
 - **单图文合一气泡**：一条消息恰含 1 张图片且无 markdown 时，文本自动并入该图片的富媒体消息，合并为一个气泡（文字在上、图在下），对齐手机 QQ 的图文混排观感
+- **Markdown + Keyboard（按钮）**：模板 / 原生 markdown + 自定义按钮；指令按钮 `action.anchor=1` 可**唤起手机端相册选图器**
 - **互动按钮回调**闭环：点击事件上报 + 自动被动 `event_id` 回复 + `put_interaction` 回执
+- **合并转发取回**：入站合并转发（"最近十条" / 全量聊天记录）解析为节点数组并缓存，下游用 `get_forward_msg` 取回
 - 入退群、好友增删、群 / C2C 主动推送开关等 **notice** 事件
 - 消息**撤回**（`delete_msg`）、消息**取回**（`get_msg`，内存缓存）
-- 图片 **base64 直传**（`http(s)://` / `file://` / 本地绝对路径 / `base64://`），无需自建图床
 - 正向 / 反向 WS，`access_token` 鉴权，lifecycle / heartbeat 元事件
 - 反向连接**失败缓存重发**，断线自动重连
 - **全下游掉线兜底**：所有下游断开时可回发 QQ 一段兜底文本
 - `array`（消息段数组）与 `string`（CQ 码）两种上报格式
 - `/gateway/bot` 网关频控查询（启动日志 + `get_gateway` 动作）
-- 美化日志排版（收 / 发 / 通知边框块；终端着色，重定向到文件自动去色）
-- **本地文件日志**：默认可执行文件同级 `logs/goqbot-YYYY-MM-DD.log` 按天滚动；单行日志统一为 `[Level] 时间 [来源] 消息` 格式
+- **分级日志与美化排版**：`[Info]` / `[Warning]` / `[Error]` 统一级别；收 / 发 / 通知渲染为边框块；终端按级别 / 语义上色（错误红、警告黄，仅 TTY），重定向到文件时自动去色
+- **本地文件日志**：默认可执行文件同级 `logs/goqbot-YYYY-MM-DD.log` 按天滚动；单行统一为 `[Level] 时间 [来源] 消息`，文件恒为纯文本
 
 ---
 
@@ -79,18 +81,20 @@
 | `get_status` | - | `{ online: true, good: true }` |
 | `get_version_info` | - | 程序名 / 版本 / 协议版本 |
 | `send_group_msg` | `group_id`, `message`, (`user_id`) | 发群消息（被动优先） |
-| `send_private_msg` | `user_id`, `message`, (`is_wakeup`) | 发单聊消息（被动优先）；传 `is_wakeup=true` 走互动召回消息 |
+| `send_private_msg` | `user_id`, `message`, (`is_wakeup`) | 发单聊消息（被动优先）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id` |
 | `send_msg` | `message_type` / 自动判定 + 对应 id + `message` | 按类型分派到群 / 私聊 |
 | `send_group_active_msg` | `group_id`, `message` | **强制主动**发群（忽略 reply / lazy 凭证） |
 | `send_private_active_msg` | `user_id`, `message` | **强制主动**发单聊 |
-| `send_private_msg`（`is_wakeup=true`） | `user_id`, `message`, `is_wakeup` | **单聊互动召回消息**：用户主动对话后 30 天内每周期 1 条，与 reply / 被动 `event_id` 互斥 |
 | `delete_msg` | `message_id` | 撤回（按 message_id 反查 QQ 原始 msg_id） |
 | `get_msg` | `message_id` | 取回收到时缓存的消息（仅内存） |
+| `get_forward_msg` | `id` / `message_id` | 取回合并转发的节点数组（入站解析后缓存，FIFO 有界） |
 | `get_openid` | `user_id` / `group_id` | 把数字 id 反查回 QQ 原始 openid |
 | `put_interaction` / `send_interaction_ack` | `interaction_id`, `code`(默认 0) | 互动按钮回执 |
 | `get_gateway`（别名 `get_gateway_bot` / `get_session_limit`） | - | 查询 WS 接入点与剩余可建连次数等频控信息 |
 
 > 未识别的 action 返回空 `ok`。
+>
+> **互动召回（`is_wakeup=true`）**：用户主动对话后 30 天内分 4 个周期（当天 / 1-3 天 / 3-7 天 / 7-30 天）每周期可下发 1 条，仅 C2C，与 reply / 被动 `event_id` 互斥。
 
 ### 消息段支持（`parseMessage`）
 
@@ -99,13 +103,19 @@
 | `text` | ✅ | ✅ |
 | `at` | ✅（`mentions.is_you` → at self） | ✅（转 `<@openid>`，at self/all 跳过） |
 | `image` | ✅（go-cqhttp 风格 `file=<md5>.image`） | ✅（base64 / url / 本地文件直传） |
-| `video` / `record` | ✅ | —— |
-| `markdown` + `keyboard` | —— | ✅（模板 / 原生 markdown，按钮 keyboard） |
-| `reply` | —— | ✅（取被引用消息作被动凭证） |
+| `video` | ✅ | ✅（简单上传 / 大文件分片） |
+| `record` / `voice` / `audio`（语音） | ✅ | ✅（简单上传 / 大文件分片） |
+| `file` | ✅（带 `name` / `file_size`） | ✅（可带 `name`；大文件分片） |
+| `markdown` + `keyboard` | —— | ✅（模板 / 原生 markdown，按钮 keyboard，支持 `anchor` 唤起相册） |
+| `stream` | —— | ✅（**仅 C2C**，流式分帧；见下方说明） |
+| `reply` | —— | ✅（取被引用消息作被动凭证 + REFIDX 引用索引） |
 
 - 入参支持 **array 段数组** 与 **CQ 字符串** 两种格式。
 - 输出为有序 `OutMessage.Parts`，**每个非文本段单独成一条 QQ 消息按序发出**（连续文本 / at 合并）。
 - **单图快路径**：当整条消息恰好为「文本 + 1 张图片」（无 markdown）时，所有文本并入该图片富媒体消息，合并成**一个气泡**，而非拆成图、文两条。
+- **富媒体来源**：`base64://` / `http(s)://` / `file://` / 本地绝对路径；本地文件 >10MB 自动切换分片上传，`file` / `video` 建议带含扩展名的 `name`（视频分片会自动补 `.mp4`）。
+
+> **流式消息（`stream` 段，仅 C2C）**：携带 `{state, id, index, reset}`。`state`：1 生成中 / 10 结束 / 11 引导生成中 / 20 引导结束。**首帧** `index=0` 且不带 `id`，发送成功后响应额外返回 `stream_id`；**续帧**把 `stream_id` 回填到 `id`、`index` 逐帧递增；**末帧** `state=10`。`index>=1` 缺 `id` 会被平台判为无效续帧；群聊会忽略 `stream` 并告警。
 
 ---
 
@@ -175,11 +185,13 @@
 # 编辑同级生成的 config.yml，填入 app_id / client_secret 等后重启
 ```
 
-运行后日志默认写入同级 `logs/goqbot-YYYY-MM-DD.log`（可在 `config.yml` 的 `log` 段关闭或改目录）。单行日志格式示例：
+运行后日志默认写入同级 `logs/goqbot-YYYY-MM-DD.log`（可在 `config.yml` 的 `log` 段关闭或改目录）。单行日志统一为 `[Level] 时间 [来源] 消息`；终端下 `[Error]` 红、`[Warning]` 黄，写入文件时自动去色。示例：
 
 ```text
 [Info] 2026-06-27 03:15:05 [qq] 机器人: 某某  self_id: 123456
 [Info] 2026-06-27 03:15:05 [botgo] Listening connected to gateway
+[Warning] 2026-06-27 03:16:12 [qq] Listening 退出: read: connection reset
+[Error] 2026-06-27 03:16:30 [qq] 连接失败: dial tcp: i/o timeout
 ```
 
 ### 3. 最小配置示例
@@ -231,7 +243,22 @@ await matcher.send("收到")
 async def _(bot, event):
     if getattr(event, "notice_type", "") == "interaction":
         await bot.call_api("put_interaction", interaction_id=event.interaction_id, code=0)
+
+# 富媒体：本地文件转 base64 后按对应段发送（完整示例见 src/plugins/media_upload_demo.py）
+seg = MessageSegment("record", {"file": "base64://...", "name": "demo.mp3"})  # 语音；video / file 同理
+await matcher.send(seg)
+
+# 私聊流式：首帧 index=0 无 id，取回 stream_id 串联后续帧（完整示例见 src/plugins/c2c_stream_demo.py）
+r = await bot.send_private_msg(user_id=uid,
+        message=MessageSegment("stream", {"state": 1, "index": 0}) + MessageSegment.text("这是"))
+sid = r["stream_id"]
+await bot.send_private_msg(user_id=uid,
+        message=MessageSegment("stream", {"state": 1, "id": sid, "index": 1}) + MessageSegment.text("续帧"))
+await bot.send_private_msg(user_id=uid,
+        message=MessageSegment("stream", {"state": 10, "id": sid, "index": 2}) + MessageSegment.text("收尾\n"))
 ```
+
+> **唤起相册**：发一条带 keyboard 的 markdown 消息，按钮 `action.type=2` + `anchor=1` 即可唤起手机端相册选图器（完整示例见 `src/plugins/c2c_stream_demo.py` 的 `/唤起相册`）。
 
 ---
 
