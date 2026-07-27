@@ -257,11 +257,8 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 		if err != nil {
 			return "", err
 		}
-		content := text
-		if content == "" {
-			content = " "
-		}
-		return s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, content, fi)
+		// content 可空：空串经 omitempty 省略，避免纯图片下方出现空白文本气泡
+		return s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, text, fi)
 	}
 	var lastID string
 	ref := msg.RefMsgID // 仅首条已发消息带引用，发出后清空
@@ -282,7 +279,7 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, " ", fi)
+			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, "", fi)
 			if err != nil {
 				return "", err
 			}
@@ -293,7 +290,7 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, " ", fi)
+			id, err := s.sendGroupMedia(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, "", fi)
 			if err != nil {
 				return "", err
 			}
@@ -474,11 +471,8 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 		if err != nil {
 			return "", err
 		}
-		content := text
-		if content == "" {
-			content = " "
-		}
-		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, msg.IsWakeup, content, fi)
+		// content 可空：空串经 omitempty 省略，避免纯图片下方出现空白文本气泡
+		return s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, msg.RefMsgID, msg.IsWakeup, text, fi)
 	}
 	var lastID string
 	ref := msg.RefMsgID // 仅首条已发消息带引用，发出后清空
@@ -499,7 +493,7 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, " ", fi)
+			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, "", fi)
 			if err != nil {
 				return "", err
 			}
@@ -510,7 +504,7 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 			if err != nil {
 				return "", err
 			}
-			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, " ", fi)
+			id, err := s.sendC2CMedia(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, "", fi)
 			if err != nil {
 				return "", err
 			}
