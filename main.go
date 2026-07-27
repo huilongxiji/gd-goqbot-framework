@@ -25,6 +25,7 @@ import (
 	"goqbot/internal/idmap"
 	"goqbot/internal/onebot"
 	"goqbot/internal/qq"
+	"goqbot/internal/sshmon"
 )
 
 // 项目名称与版本，随时在此修改（上报给 NoneBot 的 get_version_info 及启动日志均取此值）
@@ -143,6 +144,34 @@ func main() {
 	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
 	if err := qqClient.Start(ctx); err != nil {
 		filelog.Fatalf("启动 QQ 客户端失败: %v", err)
+	}
+
+	// 移动监控 sshmon（可选）
+	if cfg.SSHMon.Enabled {
+		smCfg := &sshmon.Config{
+			Enabled:        true,
+			Listen:         cfg.SSHMon.Listen,
+			DataDir:        cfg.SSHMon.DataDir,
+			RelayURL:       cfg.SSHMon.RelayURL,
+			PairingTTLSec:  cfg.SSHMon.PairingTTLSec,
+			NoneBotLogWS:   cfg.SSHMon.NoneBotLogWS,
+			P2PListen:      cfg.SSHMon.P2PListen,
+			ActiveGlobalPM: cfg.SSHMon.ActiveGlobalPM,
+			ActiveGroupPM:  cfg.SSHMon.ActiveGroupPM,
+		}
+		dataDir := smCfg.DataDir
+		if dataDir == "" {
+			dataDir = "sshmon"
+		}
+		if !filepath.IsAbs(dataDir) {
+			dataDir = filepath.Join(exeDir, dataDir)
+		}
+		sm, err := sshmon.Start(smCfg, dataDir, bus, caller)
+		if err != nil {
+			filelog.Errorf("[sshmon] 启动失败: %v", err)
+		} else if sm != nil {
+			defer sm.Stop()
+		}
 	}
 
 	log.Printf("%s %s 已启动，等待连接...", AppName, AppVersion)

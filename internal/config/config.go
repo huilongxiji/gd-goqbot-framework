@@ -18,6 +18,20 @@ type Config struct {
 	OneBot OneBotConfig `yaml:"onebot"`
 	IDMap  IDMapConfig  `yaml:"idmap"`
 	Log    LogConfig    `yaml:"log"`
+	SSHMon SSHMonConfig `yaml:"sshmon"`
+}
+
+// SSHMonConfig 移动监控内嵌 SSH（与 internal/sshmon.Config 字段对齐）
+type SSHMonConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Listen         string `yaml:"listen"`
+	DataDir        string `yaml:"data_dir"`
+	RelayURL       string `yaml:"relay_url"`
+	PairingTTLSec  int    `yaml:"pairing_ttl_sec"`
+	NoneBotLogWS   string `yaml:"nonebot_log_ws"`
+	P2PListen      string `yaml:"p2p_listen"`
+	ActiveGlobalPM int    `yaml:"active_global_pm"`
+	ActiveGroupPM  int    `yaml:"active_group_pm"`
 }
 
 // LogConfig 本地文件日志配置

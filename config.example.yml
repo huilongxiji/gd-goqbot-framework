@@ -53,6 +53,18 @@ log:
   enabled: true        # false=仅终端输出，不写本地日志文件
   path: "logs"           # 日志目录；相对路径=可执行文件同级；按天生成 goqbot-YYYY-MM-DD.log
 
+# 移动监控（内嵌 SSH + 可选中继 / NoneBot 日志 WS）
+sshmon:
+  enabled: false
+  listen: "0.0.0.0:2222"
+  data_dir: "sshmon"                 # host key / authorized_keys / server_id
+  relay_url: ""                      # 如 http://relay.example.com:8787 ；空=不向中继登记
+  pairing_ttl_sec: 300
+  nonebot_log_ws: ""                 # 如 ws://127.0.0.1:8081/log ；空=不订阅
+  p2p_listen: "0.0.0.0:2222"         # UDP 打洞口
+  active_global_pm: 60               # 全局主动条/分钟
+  active_group_pm: 20                # 单群主动条/分钟
+
 # ─── QQ Bot API v2 能力/频控说明（无需配置，仅备忘）───
 # 主动推送：
 #   * 群聊主动推送 2026/06/22 全量开放，需群主打开【机器人在群聊内发言】；每月每群最多 4 条主动消息，超额发送失败。

@@ -7,15 +7,26 @@
 *.dll
 *.so
 *.dylib
+goqbot
+goqbot-*
+!goqbot-*/**
+goqbot-relay
+goqbot-relay-*
 
-# Build output directory (cross-compiled binaries)
+# Build / release output (do not publish)
 dist/
+**/dist/
+*.apk
+*.aab
+*.ipa
+*.dSYM.zip
+*.symbols
 
-# Local development docs (not published to GitHub)
-docs/
-
-# Local log files (not published to GitHub)
+# Local log files
 logs/
+
+# sshmon runtime keys (local secrets)
+sshmon/
 
 # Test binary, built with `go test -c`
 *.test
@@ -33,9 +44,36 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# env / secrets
 .env
+*.jks
+*.keystore
+key.properties
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Flutter / Dart build & tooling
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/.pub-cache/
+mobile/.pub/
+mobile/build/
+mobile/coverage/
+mobile/**/doc/api/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/captures/
+mobile/android/.cxx/
+mobile/android/app/debug/
+mobile/android/app/profile/
+mobile/android/app/release/
+mobile/android/build/
+mobile/**/GeneratedPluginRegistrant.java
+mobile/**/*.iml
+mobile/.idea/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

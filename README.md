@@ -287,6 +287,13 @@ flowchart LR
 
 ---
 
+## 开发与协作
+
+- Git 分支与合入约定：[`docs/README.md`](docs/README.md)
+- 移动监控（SSH / 中继 / Flutter）：[`docs/monitor.md`](docs/monitor.md)
+
+---
+
 ## 致谢
 
 - [tencent-connect/botgo](https://github.com/tencent-connect/botgo) —— QQ 官方机器人 Go SDK（本项目内化使用）
