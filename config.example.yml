@@ -25,8 +25,8 @@ qq:
     # - "GroupMsgReceiveEventHandler"  # 群开启主动消息推送 -> notice group_msg_receive(自定义)
     # - "GroupJoinRequestEventHandler" # 用户申请加群 -> request/group（需机器人为群管理员）
     # - "GroupMemberEventHandler"      # 群成员进退群 -> notice group_increase/decrease（intent 1<<24，需在开放平台开启群成员事件）
-    # - "C2CMsgRejectEventHandler"     # 用户关闭 C2C 推送 -> notice c2c_msg_reject(自定义)
-    # - "C2CMsgReceiveEventHandler"    # 用户开启 C2C 推送 -> notice c2c_msg_receive(自定义)
+    # - "C2CMsgRejectEventHandler"     # 用户关闭 C2C 推送 -> notice c2c_msg_reject(自定义)；同时落库供 get_c2c_msg_state 查询
+    # - "C2CMsgReceiveEventHandler"    # 用户开启 C2C 推送 -> notice c2c_msg_receive(自定义)；同时落库供 get_c2c_msg_state 查询
     # - "InteractionHandler"           # 按钮交互：回传 notice(interaction)+message 事件；自动回执(PUT interactions)消除转圈；回复自动走被动 event_id；仍可用 put_interaction 覆盖回执码
     # - "ATMessageEventHandler"        # 频道 @（本期不转换）
     # - "DirectMessageEventHandler"    # 频道私信（本期不转换）
@@ -72,3 +72,7 @@ log:
 #   * get_group_info / get_group_bot_state：白名单接口，非白名单机器人调用返回 11253。
 #   * get_group_join_requests / set_group_add_request / set_group_ban / get_group_ban：需机器人为群管理员。
 #   * GROUP_JOIN_REQUEST 事件：同样需机器人为群管理员才会下发；审批用 set_group_add_request(flag=join_request_id)。
+# C2C 推送状态查询（非官方接口，本地事件缓存）：
+#   * get_c2c_msg_state（别名 get_friend_msg_state）：查用户是否开启主动消息推送。
+#   * 依赖启用 C2CMsgRejectEventHandler / C2CMsgReceiveEventHandler；状态写入 idmap（可持久化）。
+#   * 仅用户手动操作过开关才有记录；从未操作过返回 known=false（真正能否送达仍以发送结果为准）。

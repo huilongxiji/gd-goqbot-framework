@@ -236,6 +236,8 @@ func (c *Caller) Call(action string, params gjson.Result) map[string]any {
 		return c.getGroupBan(params)
 	case "set_group_whole_ban":
 		return failed(1404, "QQ群v2设置禁言接口仅支持成员级，不支持全员禁言")
+	case "get_c2c_msg_state", "get_friend_msg_state":
+		return c.getC2CMsgState(params)
 	default:
 		return ok(map[string]any{})
 	}
@@ -333,6 +335,40 @@ func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
 		"member_count":      info.GroupMemberNum,
 		"max_member_count":  0,
 	})
+}
+
+// getC2CMsgState 查询用户 C2C 主动消息推送开关（基于本地事件缓存，非官方接口）
+// 入参优先 user_openid，其次 user_id；从未收到过该用户开关事件时 known=false。
+func (c *Caller) getC2CMsgState(params gjson.Result) map[string]any {
+	openid := params.Get("user_openid").String()
+	uid := params.Get("user_id").Int()
+	if openid == "" {
+		if uid == 0 {
+			return failed(1400, "缺少 user_id 或 user_openid")
+		}
+		oid, found := c.ids.OpenID(uid)
+		if !found || oid == "" {
+			return failed(1404, "未知 user_id 或未收到过该用户消息")
+		}
+		openid = oid
+	}
+	if uid == 0 {
+		uid = c.ids.ID(openid)
+	}
+	st, known := c.ids.GetC2CMsgState(openid)
+	data := map[string]any{
+		"user_id":     uid,
+		"user_openid": openid,
+		"known":       known,
+	}
+	if known {
+		data["allow_proactive_msg"] = st.Allow
+		data["updated_at"] = st.UpdatedAt
+	} else {
+		data["allow_proactive_msg"] = nil
+		data["updated_at"] = 0
+	}
+	return ok(data)
 }
 
 // getGroupBotState 获取机器人群内状态（官方白名单接口）

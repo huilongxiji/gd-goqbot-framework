@@ -52,8 +52,9 @@ type lazyEntry struct {
 
 // bbolt 桶名
 var (
-	bucketIDs     = []byte("ids")     // i:<int64> -> openid（反查）
-	bucketMsgMeta = []byte("msgmeta") // <int64 message_id> -> json(MsgMeta)
+	bucketIDs      = []byte("ids")      // i:<int64> -> openid（反查）
+	bucketMsgMeta  = []byte("msgmeta")  // <int64 message_id> -> json(MsgMeta)
+	bucketC2CState = []byte("c2cstate") // openid -> json(C2CMsgState)
 )
 
 // JoinRequestMeta 入群申请上下文，供 set_group_add_request 按 flag 反查审批参数
@@ -61,6 +62,13 @@ type JoinRequestMeta struct {
 	GroupOpenID   string // 群 openid
 	MemberOpenID  string // 申请人 openid
 	JoinRequestID string // 官方申请 ID（通常与 flag 相同）
+}
+
+// C2CMsgState 用户 C2C 主动消息推送开关状态（由 C2C_MSG_REJECT/RECEIVE 事件落库）
+type C2CMsgState struct {
+	OpenID    string `json:"openid"`
+	Allow     bool   `json:"allow"`      // true=开启主动消息
+	UpdatedAt int64  `json:"updated_at"` // 事件时间戳(秒)
 }
 
 // Store openid<->int64 映射、message_id 映射与 lazy 池。
@@ -72,6 +80,8 @@ type Store struct {
 	msg2meta sync.Map // int64 -> MsgMeta
 
 	joinReq sync.Map // string(flag=join_request_id) -> JoinRequestMeta
+
+	c2cState sync.Map // string(openid) -> C2CMsgState
 
 	lazy       sync.Map // string(key) -> *lazyEntry
 	seqCounter sync.Map // string(msgID) -> *int32
@@ -94,7 +104,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketIDs, bucketMsgMeta} {
+		for _, b := range [][]byte{bucketIDs, bucketMsgMeta, bucketC2CState} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -322,4 +332,48 @@ func (s *Store) DeleteJoinRequest(flag string) {
 		return
 	}
 	s.joinReq.Delete(flag)
+}
+
+// PutC2CMsgState 登记用户 C2C 主动消息推送开关状态（写内存，db 非空时持久化）
+func (s *Store) PutC2CMsgState(openid string, allow bool, ts int64) {
+	if openid == "" {
+		return
+	}
+	st := C2CMsgState{OpenID: openid, Allow: allow, UpdatedAt: ts}
+	s.c2cState.Store(openid, st)
+	if s.db != nil {
+		if b, err := json.Marshal(st); err == nil {
+			_ = s.db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket(bucketC2CState).Put([]byte(openid), b)
+			})
+		}
+	}
+}
+
+// GetC2CMsgState 按 openid 取回 C2C 推送开关状态（内存未命中时回落 db）
+func (s *Store) GetC2CMsgState(openid string) (C2CMsgState, bool) {
+	if openid == "" {
+		return C2CMsgState{}, false
+	}
+	if v, ok := s.c2cState.Load(openid); ok {
+		return v.(C2CMsgState), true
+	}
+	if s.db == nil {
+		return C2CMsgState{}, false
+	}
+	var st C2CMsgState
+	found := false
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(bucketC2CState).Get([]byte(openid)); v != nil {
+			if err := json.Unmarshal(v, &st); err == nil {
+				found = true
+			}
+		}
+		return nil
+	})
+	if !found {
+		return C2CMsgState{}, false
+	}
+	s.c2cState.Store(openid, st)
+	return st, true
 }

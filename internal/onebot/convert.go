@@ -1109,10 +1109,12 @@ func (c *Converter) C2CMsgReject(data *dto.WSC2CManageData) {
 	if data == nil {
 		return
 	}
+	ts := tsToUnix(data.Timestamp)
+	c.ids.PutC2CMsgState(data.OpenID, false, ts)
 	c.pushNotice(map[string]any{
 		"post_type":   "notice",
 		"notice_type": "c2c_msg_reject",
-		"time":        tsToUnix(data.Timestamp),
+		"time":        ts,
 		"self_id":     c.selfID(),
 		"user_id":     c.ids.ID(data.OpenID),
 		"user_openid": data.OpenID,
@@ -1244,10 +1246,12 @@ func (c *Converter) C2CMsgReceive(data *dto.WSC2CManageData) {
 	if data == nil {
 		return
 	}
+	ts := tsToUnix(data.Timestamp)
+	c.ids.PutC2CMsgState(data.OpenID, true, ts)
 	c.pushNotice(map[string]any{
 		"post_type":   "notice",
 		"notice_type": "c2c_msg_receive",
-		"time":        tsToUnix(data.Timestamp),
+		"time":        ts,
 		"self_id":     c.selfID(),
 		"user_id":     c.ids.ID(data.OpenID),
 		"user_openid": data.OpenID,
