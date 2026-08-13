@@ -38,13 +38,14 @@ var DefaultHandlers struct {
 	SubscribeMsgStatus SubscribeMsgStatusEventHandler
 	C2CFriend          C2CFriendEventHandler
 
-	GroupAddRobot   GroupAddRobotEventHandler
-	GroupDelRobot   GroupDelRobotEventHandler
-	GroupMsgReject  GroupMsgRejectEventHandler
-	GroupMsgReceive GroupMsgReceiveEventHandler
-	GroupMember     GroupMemberEventHandler
-	C2CMsgReject    C2CMsgRejectEventHandler
-	C2CMsgReceive   C2CMsgReceiveEventHandler
+	GroupAddRobot     GroupAddRobotEventHandler
+	GroupDelRobot     GroupDelRobotEventHandler
+	GroupMsgReject    GroupMsgRejectEventHandler
+	GroupMsgReceive   GroupMsgReceiveEventHandler
+	GroupJoinRequest  GroupJoinRequestEventHandler
+	GroupMember       GroupMemberEventHandler
+	C2CMsgReject      C2CMsgRejectEventHandler
+	C2CMsgReceive     C2CMsgReceiveEventHandler
 
 	EnterAIO EnterAIOEventHandler
 }
@@ -148,6 +149,9 @@ type GroupMsgRejectEventHandler func(event *dto.WSPayload, data *dto.WSGroupRobo
 // GroupMsgReceiveEventHandler 群开启机器人主动消息推送事件 handler
 type GroupMsgReceiveEventHandler func(event *dto.WSPayload, data *dto.WSGroupRobotData) error
 
+// GroupJoinRequestEventHandler 用户申请加群事件 handler（需机器人为群管理员）
+type GroupJoinRequestEventHandler func(event *dto.WSPayload, data *dto.WSGroupJoinRequestData) error
+
 // GroupMemberEventHandler 群成员进退群事件 handler（GROUP_MEMBER_ADD / GROUP_MEMBER_REMOVE）
 type GroupMemberEventHandler func(event *dto.WSPayload, data *dto.WSGroupMemberData) error
 
@@ -195,6 +199,9 @@ func RegisterHandlers(handlers ...interface{}) dto.Intent {
 		case GroupMsgReceiveEventHandler:
 			DefaultHandlers.GroupMsgReceive = handle
 			i = i | dto.EventToIntent(dto.EventGroupMsgReceive)
+		case GroupJoinRequestEventHandler:
+			DefaultHandlers.GroupJoinRequest = handle
+			i = i | dto.EventToIntent(dto.EventGroupJoinRequest)
 		case GroupMemberEventHandler:
 			DefaultHandlers.GroupMember = handle
 			i = i | dto.EventToIntent(dto.EventGroupMemberAdd, dto.EventGroupMemberRemove)

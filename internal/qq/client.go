@@ -207,6 +207,12 @@ func (c *Client) registerHandlers() dto.Intent {
 					c.conv.GroupMsgReceive(data)
 					return nil
 				}))
+		case "GroupJoinRequestEventHandler":
+			handlers = append(handlers, event.GroupJoinRequestEventHandler(
+				func(_ *dto.WSPayload, data *dto.WSGroupJoinRequestData) error {
+					c.conv.GroupJoinRequest(data)
+					return nil
+				}))
 		case "GroupMemberEventHandler":
 			handlers = append(handlers, event.GroupMemberEventHandler(
 				func(p *dto.WSPayload, data *dto.WSGroupMemberData) error {

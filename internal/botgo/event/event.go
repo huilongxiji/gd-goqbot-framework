@@ -68,6 +68,7 @@ var eventParseFuncMap = map[dto.OPCode]map[dto.EventType]eventParseFunc{
 		dto.EventGroupDelRobot:     groupDelRobotHandler,
 		dto.EventGroupMsgReject:    groupMsgRejectHandler,
 		dto.EventGroupMsgReceive:   groupMsgReceiveHandler,
+		dto.EventGroupJoinRequest:  groupJoinRequestHandler,
 		dto.EventGroupMemberAdd:    groupMemberEventHandler,
 		dto.EventGroupMemberRemove: groupMemberEventHandler,
 		dto.EventC2CMsgReject:      c2cMsgRejectHandler,
@@ -417,6 +418,17 @@ func groupMsgReceiveHandler(payload *dto.WSPayload, message []byte) error {
 	}
 	if DefaultHandlers.GroupMsgReceive != nil {
 		return DefaultHandlers.GroupMsgReceive(payload, data)
+	}
+	return nil
+}
+
+func groupJoinRequestHandler(payload *dto.WSPayload, message []byte) error {
+	data := &dto.WSGroupJoinRequestData{}
+	if err := ParseData(message, data); err != nil {
+		return err
+	}
+	if DefaultHandlers.GroupJoinRequest != nil {
+		return DefaultHandlers.GroupJoinRequest(payload, data)
 	}
 	return nil
 }

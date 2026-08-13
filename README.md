@@ -91,10 +91,20 @@
 | `get_openid` | `user_id` / `group_id` | 把数字 id 反查回 QQ 原始 openid |
 | `put_interaction` / `send_interaction_ack` | `interaction_id`, `code`(默认 0) | 互动按钮回执 |
 | `get_gateway`（别名 `get_gateway_bot` / `get_session_limit`） | - | 查询 WS 接入点与剩余可建连次数等频控信息 |
+| `get_group_info` | `group_id` | 获取群基本信息（官方白名单，非白名单返回 11253） |
+| `get_group_bot_state` | `group_id` | 获取机器人群内状态（白名单） |
+| `get_group_member_info` | `group_id`, `user_id` | **仅** `user_id=self_id` 时走 bot_state；查他人返回 1404 |
+| `get_group_join_requests`（别名 `get_group_system_msg`） | `group_id`, (`cursor`/`limit`) | 拉取入群申请列表（需群管理员） |
+| `set_group_add_request` | `flag`, `approve`, (`reason`/`blacklist`) | 审批入群申请；`flag`=官方 `join_request_id`（需群管理员） |
+| `set_group_ban` | `group_id`, `user_id`, `duration` | 成员禁言（秒；0=解除；需群管理员） |
+| `get_group_ban`（别名 `get_group_mute`） | `group_id` | 查询群禁言状态（需群管理员） |
+| `set_group_whole_ban` | - | **不支持**（官方设置接口仅成员级，返回 1404） |
 
 > 未识别的 action 返回空 `ok`。
 >
 > **互动召回（`is_wakeup=true`）**：用户主动对话后 30 天内分 4 个周期（当天 / 1-3 天 / 3-7 天 / 7-30 天）每周期可下发 1 条，仅 C2C，与 reply / 被动 `event_id` 互斥。
+>
+> **群聊管理权限**：`info`/`bot_state` 为白名单接口；入群申请列表/审批、禁言查询/设置需机器人具备群管理员身份。权限不足时透传 QQ 原始错误，不做假成功。
 
 ### 消息段支持（`parseMessage`）
 
@@ -130,6 +140,9 @@
 | GROUP_DEL_ROBOT | 机器人被移出群 | `notice/group_decrease` | `GroupDelRobotEventHandler` |
 | GROUP_MSG_REJECT | 群关闭主动消息推送 | `notice/group_msg_reject`（自定义） | `GroupMsgRejectEventHandler` |
 | GROUP_MSG_RECEIVE | 群开启主动消息推送 | `notice/group_msg_receive`（自定义） | `GroupMsgReceiveEventHandler` |
+| GROUP_JOIN_REQUEST | 用户申请加群 | `request/group`（`flag`=`join_request_id`） | `GroupJoinRequestEventHandler`（需群管理员） |
+| GROUP_MEMBER_ADD | 群成员加入 | `notice/group_increase` | `GroupMemberEventHandler` |
+| GROUP_MEMBER_REMOVE | 群成员退出 | `notice/group_decrease` | `GroupMemberEventHandler` |
 | FRIEND_ADD | 用户添加机器人好友 | `notice/friend_add` | `C2CFriendEventHandler` |
 | FRIEND_DEL | 用户删除机器人好友 | `notice/friend_decrease`（自定义） | `C2CFriendEventHandler` |
 | C2C_MSG_REJECT | 用户关闭单聊主动消息 | `notice/c2c_msg_reject`（自定义） | `C2CMsgRejectEventHandler` |

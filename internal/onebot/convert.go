@@ -1025,6 +1025,55 @@ func (c *Converter) GroupMsgReceive(data *dto.WSGroupRobotData) {
 	})
 }
 
+// GroupJoinRequest 用户申请加群 -> request/group（需机器人为群管理员）
+func (c *Converter) GroupJoinRequest(data *dto.WSGroupJoinRequestData) {
+	if data == nil || data.JoinRequestID == "" || data.MemberOpenID == "" {
+		return
+	}
+	subType := "add"
+	if data.ApplySource == "invited" {
+		subType = "invite"
+	}
+	comment := ""
+	if data.VerifyInfo != nil {
+		comment = data.VerifyInfo.VerifyMessage
+	}
+	flag := data.JoinRequestID
+	c.ids.PutJoinRequest(flag, idmap.JoinRequestMeta{
+		GroupOpenID:   data.GroupOpenID,
+		MemberOpenID:  data.MemberOpenID,
+		JoinRequestID: data.JoinRequestID,
+	})
+	ev := map[string]any{
+		"post_type":       "request",
+		"request_type":    "group",
+		"sub_type":        subType,
+		"time":            time.Now().Unix(),
+		"self_id":         c.selfID(),
+		"group_id":        c.ids.ID(data.GroupOpenID),
+		"group_openid":    data.GroupOpenID,
+		"user_id":         c.ids.ID(data.MemberOpenID),
+		"user_openid":     data.MemberOpenID,
+		"comment":         comment,
+		"flag":            flag,
+		"username":        data.Username,
+		"apply_source":    data.ApplySource,
+		"join_request_id": data.JoinRequestID,
+	}
+	if data.InvitedBy != "" {
+		ev["invited_by"] = data.InvitedBy
+		ev["invited_by_id"] = c.ids.ID(data.InvitedBy)
+	}
+	if data.UnionOpenID != "" {
+		ev["union_openid"] = data.UnionOpenID
+	}
+	if data.AutoApproved != nil && data.AutoApproved.StrategyID != "" {
+		ev["auto_approved"] = true
+		ev["strategy_id"] = data.AutoApproved.StrategyID
+	}
+	c.pushNotice(ev)
+}
+
 // FriendAdd 用户添加机器人为好友 -> notice/friend_add（标准）
 func (c *Converter) FriendAdd(data *dto.WSC2CFriendData) {
 	if data == nil {

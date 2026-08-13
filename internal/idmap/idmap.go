@@ -56,6 +56,13 @@ var (
 	bucketMsgMeta = []byte("msgmeta") // <int64 message_id> -> json(MsgMeta)
 )
 
+// JoinRequestMeta 入群申请上下文，供 set_group_add_request 按 flag 反查审批参数
+type JoinRequestMeta struct {
+	GroupOpenID   string // 群 openid
+	MemberOpenID  string // 申请人 openid
+	JoinRequestID string // 官方申请 ID（通常与 flag 相同）
+}
+
 // Store openid<->int64 映射、message_id 映射与 lazy 池。
 // 内存 sync.Map 作缓存，db 非空时写穿/读穿持久化。
 type Store struct {
@@ -63,6 +70,8 @@ type Store struct {
 	open2id sync.Map // string -> int64
 
 	msg2meta sync.Map // int64 -> MsgMeta
+
+	joinReq sync.Map // string(flag=join_request_id) -> JoinRequestMeta
 
 	lazy       sync.Map // string(key) -> *lazyEntry
 	seqCounter sync.Map // string(msgID) -> *int32
@@ -282,4 +291,35 @@ func (s *Store) NextSeq(msgID string) uint32 {
 	v, _ := s.seqCounter.LoadOrStore(msgID, new(int32))
 	p := v.(*int32)
 	return uint32(atomic.AddInt32(p, 1))
+}
+
+// PutJoinRequest 登记入群申请 flag→上下文（仅内存，审批后可 DeleteJoinRequest）
+func (s *Store) PutJoinRequest(flag string, meta JoinRequestMeta) {
+	if flag == "" || meta.GroupOpenID == "" || meta.MemberOpenID == "" {
+		return
+	}
+	if meta.JoinRequestID == "" {
+		meta.JoinRequestID = flag
+	}
+	s.joinReq.Store(flag, meta)
+}
+
+// GetJoinRequest 按 flag 取回入群申请上下文
+func (s *Store) GetJoinRequest(flag string) (JoinRequestMeta, bool) {
+	if flag == "" {
+		return JoinRequestMeta{}, false
+	}
+	v, ok := s.joinReq.Load(flag)
+	if !ok {
+		return JoinRequestMeta{}, false
+	}
+	return v.(JoinRequestMeta), true
+}
+
+// DeleteJoinRequest 清除已处理的入群申请 flag
+func (s *Store) DeleteJoinRequest(flag string) {
+	if flag == "" {
+		return
+	}
+	s.joinReq.Delete(flag)
 }

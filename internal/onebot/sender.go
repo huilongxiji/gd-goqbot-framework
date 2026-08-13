@@ -70,6 +70,80 @@ type MessageSender interface {
 	RetractC2C(ctx context.Context, userOpenID, qqMsgID string) error
 	// AckInteraction 回执互动事件（按钮点击），code 为回执结果码
 	AckInteraction(ctx context.Context, interactionID string, code int) error
+
+	// GetGroupInfo 获取群基本信息（白名单）
+	GetGroupInfo(ctx context.Context, groupOpenID string) (*GroupInfo, error)
+	// GetGroupBotState 获取机器人群内状态（白名单）
+	GetGroupBotState(ctx context.Context, groupOpenID string) (*GroupBotState, error)
+	// GetGroupJoinRequests 拉取入群申请列表（需群管理员）
+	GetGroupJoinRequests(ctx context.Context, groupOpenID string, cursor string, limit int) (*JoinRequestList, error)
+	// ApproveGroupJoinRequest 审批入群申请（需群管理员）
+	ApproveGroupJoinRequest(ctx context.Context, groupOpenID, memberOpenID, joinRequestID, op, rejectReason string, blacklist bool) error
+	// GetGroupMute 查询群禁言状态（需群管理员）
+	GetGroupMute(ctx context.Context, groupOpenID string) (*RestrictChatSetting, error)
+	// SetGroupMute 设置群成员禁言（需群管理员；单次最多 10 人）
+	SetGroupMute(ctx context.Context, groupOpenID string, ops []MuteOp) error
+}
+
+// GroupInfo 群基本信息（OneBot 侧视图）
+type GroupInfo struct {
+	GroupOpenID     string
+	GroupName       string
+	GroupFingerMemo string
+	GroupClassText  string
+	GroupTags       []string
+	GroupMemberNum  int
+}
+
+// GroupBotState 机器人群内状态
+type GroupBotState struct {
+	MemberOpenID      string
+	JoinedAt          string
+	AllowProactiveMsg bool
+	RecvMsgSetting    string
+	MemberRole        string
+}
+
+// JoinRequestList 入群申请列表
+type JoinRequestList struct {
+	List       []JoinRequest
+	NextCursor string
+}
+
+// JoinRequest 单条入群申请
+type JoinRequest struct {
+	JoinRequestID string
+	RiskTips      string
+	UnionOpenID   string
+	MemberOpenID  string
+	Username      string
+	ApplyAt       string
+	ApplySource   string
+	InvitedBy     string
+	Bot           bool
+	VerifyMessage string
+	VerifyMethod  string
+}
+
+// RestrictChatSetting 群禁言状态
+type RestrictChatSetting struct {
+	GlobalMode string
+	Members    []MemberMute
+}
+
+// MemberMute 成员禁言项
+type MemberMute struct {
+	MemberOpenID string
+	MuteExpireAt string
+	Username     string
+	UnionOpenID  string
+}
+
+// MuteOp 成员禁言操作
+type MuteOp struct {
+	Op           string // add / update / del
+	MemberOpenID string
+	MuteExpireAt string // RFC3339；op=del 时可空
 }
 
 // GatewayInfo /gateway/bot 返回的 ws 接入点频控信息

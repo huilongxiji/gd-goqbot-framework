@@ -220,6 +220,22 @@ func (c *Caller) Call(action string, params gjson.Result) map[string]any {
 		return c.getOpenid(params)
 	case "get_gateway", "get_gateway_bot", "_get_gateway", "get_session_limit":
 		return c.getGateway()
+	case "get_group_info":
+		return c.getGroupInfo(params)
+	case "get_group_bot_state":
+		return c.getGroupBotState(params)
+	case "get_group_member_info":
+		return c.getGroupMemberInfo(params)
+	case "get_group_join_requests", "get_group_system_msg":
+		return c.getGroupJoinRequests(params)
+	case "set_group_add_request":
+		return c.setGroupAddRequest(params)
+	case "set_group_ban":
+		return c.setGroupBan(params)
+	case "get_group_ban", "get_group_mute":
+		return c.getGroupBan(params)
+	case "set_group_whole_ban":
+		return failed(1404, "QQ群v2设置禁言接口仅支持成员级，不支持全员禁言")
 	default:
 		return ok(map[string]any{})
 	}
@@ -274,6 +290,311 @@ func (c *Caller) getForwardMsg(params gjson.Result) map[string]any {
 		return failed(1404, "未知 forward id")
 	}
 	return ok(map[string]any{"messages": nodes})
+}
+
+// resolveGroupOpenID 从 group_id 反查群 openid
+func (c *Caller) resolveGroupOpenID(params gjson.Result) (string, map[string]any) {
+	gid := params.Get("group_id").Int()
+	if gid == 0 {
+		return "", failed(1400, "缺少 group_id")
+	}
+	oid, ok := c.ids.OpenID(gid)
+	if !ok || oid == "" {
+		return "", failed(1404, "未知 group_id 或未收到过该群消息")
+	}
+	return oid, nil
+}
+
+// getGroupInfo 获取群基本信息（官方白名单接口）
+func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	info, err := sender.GetGroupInfo(ctx, groupOpenID)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	gid := params.Get("group_id").Int()
+	return ok(map[string]any{
+		"group_id":          gid,
+		"group_openid":      info.GroupOpenID,
+		"group_name":        info.GroupName,
+		"group_memo":        info.GroupFingerMemo,
+		"group_finger_memo": info.GroupFingerMemo,
+		"group_class_text":  info.GroupClassText,
+		"group_tags":        info.GroupTags,
+		"member_count":      info.GroupMemberNum,
+		"max_member_count":  0,
+	})
+}
+
+// getGroupBotState 获取机器人群内状态（官方白名单接口）
+func (c *Caller) getGroupBotState(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	st, err := sender.GetGroupBotState(ctx, groupOpenID)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(map[string]any{
+		"group_id":            params.Get("group_id").Int(),
+		"group_openid":        groupOpenID,
+		"member_openid":       st.MemberOpenID,
+		"joined_at":           st.JoinedAt,
+		"allow_proactive_msg": st.AllowProactiveMsg,
+		"recv_msg_setting":    st.RecvMsgSetting,
+		"member_role":         st.MemberRole,
+	})
+}
+
+// getGroupMemberInfo 获取群成员信息：仅支持查询机器人自身（走 bot_state）
+func (c *Caller) getGroupMemberInfo(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
+	}
+	uid := params.Get("user_id").Int()
+	if uid == 0 {
+		return failed(1400, "缺少 user_id")
+	}
+	if uid != c.getSelfID() {
+		return failed(1404, "QQ群v2无获取其他成员信息的接口；仅支持查询机器人自身（user_id=self_id，走 bot_state）")
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	st, err := sender.GetGroupBotState(ctx, groupOpenID)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	role := st.MemberRole
+	if role == "" {
+		role = "member"
+	}
+	return ok(map[string]any{
+		"group_id":              params.Get("group_id").Int(),
+		"user_id":               uid,
+		"nickname":              c.getNickname(),
+		"card":                  "",
+		"sex":                   "unknown",
+		"age":                   0,
+		"area":                  "",
+		"join_time":             0,
+		"last_sent_time":        0,
+		"level":                 "0",
+		"role":                  role,
+		"unfriendly":            false,
+		"title":                 "",
+		"title_expire_time":     0,
+		"card_changeable":       false,
+		"joined_at":             st.JoinedAt,
+		"allow_proactive_msg":   st.AllowProactiveMsg,
+		"recv_msg_setting":      st.RecvMsgSetting,
+		"member_openid":         st.MemberOpenID,
+	})
+}
+
+// getGroupJoinRequests 拉取入群申请列表（需群管理员）
+func (c *Caller) getGroupJoinRequests(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	cursor := params.Get("cursor").String()
+	limit := int(params.Get("limit").Int())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	list, err := sender.GetGroupJoinRequests(ctx, groupOpenID, cursor, limit)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	items := make([]map[string]any, 0, len(list.List))
+	for _, jr := range list.List {
+		c.ids.PutJoinRequest(jr.JoinRequestID, idmap.JoinRequestMeta{
+			GroupOpenID:   groupOpenID,
+			MemberOpenID:  jr.MemberOpenID,
+			JoinRequestID: jr.JoinRequestID,
+		})
+		items = append(items, map[string]any{
+			"join_request_id": jr.JoinRequestID,
+			"flag":            jr.JoinRequestID,
+			"user_id":         c.ids.ID(jr.MemberOpenID),
+			"user_openid":     jr.MemberOpenID,
+			"union_openid":    jr.UnionOpenID,
+			"username":        jr.Username,
+			"apply_at":        jr.ApplyAt,
+			"apply_source":    jr.ApplySource,
+			"invited_by":      jr.InvitedBy,
+			"bot":             jr.Bot,
+			"comment":         jr.VerifyMessage,
+			"verify_method":   jr.VerifyMethod,
+			"risk_tips":       jr.RiskTips,
+		})
+	}
+	return ok(map[string]any{
+		"group_id":     params.Get("group_id").Int(),
+		"group_openid": groupOpenID,
+		"list":         items,
+		"next_cursor":  list.NextCursor,
+	})
+}
+
+// setGroupAddRequest 处理加群请求（需群管理员）
+func (c *Caller) setGroupAddRequest(params gjson.Result) map[string]any {
+	flag := strings.TrimSpace(params.Get("flag").String())
+	if flag == "" {
+		flag = strings.TrimSpace(params.Get("join_request_id").String())
+	}
+	if flag == "" {
+		return failed(1400, "缺少 flag / join_request_id")
+	}
+	meta, okMeta := c.ids.GetJoinRequest(flag)
+	if !okMeta {
+		// 允许调用方显式传入 group_id + user_id 兜底
+		groupOpenID := ""
+		memberOpenID := ""
+		if gid := params.Get("group_id").Int(); gid != 0 {
+			if oid, ok := c.ids.OpenID(gid); ok {
+				groupOpenID = oid
+			}
+		}
+		if uid := params.Get("user_id").Int(); uid != 0 {
+			if oid, ok := c.ids.OpenID(uid); ok {
+				memberOpenID = oid
+			}
+		}
+		if groupOpenID == "" || memberOpenID == "" {
+			return failed(1404, "未知 flag：未收到对应入群申请事件，且未提供可反查的 group_id/user_id")
+		}
+		meta = idmap.JoinRequestMeta{
+			GroupOpenID:   groupOpenID,
+			MemberOpenID:  memberOpenID,
+			JoinRequestID: flag,
+		}
+	}
+	approve := true
+	if params.Get("approve").Exists() {
+		approve = params.Get("approve").Bool()
+	}
+	op := "approve"
+	if !approve {
+		op = "decline"
+	}
+	reason := params.Get("reason").String()
+	if reason == "" {
+		reason = params.Get("reject_reason").String()
+	}
+	blacklist := params.Get("add_to_member_blacklist").Bool()
+	if params.Get("blacklist").Exists() {
+		blacklist = params.Get("blacklist").Bool()
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := sender.ApproveGroupJoinRequest(ctx, meta.GroupOpenID, meta.MemberOpenID, meta.JoinRequestID, op, reason, blacklist); err != nil {
+		return failed(1500, err.Error())
+	}
+	c.ids.DeleteJoinRequest(flag)
+	return ok(map[string]any{})
+}
+
+// setGroupBan 设置/解除群成员禁言（需群管理员）
+func (c *Caller) setGroupBan(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
+	}
+	uid := params.Get("user_id").Int()
+	if uid == 0 {
+		return failed(1400, "缺少 user_id")
+	}
+	memberOpenID, okOID := c.ids.OpenID(uid)
+	if !okOID || memberOpenID == "" {
+		return failed(1404, "未知 user_id 或未收到过该用户消息")
+	}
+	duration := params.Get("duration").Int() // 秒；0=解除
+	op := onebotMuteOp("add", memberOpenID, duration)
+	if duration <= 0 {
+		op = onebotMuteOp("del", memberOpenID, 0)
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := sender.SetGroupMute(ctx, groupOpenID, []MuteOp{op}); err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(map[string]any{})
+}
+
+// onebotMuteOp 构造禁言操作
+func onebotMuteOp(op, memberOpenID string, durationSec int64) MuteOp {
+	m := MuteOp{Op: op, MemberOpenID: memberOpenID}
+	if op == "add" || op == "update" {
+		m.MuteExpireAt = time.Now().Add(time.Duration(durationSec) * time.Second).Format(time.RFC3339)
+	}
+	return m
+}
+
+// getGroupBan 查询群禁言状态（需群管理员）
+func (c *Caller) getGroupBan(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	st, err := sender.GetGroupMute(ctx, groupOpenID)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	members := make([]map[string]any, 0, len(st.Members))
+	for _, m := range st.Members {
+		members = append(members, map[string]any{
+			"user_id":         c.ids.ID(m.MemberOpenID),
+			"user_openid":     m.MemberOpenID,
+			"mute_expire_at":  m.MuteExpireAt,
+			"username":        m.Username,
+			"union_openid":    m.UnionOpenID,
+		})
+	}
+	return ok(map[string]any{
+		"group_id":     params.Get("group_id").Int(),
+		"group_openid": groupOpenID,
+		"global_mode":  st.GlobalMode,
+		"members":      members,
+	})
 }
 
 // getGateway 查询 /gateway/bot，返回 ws 接入点与连接频控（剩余可建连次数等）

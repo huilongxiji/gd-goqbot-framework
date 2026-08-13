@@ -30,6 +30,23 @@ type OpenAPI interface {
 	WebhookAPI
 	InteractionAPI
 	MessageSettingAPI
+	GroupManageAPI
+}
+
+// GroupManageAPI 群聊管理接口（QQ 群 v2）
+type GroupManageAPI interface {
+	// GroupInfo 获取群基本信息（白名单）
+	GroupInfo(ctx context.Context, groupID string) (*dto.GroupInfo, error)
+	// GroupBotState 获取机器人群内状态（白名单）
+	GroupBotState(ctx context.Context, groupID string) (*dto.GroupBotState, error)
+	// GroupJoinRequestList 拉取入群申请列表（需群管理员）
+	GroupJoinRequestList(ctx context.Context, groupID string, pager *dto.JoinRequestListPager) (*dto.JoinRequestList, error)
+	// ApprovalGroupJoinRequest 审批入群申请（需群管理员）
+	ApprovalGroupJoinRequest(ctx context.Context, groupID, memberID string, req *dto.ApprovalJoinRequestReq) error
+	// GroupRestrictChatSetting 查询群禁言状态（需群管理员）
+	GroupRestrictChatSetting(ctx context.Context, groupID string) (*dto.RestrictChatSetting, error)
+	// SetGroupRestrictChat 设置群成员禁言（需群管理员）
+	SetGroupRestrictChat(ctx context.Context, groupID string, req *dto.SetRestrictChatReq) error
 }
 
 // Base 基础能力接口

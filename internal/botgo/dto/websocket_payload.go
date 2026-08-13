@@ -142,5 +142,8 @@ type WSGroupRobotData GroupRobotEvent
 // WSGroupMemberData 群成员进退群事件
 type WSGroupMemberData GroupMemberEvent
 
+// WSGroupJoinRequestData 用户申请加群事件
+type WSGroupJoinRequestData GroupJoinRequestEvent
+
 // WSC2CManageData C2C 主动消息推送开关事件
 type WSC2CManageData C2CManageData

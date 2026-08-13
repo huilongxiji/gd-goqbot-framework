@@ -537,6 +537,118 @@ func (s *sender) AckInteraction(ctx context.Context, interactionID string, code 
 	return s.api.PutInteraction(ctx, interactionID, fmt.Sprintf(`{"code":%d}`, code))
 }
 
+// ---- 群聊管理 ----
+
+// GetGroupInfo 获取群基本信息
+func (s *sender) GetGroupInfo(ctx context.Context, groupOpenID string) (*onebot.GroupInfo, error) {
+	info, err := s.api.GroupInfo(ctx, groupOpenID)
+	if err != nil {
+		return nil, err
+	}
+	return &onebot.GroupInfo{
+		GroupOpenID:     info.GroupOpenID,
+		GroupName:       info.GroupName,
+		GroupFingerMemo: info.GroupFingerMemo,
+		GroupClassText:  info.GroupClassText,
+		GroupTags:       info.GroupTags,
+		GroupMemberNum:  info.GroupMemberNum,
+	}, nil
+}
+
+// GetGroupBotState 获取机器人群内状态
+func (s *sender) GetGroupBotState(ctx context.Context, groupOpenID string) (*onebot.GroupBotState, error) {
+	st, err := s.api.GroupBotState(ctx, groupOpenID)
+	if err != nil {
+		return nil, err
+	}
+	return &onebot.GroupBotState{
+		MemberOpenID:      st.MemberOpenID,
+		JoinedAt:          st.JoinedAt,
+		AllowProactiveMsg: st.AllowProactiveMsg,
+		RecvMsgSetting:    st.RecvMsgSetting,
+		MemberRole:        st.MemberRole,
+	}, nil
+}
+
+// GetGroupJoinRequests 拉取入群申请列表
+func (s *sender) GetGroupJoinRequests(ctx context.Context, groupOpenID string, cursor string, limit int) (*onebot.JoinRequestList, error) {
+	pager := &dto.JoinRequestListPager{Cursor: cursor, Limit: limit}
+	list, err := s.api.GroupJoinRequestList(ctx, groupOpenID, pager)
+	if err != nil {
+		return nil, err
+	}
+	out := &onebot.JoinRequestList{NextCursor: list.NextCursor}
+	for _, item := range list.List {
+		if item == nil {
+			continue
+		}
+		jr := onebot.JoinRequest{
+			JoinRequestID: item.JoinRequestID,
+			RiskTips:      item.RiskTips,
+			UnionOpenID:   item.UnionOpenID,
+			MemberOpenID:  item.MemberOpenID,
+			Username:      item.Username,
+			ApplyAt:       item.ApplyAt,
+			ApplySource:   item.ApplySource,
+			InvitedBy:     item.InvitedBy,
+			Bot:           item.Bot,
+		}
+		if item.VerifyInfo != nil {
+			jr.VerifyMethod = item.VerifyInfo.Method
+			jr.VerifyMessage = item.VerifyInfo.VerifyMessage
+		}
+		out.List = append(out.List, jr)
+	}
+	return out, nil
+}
+
+// ApproveGroupJoinRequest 审批入群申请
+func (s *sender) ApproveGroupJoinRequest(ctx context.Context, groupOpenID, memberOpenID, joinRequestID, op, rejectReason string, blacklist bool) error {
+	return s.api.ApprovalGroupJoinRequest(ctx, groupOpenID, memberOpenID, &dto.ApprovalJoinRequestReq{
+		Op:                   op,
+		JoinRequestID:        joinRequestID,
+		RejectReason:         rejectReason,
+		AddToMemberBlacklist: blacklist,
+	})
+}
+
+// GetGroupMute 查询群禁言状态
+func (s *sender) GetGroupMute(ctx context.Context, groupOpenID string) (*onebot.RestrictChatSetting, error) {
+	st, err := s.api.GroupRestrictChatSetting(ctx, groupOpenID)
+	if err != nil {
+		return nil, err
+	}
+	out := &onebot.RestrictChatSetting{}
+	if st.GlobalRule != nil {
+		out.GlobalMode = st.GlobalRule.Mode
+	}
+	for _, m := range st.Members {
+		if m == nil {
+			continue
+		}
+		out.Members = append(out.Members, onebot.MemberMute{
+			MemberOpenID: m.MemberOpenID,
+			MuteExpireAt: m.MuteExpireAt,
+			Username:     m.Username,
+			UnionOpenID:  m.UnionOpenID,
+		})
+	}
+	return out, nil
+}
+
+// SetGroupMute 设置群成员禁言
+func (s *sender) SetGroupMute(ctx context.Context, groupOpenID string, ops []onebot.MuteOp) error {
+	req := &dto.SetRestrictChatReq{}
+	for _, op := range ops {
+		req.Members = append(req.Members, &dto.SetMemberMuteState{
+			Op:           op.Op,
+			MemberOpenID: op.MemberOpenID,
+			MuteExpireAt: op.MuteExpireAt,
+		})
+	}
+	return s.api.SetGroupRestrictChat(ctx, groupOpenID, req)
+}
+
 // ---- 分片上传辅助 ----
 
 // uploadParts 按 prepare 返回的分片信息并发上传每一片：PUT 到预签名地址后调用 finish 确认。

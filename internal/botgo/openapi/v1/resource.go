@@ -27,6 +27,12 @@ const (
 	groupMessagesURI  uri = "/v2/groups/{group_id}/messages"
 	groupRichMediaURI uri = "/v2/groups/{group_id}/files"
 
+	groupInfoURI               uri = "/v2/groups/{group_id}/info"                                        // 获取群基本信息
+	groupBotStateURI           uri = "/v2/groups/{group_id}/bot_state"                                   // 获取机器人群内状态
+	groupJoinRequestListURI    uri = "/v2/groups/{group_id}/join_request_list"                           // 入群申请列表
+	groupApprovalJoinRequestURI uri = "/v2/groups/{group_id}/approval_join_request/{member_id}"          // 入群申请审批
+	groupRestrictChatURI       uri = "/v2/groups/{group_id}/restrict_chat_setting"                       // 查询/设置群禁言
+
 	groupUploadPrepareURI    uri = "/v2/groups/{group_id}/upload_prepare"     // 分片上传-准备
 	groupUploadPartFinishURI uri = "/v2/groups/{group_id}/upload_part_finish" // 分片上传-单片完成
 

@@ -49,6 +49,7 @@ const (
 	EventGroupDelRobot         EventType = "GROUP_DEL_ROBOT"
 	EventGroupMsgReject        EventType = "GROUP_MSG_REJECT"
 	EventGroupMsgReceive       EventType = "GROUP_MSG_RECEIVE"
+	EventGroupJoinRequest      EventType = "GROUP_JOIN_REQUEST"
 	EventGroupMemberAdd        EventType = "GROUP_MEMBER_ADD"
 	EventGroupMemberRemove     EventType = "GROUP_MEMBER_REMOVE"
 	EventC2CMsgReject          EventType = "C2C_MSG_REJECT"
@@ -67,6 +68,7 @@ var intentEventMap = map[Intent][]EventType{
 	IntentGroupMessages: {EventGroupAtMessageCreate, EventGroupMessageCreate, EventC2CMessageCreate, EventSubscribeMsgStatus,
 		EventC2CFriendAdd, EventC2CFriendDel,
 		EventGroupAddRobot, EventGroupDelRobot, EventGroupMsgReject, EventGroupMsgReceive,
+		EventGroupJoinRequest,
 		EventC2CMsgReject, EventC2CMsgReceive},
 
 	IntentGuildMessageReactions: {EventMessageReactionAdd, EventMessageReactionRemove},
