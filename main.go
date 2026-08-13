@@ -30,7 +30,7 @@ import (
 // 项目名称与版本，随时在此修改（上报给 NoneBot 的 get_version_info 及启动日志均取此值）
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.8.1"
+	AppVersion = "1.9.1"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -63,6 +63,16 @@ func main() {
 			filelog.Fatalf("未找到配置文件且自动创建失败: %v", werr)
 		}
 		fmt.Printf("未找到配置文件，已在同级目录生成模板：\n  %s\n请填写 app_id / client_secret 等字段后重新启动本程序。\n按回车键退出...", *configPath)
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		os.Exit(0)
+	}
+
+	// 启动时校验配置文件是否缺少参数，缺失项按模板补齐默认值并写回用户配置文件（保留已有值与注释）。
+	// 若发生补全，暂停运行，提示用户编辑配置后手动重启。
+	if added, cerr := config.EnsureComplete(*configPath, configTemplate); cerr != nil {
+		fmt.Printf("配置自动补全失败（将按现有配置继续）：%v\n", cerr)
+	} else if len(added) > 0 {
+		fmt.Printf("检测到配置缺少 %d 个参数，已按默认值补充至配置文件：\n  %s\n新增参数：%v\n请检查并按需修改后重新启动本程序。\n按回车键退出...", len(added), *configPath, added)
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 		os.Exit(0)
 	}

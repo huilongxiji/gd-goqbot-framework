@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strconv"
@@ -94,6 +95,97 @@ type WSReverseServerConfig struct {
 	API               string `yaml:"api"`                // 仅收动作请求的端点
 	Event             string `yaml:"event"`              // 仅推事件的端点
 	ReconnectInterval int    `yaml:"reconnect-interval"` // 断线重连间隔毫秒，默认 3000
+}
+
+// EnsureComplete 校验配置文件是否缺少参数，缺失的键按模板补齐默认值后写回文件。
+// 以内嵌模板 template（config.example.yml）为参照，仅补用户文件中缺失的键，
+// 保留用户已填写的值与文件内注释（直接写回原文件，不生成备份）。
+// 返回被补全的键路径列表（如 "onebot.heartbeat_interval"）。
+func EnsureComplete(path string, template []byte) ([]string, error) {
+	userData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var userDoc yaml.Node
+	if err := yaml.Unmarshal(userData, &userDoc); err != nil {
+		return nil, fmt.Errorf("解析现有配置失败: %w", err)
+	}
+	var tmplDoc yaml.Node
+	if err := yaml.Unmarshal(template, &tmplDoc); err != nil {
+		return nil, fmt.Errorf("解析内置模板失败: %w", err)
+	}
+	userRoot := rootMapping(&userDoc)
+	tmplRoot := rootMapping(&tmplDoc)
+	// 用户文件为空或顶层不是映射时，不做自动补全，交由 Load/Validate 处理
+	if userRoot == nil || tmplRoot == nil {
+		return nil, nil
+	}
+	var added []string
+	mergeMissing(userRoot, tmplRoot, "", &added)
+	if len(added) == 0 {
+		return nil, nil
+	}
+
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&userDoc); err != nil {
+		_ = enc.Close()
+		return nil, fmt.Errorf("序列化补全后配置失败: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		return nil, fmt.Errorf("写回配置失败: %w", err)
+	}
+	return added, nil
+}
+
+// rootMapping 取出文档节点下的根映射节点（非映射返回 nil）
+func rootMapping(n *yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.DocumentNode {
+		if len(n.Content) == 0 {
+			return nil
+		}
+		n = n.Content[0]
+	}
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	return n
+}
+
+// mergeMissing 把 src 映射中 dst 缺失的键（连同默认值与注释）追加到 dst；
+// 对两侧都存在且均为映射的键递归下钻，只增不改，绝不覆盖用户已有值。
+//
+// 对 onebot.servers 这类序列：用户缺失整个键时会按模板补上默认连接配置；
+// 但只要用户已有该键，其值为序列（非映射）不会递归，用户对条目的任何增删都原样保留
+// （例如只保留反向 WS 而删掉正向，不会被补回）。
+func mergeMissing(dst, src *yaml.Node, prefix string, added *[]string) {
+	if dst.Kind != yaml.MappingNode || src.Kind != yaml.MappingNode {
+		return
+	}
+	dstVals := make(map[string]*yaml.Node, len(dst.Content)/2)
+	for i := 0; i+1 < len(dst.Content); i += 2 {
+		dstVals[dst.Content[i].Value] = dst.Content[i+1]
+	}
+	for i := 0; i+1 < len(src.Content); i += 2 {
+		key := src.Content[i]
+		val := src.Content[i+1]
+		path := prefix + key.Value
+		if dv, ok := dstVals[key.Value]; ok {
+			if dv.Kind == yaml.MappingNode && val.Kind == yaml.MappingNode {
+				mergeMissing(dv, val, path+".", added)
+			}
+			continue
+		}
+		dst.Content = append(dst.Content, key, val)
+		*added = append(*added, path)
+	}
 }
 
 // Load 从文件加载配置并填充默认值
