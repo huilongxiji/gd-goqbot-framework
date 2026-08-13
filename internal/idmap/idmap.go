@@ -8,7 +8,9 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +35,32 @@ const (
 	// C2CPassiveTTL 单聊被动回复有效期
 	C2CPassiveTTL = 60 * time.Minute
 )
+
+// 后台清理（janitor）参数：控制长期运行时内存内几个只增不减的 sync.Map。
+// 说明：id2open/open2id/c2cState 属身份/状态映射，语义上需长期驻留，不做清理；
+// 这里只回收具有时效性的 msg2meta / lazy / seqCounter / joinReq。
+const (
+	// janitorInterval 后台清理扫描周期
+	janitorInterval = 5 * time.Minute
+	// msgMetaTTL 内存中消息元信息保留时长（超时后从内存淘汰；持久化模式下仍可回落 db 重载）
+	msgMetaTTL = 2 * time.Hour
+	// msgMetaCap 内存中消息元信息条数硬上限（超出按时间淘汰最旧）
+	msgMetaCap = 50000
+	// lazyCap 被动回复凭证条数硬上限
+	lazyCap = 100000
+	// seqTTL msg_seq 计数器空闲保留时长（被动窗口过后即可回收）
+	seqTTL = C2CPassiveTTL
+	// seqCap msg_seq 计数器条数硬上限
+	seqCap = 100000
+	// joinReqTTL 入群申请上下文兜底保留时长（正常审批后即删除，此为未处理时的回收阈值）
+	joinReqTTL = 24 * time.Hour
+)
+
+// seqEntry msg_seq 计数器条目，带最近使用时间以支持空闲回收
+type seqEntry struct {
+	n    int32
+	last int64 // 最近使用时间（UnixNano），atomic 读写
+}
 
 // MsgMeta 收到的 QQ 消息元信息，供发送侧被动回复使用
 type MsgMeta struct {
@@ -59,9 +87,10 @@ var (
 
 // JoinRequestMeta 入群申请上下文，供 set_group_add_request 按 flag 反查审批参数
 type JoinRequestMeta struct {
-	GroupOpenID   string // 群 openid
-	MemberOpenID  string // 申请人 openid
-	JoinRequestID string // 官方申请 ID（通常与 flag 相同）
+	GroupOpenID   string    // 群 openid
+	MemberOpenID  string    // 申请人 openid
+	JoinRequestID string    // 官方申请 ID（通常与 flag 相同）
+	at            time.Time // 登记时间，供 janitor 兜底回收
 }
 
 // C2CMsgState 用户 C2C 主动消息推送开关状态（由 C2C_MSG_REJECT/RECEIVE 事件落库）
@@ -84,13 +113,20 @@ type Store struct {
 	c2cState sync.Map // string(openid) -> C2CMsgState
 
 	lazy       sync.Map // string(key) -> *lazyEntry
-	seqCounter sync.Map // string(msgID) -> *int32
+	seqCounter sync.Map // string(msgID) -> *seqEntry
 
 	db *bolt.DB // nil = 纯内存模式
+
+	stopOnce sync.Once     // 保证 janitor 仅停止一次
+	stopCh   chan struct{} // 关闭时通知 janitor 退出
 }
 
 // New 创建纯内存映射存储（不持久化）
-func New() *Store { return &Store{} }
+func New() *Store {
+	s := &Store{stopCh: make(chan struct{})}
+	s.startJanitor()
+	return s
+}
 
 // Open 创建带 bbolt 持久化的映射存储；文件不存在则创建，存在则直接加载。
 func Open(path string) (*Store, error) {
@@ -114,11 +150,18 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db, stopCh: make(chan struct{})}
+	s.startJanitor()
+	return s, nil
 }
 
-// Close 关闭底层 db（纯内存模式为 no-op）
+// Close 停止后台清理并关闭底层 db（纯内存模式仅停止 janitor）
 func (s *Store) Close() error {
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
 	if s.db != nil {
 		return s.db.Close()
 	}
@@ -186,6 +229,9 @@ func (s *Store) AllocMsgID(meta MsgMeta) int64 {
 	id := hashID(meta.MsgID)
 	if id == 0 {
 		id = 1
+	}
+	if meta.Time.IsZero() {
+		meta.Time = time.Now()
 	}
 	s.msg2meta.Store(id, meta)
 	if s.db != nil {
@@ -298,9 +344,10 @@ func (s *Store) LazyC2C(userOpenID string) (string, string, bool) {
 
 // NextSeq 针对某个 msg_id 取下一个序号（从 1 开始），用于 msg_seq 去重
 func (s *Store) NextSeq(msgID string) uint32 {
-	v, _ := s.seqCounter.LoadOrStore(msgID, new(int32))
-	p := v.(*int32)
-	return uint32(atomic.AddInt32(p, 1))
+	v, _ := s.seqCounter.LoadOrStore(msgID, &seqEntry{})
+	e := v.(*seqEntry)
+	atomic.StoreInt64(&e.last, time.Now().UnixNano())
+	return uint32(atomic.AddInt32(&e.n, 1))
 }
 
 // PutJoinRequest 登记入群申请 flag→上下文（仅内存，审批后可 DeleteJoinRequest）
@@ -311,6 +358,7 @@ func (s *Store) PutJoinRequest(flag string, meta JoinRequestMeta) {
 	if meta.JoinRequestID == "" {
 		meta.JoinRequestID = flag
 	}
+	meta.at = time.Now()
 	s.joinReq.Store(flag, meta)
 }
 
@@ -376,4 +424,114 @@ func (s *Store) GetC2CMsgState(openid string) (C2CMsgState, bool) {
 	}
 	s.c2cState.Store(openid, st)
 	return st, true
+}
+
+// startJanitor 启动后台清理协程，周期性回收具有时效性的内存条目。
+func (s *Store) startJanitor() {
+	go func() {
+		t := time.NewTicker(janitorInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case now := <-t.C:
+				s.sweepMsgMeta(now)
+				s.sweepLazy(now)
+				s.sweepSeq(now)
+				s.sweepJoinReq(now)
+			}
+		}
+	}()
+}
+
+// sweepMsgMeta 回收内存中过期的消息元信息，并在超出硬上限时淘汰最旧。
+// 注意：仅清理内存副本；持久化模式下 db 仍保留，后续 Msg() 可按需回落重载。
+func (s *Store) sweepMsgMeta(now time.Time) {
+	type kt struct {
+		k int64
+		t time.Time
+	}
+	kept := make([]kt, 0)
+	s.msg2meta.Range(func(k, v any) bool {
+		meta := v.(MsgMeta)
+		if msgMetaTTL > 0 && now.Sub(meta.Time) > msgMetaTTL {
+			s.msg2meta.Delete(k)
+			return true
+		}
+		kept = append(kept, kt{k.(int64), meta.Time})
+		return true
+	})
+	if msgMetaCap > 0 && len(kept) > msgMetaCap {
+		sort.Slice(kept, func(i, j int) bool { return kept[i].t.Before(kept[j].t) })
+		for _, e := range kept[:len(kept)-msgMetaCap] {
+			s.msg2meta.Delete(e.k)
+		}
+	}
+}
+
+// sweepLazy 回收过期的被动回复凭证（按 key 前缀区分群/单聊 TTL），并在超限时淘汰最旧。
+func (s *Store) sweepLazy(now time.Time) {
+	type kt struct {
+		k string
+		t time.Time
+	}
+	kept := make([]kt, 0)
+	s.lazy.Range(func(k, v any) bool {
+		key := k.(string)
+		e := v.(*lazyEntry)
+		ttl := GroupPassiveTTL
+		if strings.HasPrefix(key, "c:") {
+			ttl = C2CPassiveTTL
+		}
+		if ttl > 0 && now.Sub(e.at) > ttl {
+			s.lazy.Delete(k)
+			return true
+		}
+		kept = append(kept, kt{key, e.at})
+		return true
+	})
+	if lazyCap > 0 && len(kept) > lazyCap {
+		sort.Slice(kept, func(i, j int) bool { return kept[i].t.Before(kept[j].t) })
+		for _, e := range kept[:len(kept)-lazyCap] {
+			s.lazy.Delete(e.k)
+		}
+	}
+}
+
+// sweepSeq 回收空闲的 msg_seq 计数器，并在超限时淘汰最旧。
+func (s *Store) sweepSeq(now time.Time) {
+	type kt struct {
+		k string
+		t int64
+	}
+	kept := make([]kt, 0)
+	nowNano := now.UnixNano()
+	s.seqCounter.Range(func(k, v any) bool {
+		e := v.(*seqEntry)
+		last := atomic.LoadInt64(&e.last)
+		if seqTTL > 0 && nowNano-last > int64(seqTTL) {
+			s.seqCounter.Delete(k)
+			return true
+		}
+		kept = append(kept, kt{k.(string), last})
+		return true
+	})
+	if seqCap > 0 && len(kept) > seqCap {
+		sort.Slice(kept, func(i, j int) bool { return kept[i].t < kept[j].t })
+		for _, e := range kept[:len(kept)-seqCap] {
+			s.seqCounter.Delete(e.k)
+		}
+	}
+}
+
+// sweepJoinReq 兜底回收长期未处理的入群申请上下文（正常审批后已由 DeleteJoinRequest 清除）。
+func (s *Store) sweepJoinReq(now time.Time) {
+	s.joinReq.Range(func(k, v any) bool {
+		m := v.(JoinRequestMeta)
+		if joinReqTTL > 0 && !m.at.IsZero() && now.Sub(m.at) > joinReqTTL {
+			s.joinReq.Delete(k)
+		}
+		return true
+	})
 }

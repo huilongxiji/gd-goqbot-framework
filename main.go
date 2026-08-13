@@ -93,6 +93,7 @@ func main() {
 	var ids *idmap.Store
 	if cfg.IDMap.Disabled {
 		ids = idmap.New()
+		defer ids.Close()
 		log.Println("idmap: 纯内存模式（不持久化，重启后 message_id/反查丢失）")
 	} else {
 		p := cfg.IDMap.Path
