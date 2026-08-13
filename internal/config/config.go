@@ -43,19 +43,21 @@ type IDMapConfig struct {
 
 // QQConfig QQ 官方机器人凭据与连接选项
 type QQConfig struct {
-	AppID        string   `yaml:"app_id"`        // 机器人 AppID（开放平台分配）
-	Uin          int64    `yaml:"uin"`           // 机器人 QQ 号，use_uin=true 时作 self_id
-	UseUin       bool     `yaml:"use_uin"`       // true=self_id 用 uin, false=用 app_id
-	Token        string   `yaml:"token"`         // 机器人令牌，仅留存
-	ClientSecret string   `yaml:"client_secret"` // = botgo AppSecret，用于鉴权换取 access_token
-	Sandbox      bool     `yaml:"sandbox"`       // true=连沙箱环境，false=正式环境
-	Intents      *int64   `yaml:"intents"`       // 可选：硬覆盖自动推导的 intent
-	ShardCount   uint32   `yaml:"shard_count"`   // 分片总数，最小为 1
-	ShardID      uint32   `yaml:"shard_id"`      // 本进程分片号，从 0 开始
-	TextIntent   []string `yaml:"text_intent"`   // 按 handler 名订阅事件，intent 自动推导
-	AddAtGroup   bool     `yaml:"add_at_group"`  // 群消息上报时是否在首段补 at self
-	SelfID       int64    `yaml:"self_id"`       // 可选：覆盖上报用 self_id，0=按 use_uin/app_id 推导
-	Disabled     bool     `yaml:"disabled"`      // true=跳过 QQ 上游连接（仅测试 OneBot 侧时用）
+	AppID                 string   `yaml:"app_id"`                   // 机器人 AppID（开放平台分配）
+	Uin                   int64    `yaml:"uin"`                      // 机器人 QQ 号，use_uin=true 时作 self_id
+	UseUin                bool     `yaml:"use_uin"`                  // true=self_id 用 uin, false=用 app_id
+	Token                 string   `yaml:"token"`                    // 机器人令牌，仅留存
+	ClientSecret          string   `yaml:"client_secret"`            // = botgo AppSecret，用于鉴权换取 access_token
+	Sandbox               bool     `yaml:"sandbox"`                  // true=连沙箱环境，false=正式环境
+	Intents               *int64   `yaml:"intents"`                  // 可选：硬覆盖自动推导的 intent
+	ShardCount            uint32   `yaml:"shard_count"`              // 分片总数，最小为 1
+	ShardID               uint32   `yaml:"shard_id"`                 // 本进程分片号，从 0 开始
+	TextIntent            []string `yaml:"text_intent"`              // 按 handler 名订阅事件，intent 自动推导
+	AddAtGroup            bool     `yaml:"add_at_group"`             // 群消息上报时是否在首段补 at self
+	SelfID                int64    `yaml:"self_id"`                  // 可选：覆盖上报用 self_id，0=按 use_uin/app_id 推导
+	Disabled              bool     `yaml:"disabled"`                 // true=跳过 QQ 上游连接（仅测试 OneBot 侧时用）
+	IPRejectAction        string   `yaml:"ip_reject_action"`         // IP 白名单被拒(11298)后策略：stop(默认)/retry/exit
+	IPRejectRetryInterval int      `yaml:"ip_reject_retry_interval"` // 秒，仅 retry 生效；默认 60，最小 5
 }
 
 // AppSecret 返回 botgo 鉴权用的 AppSecret（优先 client_secret，回退 token）
@@ -216,6 +218,19 @@ func (c *Config) applyDefaults() {
 	if c.QQ.ShardCount == 0 {
 		c.QQ.ShardCount = 1
 	}
+	switch c.QQ.IPRejectAction {
+	case "stop", "retry", "exit":
+		// ok
+	case "":
+		c.QQ.IPRejectAction = "stop"
+	default:
+		// 非法值留给 Validate 报错
+	}
+	if c.QQ.IPRejectRetryInterval <= 0 {
+		c.QQ.IPRejectRetryInterval = 60
+	} else if c.QQ.IPRejectRetryInterval < 5 {
+		c.QQ.IPRejectRetryInterval = 5
+	}
 	if c.OneBot.HeartbeatInterval == 0 {
 		c.OneBot.HeartbeatInterval = 5000
 	}
@@ -245,6 +260,12 @@ func (c *QQConfig) IntentOverride() (dto.Intent, bool) {
 
 // Validate 校验配置
 func (c *Config) Validate() error {
+	switch c.QQ.IPRejectAction {
+	case "stop", "retry", "exit":
+		// ok
+	default:
+		return fmt.Errorf("qq.ip_reject_action 仅允许 stop / retry / exit，当前为 %q", c.QQ.IPRejectAction)
+	}
 	for i, s := range c.OneBot.Servers {
 		hasWS := s.WS != nil && !s.WS.Disabled
 		hasRev := s.WSReverse != nil && !s.WSReverse.Disabled

@@ -11,6 +11,12 @@ qq:
   # intents: 1073741824         # 可选：硬覆盖自动推导的 intent
   # self_id: 0                  # 可选：覆盖上报用 self_id
   # disabled: true              # 仅测试 OneBot 连接时可设为 true
+  # IP 白名单被拒(错误码 11298)后的处置策略：
+  #   stop  = 停止 QQ 上游连接与重连，进程不退出（默认）
+  #   retry = 等待 ip_reject_retry_interval 秒后重试，IP 恢复白名单可自动恢复
+  #   exit  = 打印提示后关闭整个框架，等加白名单后手动重启
+  ip_reject_action: "stop"
+  ip_reject_retry_interval: 60  # 仅 action=retry 生效；重试间隔秒，默认 60，最小 5
   text_intent:                  # 按 handler 名订阅事件，intent 自动推导
     - "ReadyHandler"
     - "ErrorNotifyHandler"

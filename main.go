@@ -160,7 +160,11 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Println("收到退出信号，正在关闭...")
+	select {
+	case <-sig:
+		log.Println("收到退出信号，正在关闭...")
+	case <-qqClient.Fatal():
+		log.Println("IP 被拒且策略为 exit，正在关闭...")
+	}
 	cancel()
 }

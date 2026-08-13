@@ -90,7 +90,7 @@ func main() {
 			AppSecret: "",
 		}) 
 	//启动自动刷新access token协程 
-	if err = token.StartRefreshAccessToken(ctx, tokenSource); err != nil {
+	if err = token.StartRefreshAccessToken(ctx, tokenSource, nil); err != nil {
 		log.Fatalln(err)
 	}
 	// 初始化 openapi，正式环境 

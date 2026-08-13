@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"goqbot/internal/botgo/constant"
+	"goqbot/internal/botgo/errs"
 	"goqbot/internal/botgo/log"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
@@ -172,8 +173,10 @@ func (w *QQBotTokenSource) GetAppID() string {
 	return w.credentials.AppID
 }
 
-// StartRefreshAccessToken 启动获取AccessToken的后台刷新
-func StartRefreshAccessToken(ctx context.Context, tokenSource oauth2.TokenSource) error {
+// StartRefreshAccessToken 启动获取AccessToken的后台刷新。
+// onFatal 在命中致命错误（如 IP 白名单拒绝 11298）时回调；回调后本协程继续循环，
+// 是否真正停止由调用方通过 cancel(ctx) 决定（stop/exit），retry 策略下不取消以便自动恢复。
+func StartRefreshAccessToken(ctx context.Context, tokenSource oauth2.TokenSource, onFatal func(error)) error {
 	tk, err := tokenSource.Token()
 	if err != nil {
 		return err
@@ -183,13 +186,15 @@ func StartRefreshAccessToken(ctx context.Context, tokenSource oauth2.TokenSource
 		var consecutiveFailures int
 		for {
 			var refreshMilliSec int64
-			//上一轮获取 tk 失败
+			// 上一轮获取 tk 失败：退避重试，不再 panic
 			if tk == nil {
-				if consecutiveFailures > 10 {
-					panic("get token failed continuously for more than ten times")
-				}
 				consecutiveFailures++
-				refreshMilliSec = 1000 // 1000ms后重试
+				// 指数退避：1s、2s、4s…上限 60s
+				backoff := int64(1000) << (consecutiveFailures - 1)
+				if backoff > 60000 {
+					backoff = 60000
+				}
+				refreshMilliSec = backoff
 			} else {
 				consecutiveFailures = 0
 				refreshMilliSec = getRefreshMilliSec(tk.ExpiresIn)
@@ -203,6 +208,10 @@ func StartRefreshAccessToken(ctx context.Context, tokenSource oauth2.TokenSource
 					tk, err = tokenSource.Token()
 					if err != nil {
 						log.Errorf("refresh access token failed:%s", err)
+						tk = nil
+						if errs.IsIPWhitelistRejected(err) && onFatal != nil {
+							onFatal(err)
+						}
 					}
 					timer.Stop()
 				}

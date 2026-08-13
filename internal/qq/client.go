@@ -11,6 +11,7 @@ import (
 
 	"goqbot/internal/botgo"
 	"goqbot/internal/botgo/dto"
+	"goqbot/internal/botgo/errs"
 	"goqbot/internal/botgo/event"
 	"goqbot/internal/botgo/openapi"
 	"goqbot/internal/botgo/sessions/manager"
@@ -26,22 +27,51 @@ import (
 
 // Client 上游 QQ 官方机器人连接
 type Client struct {
-	cfg    *config.QQConfig   // QQ 凭据与连接选项
-	debug  bool               // true=打印原始报文等调试日志
-	ids    *idmap.Store       // openid<->数字 id 映射，传给转换器/发送器
-	conv   *onebot.Converter  // 上游事件 -> OneBot 事件的转换器
-	caller *onebot.Caller     // OneBot 动作调用器，启动时注入 sender/网关查询器/昵称
-	api    openapi.OpenAPI    // QQ 官方 openapi 客户端，用于互动事件自动回执
-	cancel context.CancelFunc // 取消运行上下文以停止连接
+	cfg           *config.QQConfig  // QQ 凭据与连接选项
+	debug         bool              // true=打印原始报文等调试日志
+	ids           *idmap.Store      // openid<->数字 id 映射，传给转换器/发送器
+	conv          *onebot.Converter // 上游事件 -> OneBot 事件的转换器
+	caller        *onebot.Caller    // OneBot 动作调用器，启动时注入 sender/网关查询器/昵称
+	api           openapi.OpenAPI   // QQ 官方 openapi 客户端，用于互动事件自动回执
+	cancel        context.CancelFunc
+	action        string        // IP 被拒策略：stop / retry / exit
+	retryInterval time.Duration // retry 策略下的等待间隔
+	fatalCh       chan struct{} // exit 策略下通知 main 退出
+	fatalOnce     sync.Once     // 保证 fatalCh 仅关闭一次
 
-	mu      sync.RWMutex // 保护 botName/ready
-	botName string       // READY 后的机器人用户名
-	ready   bool         // 是否已完成 READY
+	mu         sync.RWMutex         // 保护下列可变字段
+	botName    string               // READY 后的机器人用户名
+	ready      bool                 // 是否已完成 READY
+	wsClient   websocket.WebSocket  // 当前存活的 WS 连接（供 onIPReject 关闭）
+	ipRejected bool                 // stop 策略：永久停止重连
+	lastIPLog  time.Time            // 日志节流：避免 retry 下刷屏
 }
 
 // NewClient 创建 QQ 客户端
 func NewClient(cfg *config.QQConfig, ids *idmap.Store, conv *onebot.Converter, caller *onebot.Caller, debug bool) *Client {
-	return &Client{cfg: cfg, ids: ids, conv: conv, caller: caller, debug: debug}
+	action := cfg.IPRejectAction
+	if action == "" {
+		action = "stop"
+	}
+	interval := time.Duration(cfg.IPRejectRetryInterval) * time.Second
+	if interval < 5*time.Second {
+		interval = 60 * time.Second
+	}
+	return &Client{
+		cfg:           cfg,
+		ids:           ids,
+		conv:          conv,
+		caller:        caller,
+		debug:         debug,
+		action:        action,
+		retryInterval: interval,
+		fatalCh:       make(chan struct{}),
+	}
+}
+
+// Fatal 返回 exit 策略下的退出通知通道（关闭即表示应优雅退出进程）
+func (c *Client) Fatal() <-chan struct{} {
+	return c.fatalCh
 }
 
 // Start 启动 QQ 连接（非阻塞）
@@ -59,9 +89,26 @@ func (c *Client) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 
-	if err := token.StartRefreshAccessToken(runCtx, tokenSource); err != nil {
-		cancel()
-		return err
+	onFatal := func(e error) { c.onIPReject("token-refresh", e) }
+	for {
+		err := token.StartRefreshAccessToken(runCtx, tokenSource, onFatal)
+		if err == nil {
+			break
+		}
+		if !errs.IsIPWhitelistRejected(err) {
+			cancel()
+			return err
+		}
+		c.onIPReject("token-init", err)
+		if c.action != "retry" {
+			// stop/exit 已由 onIPReject 处理，进程继续（exit 靠 fatalCh 让 main 退出）
+			return nil
+		}
+		select {
+		case <-runCtx.Done():
+			return nil
+		case <-time.After(c.retryInterval):
+		}
 	}
 
 	var api openapi.OpenAPI
@@ -98,9 +145,72 @@ func (c *Client) Start(ctx context.Context) error {
 
 	intent := c.registerHandlers()
 	log.Printf("[qq] 订阅 intent=%d (shard %d/%d)", intent, c.cfg.ShardID, c.cfg.ShardCount)
+	log.Printf("[qq] IP 白名单被拒策略: action=%s retry_interval=%s", c.action, c.retryInterval)
 
 	go c.runShard(runCtx, api, tokenSource, intent)
 	return nil
+}
+
+// onIPReject 处理 IP 白名单拒绝(11298)：打日志并按策略 stop/retry/exit 处置。
+func (c *Client) onIPReject(where string, err error) {
+	c.mu.Lock()
+	// retry 下节流日志，避免刷屏（同策略间隔内最多打一次）
+	throttle := c.action == "retry" && !c.lastIPLog.IsZero() && time.Since(c.lastIPLog) < c.retryInterval
+	if !throttle {
+		c.lastIPLog = time.Now()
+	}
+	ws := c.wsClient
+	c.mu.Unlock()
+
+	if !throttle {
+		filelog.Errorf("[qq] 当前服务器公网 IP 不在 QQ 开放平台白名单，接口被拒绝(11298) where=%s: %v", where, err)
+		filelog.Errorf("[qq] 请将本机公网 IP 加入白名单后处理（获取 IP: curl https://api.ipify.org）；当前策略=%s", c.action)
+	}
+
+	// 关闭存活 WS（三种策略都需要结束本次连接）
+	if ws != nil {
+		func() {
+			defer func() { _ = recover() }()
+			ws.Close()
+		}()
+		c.mu.Lock()
+		if c.wsClient == ws {
+			c.wsClient = nil
+		}
+		c.mu.Unlock()
+	}
+
+	switch c.action {
+	case "retry":
+		// 不取消、不置 ipRejected；由 runShard / Start 等待后重试
+		if !throttle {
+			filelog.Warnf("[qq] 将在 %s 后重试连接", c.retryInterval)
+		}
+	case "exit":
+		c.mu.Lock()
+		c.ipRejected = true
+		c.mu.Unlock()
+		if c.cancel != nil {
+			c.cancel()
+		}
+		c.fatalOnce.Do(func() { close(c.fatalCh) })
+		filelog.Errorf("[qq] 策略为 exit，即将关闭框架")
+	default: // stop
+		c.mu.Lock()
+		c.ipRejected = true
+		c.mu.Unlock()
+		if c.cancel != nil {
+			c.cancel()
+		}
+		filelog.Errorf("[qq] 已停止 QQ 上游连接与重连（策略=stop），OneBot 下游保持；加白名单后请重启")
+	}
+}
+
+// isIPRejected 是否已按 stop/exit 永久停连
+func (c *Client) isIPRejected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ipRejected
 }
 
 // Stop 停止 QQ 连接
@@ -275,40 +385,74 @@ func (c *Client) registerHandlers() dto.Intent {
 	return intent
 }
 
-// runShard 单分片启动器：拿接入点后按 shard 配置连接，断线重连
+// runShard 单分片启动器：拿接入点后按 shard 配置连接，断线重连；
+// IP 白名单被拒时按策略 stop/retry/exit 处置。
 func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.TokenSource, intent dto.Intent) {
-	wsAP, err := api.WS(ctx, nil, "")
-	if err != nil {
-		filelog.Errorf("[qq] 获取 WebSocket 接入点失败: %v", err)
-		return
-	}
-	log.Printf("[qq] WebSocket 接入点: url=%s shards=%d", wsAP.URL, wsAP.Shards)
-	log.Printf("[qq] WS 连接频控(/gateway/bot): 剩余 %d/%d 次, %d 秒后重置, 最大并发 %d",
-		wsAP.SessionStartLimit.Remaining, wsAP.SessionStartLimit.Total,
-		wsAP.SessionStartLimit.ResetAfter, wsAP.SessionStartLimit.MaxConcurrency)
-
-	session := dto.Session{
-		URL:         wsAP.URL,
-		TokenSource: ts,
-		Intent:      intent,
-		LastSeq:     0,
-		Shards: dto.ShardConfig{
-			ShardID:    c.cfg.ShardID,
-			ShardCount: c.cfg.ShardCount,
-		},
-	}
+	var session dto.Session
+	sessionReady := false
 
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil || c.isIPRejected() {
 			return
-		default:
 		}
+
+		wsAP, err := api.WS(ctx, nil, "")
+		if err != nil {
+			if errs.IsIPWhitelistRejected(err) {
+				c.onIPReject("gateway", err)
+				if c.action != "retry" {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(c.retryInterval):
+				}
+				sessionReady = false
+				continue
+			}
+			filelog.Errorf("[qq] 获取 WebSocket 接入点失败: %v", err)
+			return
+		}
+		if !sessionReady {
+			log.Printf("[qq] WebSocket 接入点: url=%s shards=%d", wsAP.URL, wsAP.Shards)
+			log.Printf("[qq] WS 连接频控(/gateway/bot): 剩余 %d/%d 次, %d 秒后重置, 最大并发 %d",
+				wsAP.SessionStartLimit.Remaining, wsAP.SessionStartLimit.Total,
+				wsAP.SessionStartLimit.ResetAfter, wsAP.SessionStartLimit.MaxConcurrency)
+			session = dto.Session{
+				URL:         wsAP.URL,
+				TokenSource: ts,
+				Intent:      intent,
+				LastSeq:     0,
+				Shards: dto.ShardConfig{
+					ShardID:    c.cfg.ShardID,
+					ShardCount: c.cfg.ShardCount,
+				},
+			}
+			sessionReady = true
+		} else {
+			// 重连时刷新接入点 URL（session id/seq 保留，除非被清）
+			session.URL = wsAP.URL
+		}
+
 		c.connectOnce(&session)
+		if ctx.Err() != nil || c.isIPRejected() {
+			return
+		}
+		wait := 3 * time.Second
+		if c.action == "retry" {
+			// 若刚因 IP 被拒关闭连接，用配置的重试间隔；否则普通断线仍用 3s
+			c.mu.RLock()
+			recentIP := !c.lastIPLog.IsZero() && time.Since(c.lastIPLog) < c.retryInterval
+			c.mu.RUnlock()
+			if recentIP {
+				wait = c.retryInterval
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(3 * time.Second):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -319,12 +463,19 @@ func (c *Client) connectOnce(session *dto.Session) {
 		if r := recover(); r != nil {
 			filelog.Errorf("[qq] 连接 panic: %v", r)
 		}
+		c.mu.Lock()
+		c.wsClient = nil
+		c.mu.Unlock()
 	}()
 	wsClient := websocket.ClientImpl.New(*session)
 	if err := wsClient.Connect(); err != nil {
 		filelog.Errorf("[qq] 连接失败: %v", err)
 		return
 	}
+	// 仅在连接成功后登记，避免 Close 时 conn 为空 panic
+	c.mu.Lock()
+	c.wsClient = wsClient
+	c.mu.Unlock()
 	var err error
 	if session.ID != "" {
 		err = wsClient.Resume()
@@ -337,6 +488,10 @@ func (c *Client) connectOnce(session *dto.Session) {
 	}
 	if err = wsClient.Listening(); err != nil {
 		filelog.Warnf("[qq] Listening 退出: %v", err)
+		// Listening 因 IP 被拒关闭时也会到这里
+		if errs.IsIPWhitelistRejected(err) {
+			c.onIPReject("ws-listen", err)
+		}
 		cur := wsClient.Session()
 		if manager.CanNotResume(err) {
 			cur.ID = ""

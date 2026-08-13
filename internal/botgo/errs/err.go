@@ -3,6 +3,7 @@ package errs
 
 import (
 	"fmt"
+	"strings"
 )
 
 var (
@@ -111,4 +112,13 @@ func (e Err) Text() string {
 // Trace 获取错误追踪ID
 func (e Err) Trace() string {
 	return e.trace
+}
+
+// IsIPWhitelistRejected 判断是否为服务器 IP 白名单拒绝（错误码 11298）
+func IsIPWhitelistRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "11298") || strings.Contains(s, "接口访问源IP不在白名单")
 }
