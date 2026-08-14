@@ -255,7 +255,7 @@ func (c *Caller) Call(action string, params gjson.Result) map[string]any {
 	case "set_command_panel_target":
 		return c.setCommandPanelTarget(params)
 	default:
-		return ok(map[string]any{})
+		return failed(1404, "unsupported action: "+action)
 	}
 }
 
