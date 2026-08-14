@@ -238,6 +238,22 @@ func (c *Caller) Call(action string, params gjson.Result) map[string]any {
 		return failed(1404, "QQ群v2设置禁言接口仅支持成员级，不支持全员禁言")
 	case "get_c2c_msg_state", "get_friend_msg_state":
 		return c.getC2CMsgState(params)
+	case "get_menu":
+		return c.getMenu()
+	case "set_menu":
+		return c.setMenu(params)
+	case "get_command_panels":
+		return c.getCommandPanels(params)
+	case "get_command_panel":
+		return c.getCommandPanel(params)
+	case "create_command_panel":
+		return c.createCommandPanel(params)
+	case "set_command_panel":
+		return c.setCommandPanel(params)
+	case "delete_command_panel":
+		return c.deleteCommandPanel(params)
+	case "set_command_panel_target":
+		return c.setCommandPanelTarget(params)
 	default:
 		return ok(map[string]any{})
 	}
@@ -631,6 +647,216 @@ func (c *Caller) getGroupBan(params gjson.Result) map[string]any {
 		"global_mode":  st.GlobalMode,
 		"members":      members,
 	})
+}
+
+// ---- 自定义菜单与指令面板 ----
+
+// okJSON 把任意可 JSON 序列化的值转为 OneBot 成功响应 data（map）
+func okJSON(v any) map[string]any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return failed(1500, "序列化响应失败: "+err.Error())
+	}
+	var data map[string]any
+	if err := json.Unmarshal(b, &data); err != nil {
+		return failed(1500, "解析响应失败: "+err.Error())
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	return ok(data)
+}
+
+// requireSender 取发送通道；未就绪时返回失败响应
+func (c *Caller) requireSender() (MessageSender, map[string]any) {
+	sender := c.getSender()
+	if sender == nil {
+		return nil, failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	return sender, nil
+}
+
+// getMenu 查询全局自定义菜单
+func (c *Caller) getMenu() map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.GetMenu(ctx)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// setMenu 修改全局自定义菜单（整体覆盖）
+func (c *Caller) setMenu(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	var req dto.MenuPutReq
+	if err := json.Unmarshal([]byte(params.Raw), &req); err != nil {
+		return failed(1400, "参数解析失败: "+err.Error())
+	}
+	// 兼容 params.menu 或直接传 items
+	if len(req.Menu.Items) == 0 {
+		if items := params.Get("items"); items.Exists() {
+			_ = json.Unmarshal([]byte(items.Raw), &req.Menu.Items)
+		}
+	}
+	if len(req.Menu.Items) == 0 {
+		return failed(1400, "缺少 menu.items")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.SetMenu(ctx, &req)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// getCommandPanels 查询指令面板列表
+func (c *Caller) getCommandPanels(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	scope := strings.TrimSpace(params.Get("scope").String())
+	if scope == "" {
+		return failed(1400, "缺少 scope（c2c/group/channel/dm）")
+	}
+	pager := &dto.PanelListPager{
+		Scope:  scope,
+		Limit:  int(params.Get("limit").Int()),
+		Cursor: params.Get("cursor").String(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.ListCommandPanels(ctx, pager)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// getCommandPanel 查询指令面板详情
+func (c *Caller) getCommandPanel(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	panelID := strings.TrimSpace(params.Get("panel_id").String())
+	if panelID == "" {
+		return failed(1400, "缺少 panel_id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.GetCommandPanel(ctx, panelID)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// createCommandPanel 创建指令面板
+func (c *Caller) createCommandPanel(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	var req dto.PanelCreateReq
+	if err := json.Unmarshal([]byte(params.Raw), &req); err != nil {
+		return failed(1400, "参数解析失败: "+err.Error())
+	}
+	if strings.TrimSpace(req.Scope) == "" {
+		return failed(1400, "缺少 scope（c2c/group/channel/dm）")
+	}
+	if len(req.Panel.Items) == 0 {
+		return failed(1400, "缺少 panel.items")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.CreateCommandPanel(ctx, &req)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// setCommandPanel 修改指令面板（整体覆盖）
+func (c *Caller) setCommandPanel(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	panelID := strings.TrimSpace(params.Get("panel_id").String())
+	if panelID == "" {
+		return failed(1400, "缺少 panel_id")
+	}
+	var req dto.PanelPutReq
+	if err := json.Unmarshal([]byte(params.Raw), &req); err != nil {
+		return failed(1400, "参数解析失败: "+err.Error())
+	}
+	if len(req.Panel.Items) == 0 {
+		return failed(1400, "缺少 panel.items")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.SetCommandPanel(ctx, panelID, &req)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// deleteCommandPanel 删除指令面板
+func (c *Caller) deleteCommandPanel(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	panelID := strings.TrimSpace(params.Get("panel_id").String())
+	if panelID == "" {
+		return failed(1400, "缺少 panel_id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := sender.DeleteCommandPanel(ctx, panelID); err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(map[string]any{})
+}
+
+// setCommandPanelTarget 修改指令面板关联对象
+func (c *Caller) setCommandPanelTarget(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	panelID := strings.TrimSpace(params.Get("panel_id").String())
+	if panelID == "" {
+		return failed(1400, "缺少 panel_id")
+	}
+	var req dto.PanelTargetReq
+	if err := json.Unmarshal([]byte(params.Raw), &req); err != nil {
+		return failed(1400, "参数解析失败: "+err.Error())
+	}
+	if strings.TrimSpace(req.Op) == "" {
+		return failed(1400, "缺少 op（add/del）")
+	}
+	if len(req.UserOpenids) == 0 && len(req.GroupOpenids) == 0 {
+		return failed(1400, "缺少 user_openids 或 group_openids")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := sender.SetCommandPanelTarget(ctx, panelID, &req); err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(map[string]any{})
 }
 
 // getGateway 查询 /gateway/bot，返回 ws 接入点与连接频控（剩余可建连次数等）

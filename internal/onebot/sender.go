@@ -83,6 +83,23 @@ type MessageSender interface {
 	GetGroupMute(ctx context.Context, groupOpenID string) (*RestrictChatSetting, error)
 	// SetGroupMute 设置群成员禁言（需群管理员；单次最多 10 人）
 	SetGroupMute(ctx context.Context, groupOpenID string, ops []MuteOp) error
+
+	// GetMenu 查询全局自定义菜单
+	GetMenu(ctx context.Context) (*dto.MenuGetResp, error)
+	// SetMenu 修改全局自定义菜单（整体覆盖）
+	SetMenu(ctx context.Context, req *dto.MenuPutReq) (*dto.VersionResp, error)
+	// ListCommandPanels 查询指令面板列表
+	ListCommandPanels(ctx context.Context, pager *dto.PanelListPager) (*dto.PanelListResp, error)
+	// GetCommandPanel 查询指令面板详情
+	GetCommandPanel(ctx context.Context, panelID string) (*dto.PanelDetail, error)
+	// CreateCommandPanel 创建指令面板
+	CreateCommandPanel(ctx context.Context, req *dto.PanelCreateReq) (*dto.PanelCreateResp, error)
+	// SetCommandPanel 修改指令面板（整体覆盖）
+	SetCommandPanel(ctx context.Context, panelID string, req *dto.PanelPutReq) (*dto.VersionResp, error)
+	// DeleteCommandPanel 删除指令面板
+	DeleteCommandPanel(ctx context.Context, panelID string) error
+	// SetCommandPanelTarget 修改指令面板关联对象（仅 specific 面板）
+	SetCommandPanelTarget(ctx context.Context, panelID string, req *dto.PanelTargetReq) error
 }
 
 // GroupInfo 群基本信息（OneBot 侧视图）

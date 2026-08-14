@@ -649,6 +649,48 @@ func (s *sender) SetGroupMute(ctx context.Context, groupOpenID string, ops []one
 	return s.api.SetGroupRestrictChat(ctx, groupOpenID, req)
 }
 
+// ---- 自定义菜单与指令面板 ----
+
+// GetMenu 查询全局自定义菜单
+func (s *sender) GetMenu(ctx context.Context) (*dto.MenuGetResp, error) {
+	return s.api.GetMenu(ctx)
+}
+
+// SetMenu 修改全局自定义菜单（整体覆盖）
+func (s *sender) SetMenu(ctx context.Context, req *dto.MenuPutReq) (*dto.VersionResp, error) {
+	return s.api.SetMenu(ctx, req)
+}
+
+// ListCommandPanels 查询指令面板列表
+func (s *sender) ListCommandPanels(ctx context.Context, pager *dto.PanelListPager) (*dto.PanelListResp, error) {
+	return s.api.ListCommandPanels(ctx, pager)
+}
+
+// GetCommandPanel 查询指令面板详情
+func (s *sender) GetCommandPanel(ctx context.Context, panelID string) (*dto.PanelDetail, error) {
+	return s.api.GetCommandPanel(ctx, panelID)
+}
+
+// CreateCommandPanel 创建指令面板
+func (s *sender) CreateCommandPanel(ctx context.Context, req *dto.PanelCreateReq) (*dto.PanelCreateResp, error) {
+	return s.api.CreateCommandPanel(ctx, req)
+}
+
+// SetCommandPanel 修改指令面板（整体覆盖）
+func (s *sender) SetCommandPanel(ctx context.Context, panelID string, req *dto.PanelPutReq) (*dto.VersionResp, error) {
+	return s.api.SetCommandPanel(ctx, panelID, req)
+}
+
+// DeleteCommandPanel 删除指令面板
+func (s *sender) DeleteCommandPanel(ctx context.Context, panelID string) error {
+	return s.api.DeleteCommandPanel(ctx, panelID)
+}
+
+// SetCommandPanelTarget 修改指令面板关联对象（仅 specific 面板）
+func (s *sender) SetCommandPanelTarget(ctx context.Context, panelID string, req *dto.PanelTargetReq) error {
+	return s.api.SetCommandPanelTarget(ctx, panelID, req)
+}
+
 // ---- 分片上传辅助 ----
 
 // uploadParts 按 prepare 返回的分片信息并发上传每一片：PUT 到预签名地址后调用 finish 确认。

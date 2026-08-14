@@ -93,6 +93,11 @@ const (
 
 	settingGuideURI   uri = "/channels/{channel_id}/settingguide"
 	dmSettingGuideURI uri = "/dms/{guild_id}/settingguide"
+
+	menuURI        uri = "/v2/menu"                         // 查询/修改全局自定义菜单
+	panelsURI      uri = "/v2/panels"                       // 查询/创建指令面板
+	panelURI       uri = "/v2/panels/{panel_id}"            // 查询/修改/删除指令面板
+	panelTargetURI uri = "/v2/panels/{panel_id}/target"     // 修改指令面板关联对象
 )
 
 // getURL 获取接口地址，会处理沙箱环境判断
