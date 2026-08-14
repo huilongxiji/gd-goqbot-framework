@@ -8,6 +8,7 @@
   <img alt="language" src="https://img.shields.io/badge/language-Go-00ADD8.svg">
   <img alt="protocol" src="https://img.shields.io/badge/protocol-OneBot%20V11-blue.svg">
   <img alt="platform" src="https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macOS-lightgrey.svg">
+  <a href="https://huilongxiji.github.io/gd-goqbot-docs/"><img alt="docs" src="https://img.shields.io/badge/docs-GitHub%20Pages-00ADD8.svg"></a>
   <img alt="license" src="https://img.shields.io/badge/license-AGPL--3.0-green.svg">
 </p>
 
@@ -21,6 +22,8 @@
 - **双连接形态**：既可作正向 WS 服务端等 NoneBot 连入，也可作反向 WS 客户端主动连 NoneBot 的 OneBot V11 适配器。
 - **被动 / 主动消息**：自动选择 `msg_id` / `event_id` 被动凭证（免费、窗口内），也支持强制主动推送。
 - **持久化 ID 映射**：openid ↔ 数字 id、message_id 基于 bbolt 持久化，重启后仍可撤回 / 反查。
+
+**使用文档**：独立文档站仓库 [`gd-goqbot-docs`](https://github.com/huilongxiji/gd-goqbot-docs)（发布后为 https://huilongxiji.github.io/gd-goqbot-docs/ ）。
 
 ---
 
@@ -100,6 +103,10 @@
 | `get_group_ban`（别名 `get_group_mute`） | `group_id` | 查询群禁言状态（需群管理员） |
 | `set_group_whole_ban` | - | **不支持**（官方设置接口仅成员级，返回 1404） |
 | `get_c2c_msg_state`（别名 `get_friend_msg_state`） | `user_id` / `user_openid` | 查询用户 C2C 主动消息推送开关（**非官方接口**，基于本地事件缓存） |
+| `get_menu` / `set_menu` | `menu.items` | 查询 / 整体覆盖全局自定义菜单（仅单聊底部；`set_menu` 约 5 QPM） |
+| `get_command_panels` / `get_command_panel` | `scope` / `panel_id` | 查询指令面板列表 / 详情 |
+| `create_command_panel` / `set_command_panel` / `delete_command_panel` | `scope`,`panel` / `panel_id` | 创建 / 覆盖 / 删除指令面板 |
+| `set_command_panel_target` | `panel_id`,`op`,`user_openids`/`group_openids` | 修改 specific 面板的关联对象 |
 
 > 未识别的 action 返回空 `ok`。
 >
@@ -108,6 +115,8 @@
 > **群聊管理权限**：`info`/`bot_state` 为白名单接口；入群申请列表/审批、禁言查询/设置需机器人具备群管理员身份。权限不足时透传 QQ 原始错误，不做假成功。
 >
 > **C2C 推送状态**：官方无查询接口。需启用 `C2CMsgRejectEventHandler` / `C2CMsgReceiveEventHandler`，框架将开关事件落库到 idmap；`get_c2c_msg_state` 读缓存。从未手动操作过开关的用户返回 `known=false`。
+>
+> 每个动作的完整参数表与成功/失败 JSON 见 [文档 · API 动作总览](https://huilongxiji.github.io/gd-goqbot-docs/api/overview)。
 
 ### 消息段支持（`parseMessage`）
 
@@ -236,7 +245,7 @@ onebot:
         reconnect-interval: 3000
 ```
 
-完整字段说明见 [config.example.yml](config.example.yml)。
+完整字段说明见 [config.example.yml](config.example.yml) 与 [文档 · 配置说明](https://huilongxiji.github.io/gd-goqbot-docs/guide/config)。
 
 ---
 
