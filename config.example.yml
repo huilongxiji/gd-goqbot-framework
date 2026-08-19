@@ -7,7 +7,11 @@ qq:
   sandbox: false
   shard_count: 1                # 分片总数，最小为 1
   shard_id: 0                   # 本进程分片号，从 0 开始
-  add_at_group: false           # 群消息上报是否在首段补 at self
+  # 用户发「@机器人 你好」时，上报怎么处理这段 @：
+  #   strip - 自动忽略，下游只看到「你好」（默认，与现在一致）
+  #   raw   - 保留 QQ 原始 <@openid> 文本，交给下游自己处理
+  #   at    - 转成 OneBot at（message 段数组 + raw_message CQ）
+  mention_mode: strip
   # intents: 1073741824         # 可选：硬覆盖自动推导的 intent
   # self_id: 0                  # 可选：覆盖上报用 self_id
   # disabled: true              # 仅测试 OneBot 连接时可设为 true

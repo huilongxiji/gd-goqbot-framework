@@ -50,7 +50,7 @@
 ## 已支持功能
 
 - QQ **群 @ 消息**（`GROUP_AT_MESSAGE_CREATE`）与**单聊 C2C 消息**（`C2C_MESSAGE_CREATE`）双向收发
-- 群全量消息（需群主授权"获取群内全部消息"，`GROUP_MESSAGE_CREATE`），并据 `mentions.is_you` 还原 `to_me()`；授权步骤见 [群全量消息授权](#群全量消息授权)
+- 群全量消息（需群主授权"获取群内全部消息"，`GROUP_MESSAGE_CREATE`）；`mention_mode: at` 时把 `@机器人` 转成 OneBot at 段，NoneBot `to_me()` 为真。授权步骤见 [群全量消息授权](#群全量消息授权)
 - **"最近十条"摘要解析**：群设为"最近十条"时，QQ 在 @ 事件（`message_type=103`）随附的历史消息摘要会被解析为结构化 `recent_messages` 数组（含内容与发送者昵称）
 - **原始 QQ 事件字段透传**：群消息事件附带 `qq_message_type`、`msg_elements`、`msg_scene_ext`、`qq_msg_id`、`user_openid` 等原始字段，便于下游精细处理
 - **群成员真实角色**：群消息 `sender.role` 透传真实 `owner` / `admin` / `member`，可直接配合 NoneBot `GROUP_OWNER` / `GROUP_ADMIN` 权限
@@ -177,7 +177,7 @@
 授权完成后：
 
 - 程序需启用 `GroupMessageEventHandler`（加进 `config.yml` 的 `qq.text_intent`），否则即便平台下发也不会上报。
-- 该群的所有消息都会以 `message/group` 上报；非 @ 消息的 `to_me()` 为 `False`。
+- 该群的所有消息都会以 `message/group` 上报；非 @ 消息的 `to_me()` 为 `False`。被 @ 且需要 `to_me()` 时设 `qq.mention_mode: at`。
 - 若群设置为"最近十条"而非全量，则只在被 @ 时随事件附带最近历史摘要，由本程序解析为 `recent_messages`（见上文「已支持功能」）。
 
 > 提示：授权时 QQ 弹出的**快捷授权链接**目前实测**仅安卓手机 QQ** 能正常打开；iOS / 电脑端点击可能提示"加载失败，请检查网络之后重试"。这只影响该快捷链接，授权开关本身在其它客户端也能设置。

@@ -28,34 +28,58 @@ var atOpenIDRE = regexp.MustCompile(`<@!?[^>]+>`)
 
 // Converter 把 QQ 事件转换为 OneBot v11 事件并推入 EventBus
 type Converter struct {
-	ids        *idmap.Store
-	bus        *EventBus
-	selfID     func() int64
-	addAtGroup bool
-	msgFormat  string  // array 或 string
-	downtime   string  // 全下游掉线时回发 QQ 的兜底文本，空=关闭
-	caller     *Caller // 用于兜底时直接调用 QQ 发送
+	ids         *idmap.Store
+	bus         *EventBus
+	selfID      func() int64
+	mentionMode string  // strip | raw | at，入站 <@openid> 的处理方式
+	msgFormat   string  // array 或 string
+	downtime    string  // 全下游掉线时回发 QQ 的兜底文本，空=关闭
+	caller      *Caller // 用于兜底时直接调用 QQ 发送
+
+	botMu     sync.RWMutex
+	botOpenID string // READY 后的机器人 openid，at 模式映射 self_id
+	botName   string // READY 后的机器人用户名，at 段 name 回退
 
 	seenMu    sync.Mutex
 	seen      map[string]struct{}
 	seenOrder []string
 }
 
-// NewConverter 创建转换器
-func NewConverter(ids *idmap.Store, bus *EventBus, selfID func() int64, addAtGroup bool, msgFormat, downtime string, caller *Caller) *Converter {
+// NewConverter 创建转换器。mentionMode 为 strip / raw / at（其它值按 strip）。
+func NewConverter(ids *idmap.Store, bus *EventBus, selfID func() int64, mentionMode, msgFormat, downtime string, caller *Caller) *Converter {
 	if msgFormat == "" {
 		msgFormat = "array"
 	}
-	return &Converter{
-		ids:        ids,
-		bus:        bus,
-		selfID:     selfID,
-		addAtGroup: addAtGroup,
-		msgFormat:  msgFormat,
-		downtime:   downtime,
-		caller:     caller,
-		seen:       make(map[string]struct{}),
+	switch strings.ToLower(strings.TrimSpace(mentionMode)) {
+	case "raw", "at", "strip":
+		mentionMode = strings.ToLower(strings.TrimSpace(mentionMode))
+	default:
+		mentionMode = "strip"
 	}
+	return &Converter{
+		ids:         ids,
+		bus:         bus,
+		selfID:      selfID,
+		mentionMode: mentionMode,
+		msgFormat:   msgFormat,
+		downtime:    downtime,
+		caller:      caller,
+		seen:        make(map[string]struct{}),
+	}
+}
+
+// SetBotIdentity 由 READY 写入机器人 openid 与用户名，供 at 模式把 <@官机> 映射为 self_id。
+func (c *Converter) SetBotIdentity(openid, name string) {
+	c.botMu.Lock()
+	defer c.botMu.Unlock()
+	c.botOpenID = openid
+	c.botName = name
+}
+
+func (c *Converter) botIdentity() (openid, name string) {
+	c.botMu.RLock()
+	defer c.botMu.RUnlock()
+	return c.botOpenID, c.botName
 }
 
 // Segment OneBot v11 消息段，序列化为 {"type":"at","data":{"qq":"123"}}
@@ -103,6 +127,12 @@ func nick(data *dto.Message) string {
 // cqEscape 转义 CQ 码文本
 func cqEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "[", "&#91;", "]", "&#93;")
+	return r.Replace(s)
+}
+
+// cqParamEscape 转义 CQ 参数值（比文本多转义逗号，避免 name 拆段）
+func cqParamEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "[", "&#91;", "]", "&#93;", ",", "&#44;")
 	return r.Replace(s)
 }
 
@@ -335,20 +365,110 @@ func eventUnix(data *dto.Message) int64 {
 	return time.Now().Unix()
 }
 
-// mentionedSelf 全量群消息 payload 中是否 @ 了当前机器人
-func mentionedSelf(data *dto.Message) bool {
-	for _, u := range data.Mentions {
-		if u != nil && u.IsYou {
-			return true
-		}
-	}
-	return false
-}
-
 // cleanMentionMarkup 去掉 QQ 内嵌 @ 标记（openid 非纯数字，ETLInput 的 <@!\d+> 无法覆盖）
 func cleanMentionMarkup(s string) string {
 	s = atOpenIDRE.ReplaceAllString(s, "")
 	return strings.Trim(s, " \u00A0")
+}
+
+// mentionID 从 <@id> / <@!id> 取出内部 id
+func mentionID(token string) string {
+	s := strings.TrimSuffix(strings.TrimPrefix(token, "<@"), ">")
+	return strings.TrimPrefix(s, "!")
+}
+
+// mentionIndex 用 mentions 的 ID / MemberOpenID 建表，供 at 模式填 qq 与 name
+func mentionIndex(data *dto.Message) map[string]*dto.User {
+	m := make(map[string]*dto.User)
+	if data == nil {
+		return m
+	}
+	for _, u := range data.Mentions {
+		if u == nil {
+			continue
+		}
+		if u.ID != "" {
+			m[u.ID] = u
+		}
+		if u.MemberOpenID != "" {
+			m[u.MemberOpenID] = u
+		}
+	}
+	return m
+}
+
+// resolveMention 把 <@id> 解析为 OneBot at 的 qq 与 name
+func (c *Converter) resolveMention(id string, byID map[string]*dto.User) (qq, name string) {
+	lower := strings.ToLower(id)
+	if lower == "everyone" || lower == "all" {
+		return "all", ""
+	}
+	botOpenID, botName := c.botIdentity()
+	u := byID[id]
+	isBot := (u != nil && u.IsYou) || (botOpenID != "" && id == botOpenID)
+	if isBot {
+		qq = strconv.FormatInt(c.selfID(), 10)
+		if u != nil && u.Username != "" {
+			name = u.Username
+		} else {
+			name = botName
+		}
+		return qq, name
+	}
+	if u != nil && u.Username != "" {
+		name = u.Username
+	}
+	openid := id
+	if u != nil {
+		if u.ID != "" {
+			openid = u.ID
+		} else if u.MemberOpenID != "" {
+			openid = u.MemberOpenID
+		}
+	}
+	qq = strconv.FormatInt(c.ids.ID(openid), 10)
+	return qq, name
+}
+
+// splitMentions 按位置把 content 切成 text / at 段，并同步生成 CQ
+func (c *Converter) splitMentions(data *dto.Message, content string) (Message, string) {
+	if content == "" {
+		return nil, ""
+	}
+	byID := mentionIndex(data)
+	var segs Message
+	var raw strings.Builder
+	appendText := func(s string) {
+		if s == "" {
+			return
+		}
+		segs = append(segs, Segment{Type: "text", Data: map[string]any{"text": s}})
+		raw.WriteString(cqEscape(s))
+	}
+	appendAt := func(qq, name string) {
+		d := map[string]any{"qq": qq}
+		if name != "" {
+			d["name"] = name
+		}
+		segs = append(segs, Segment{Type: "at", Data: d})
+		raw.WriteString("[CQ:at,qq=")
+		raw.WriteString(qq)
+		if name != "" {
+			raw.WriteString(",name=")
+			raw.WriteString(cqParamEscape(name))
+		}
+		raw.WriteString("]")
+	}
+	last := 0
+	for _, loc := range atOpenIDRE.FindAllStringIndex(content, -1) {
+		appendText(content[last:loc[0]])
+		id := mentionID(content[loc[0]:loc[1]])
+		qq, name := c.resolveMention(id, byID)
+		appendAt(qq, name)
+		last = loc[1]
+	}
+	appendText(content[last:])
+	return segs, raw.String()
 }
 
 // groupOpenIDOf 取群 openid，优先 GroupOpenID，回退兼容旧字段 GroupID
@@ -389,23 +509,35 @@ func addUnionOpenID(ev map[string]any, unionOpenID string) {
 	}
 }
 
-// buildSegments 由 QQ 消息构造 OneBot message 段数组（主格式）与 raw_message（CQ 兜底）
-// atSelf 为 true 时在段首注入 at self（NoneBot to_me() 为真）
-func (c *Converter) buildSegments(data *dto.Message, atSelf bool) (Message, string) {
+// buildSegments 由 QQ 消息构造 OneBot message 段数组（主格式）与 raw_message（CQ 兜底）。
+// 正文里的 <@openid> 按 mention_mode 处理：strip 全删、raw 原样、at 切成 at 段。
+func (c *Converter) buildSegments(data *dto.Message) (Message, string) {
 	segs := Message{}
 	var raw strings.Builder
-
-	if atSelf {
-		self := strconv.FormatInt(c.selfID(), 10)
-		segs = append(segs, Segment{Type: "at", Data: map[string]any{"qq": self}})
-		raw.WriteString("[CQ:at,qq=")
-		raw.WriteString(self)
-		raw.WriteString("]")
+	content := ""
+	if data != nil {
+		content = data.Content
 	}
 
-	if text := cleanMentionMarkup(data.Content); text != "" {
-		segs = append(segs, Segment{Type: "text", Data: map[string]any{"text": text}})
-		raw.WriteString(cqEscape(text))
+	switch c.mentionMode {
+	case "raw":
+		if content != "" {
+			segs = append(segs, Segment{Type: "text", Data: map[string]any{"text": content}})
+			raw.WriteString(cqEscape(content))
+		}
+	case "at":
+		atSegs, atRaw := c.splitMentions(data, content)
+		segs = append(segs, atSegs...)
+		raw.WriteString(atRaw)
+	default: // strip
+		if text := cleanMentionMarkup(content); text != "" {
+			segs = append(segs, Segment{Type: "text", Data: map[string]any{"text": text}})
+			raw.WriteString(cqEscape(text))
+		}
+	}
+
+	if data == nil {
+		return segs, raw.String()
 	}
 
 	for _, att := range data.Attachments {
@@ -519,7 +651,7 @@ func (c *Converter) Group(data *dto.Message) {
 		Time:        time.Now(),
 	})
 
-	segs, raw := c.buildSegments(data, c.addAtGroup)
+	segs, raw := c.buildSegments(data)
 	c.pushGroupMessage(data, groupOpenID, userOpenID, groupID, userID, msgID, segs, raw)
 }
 
@@ -550,8 +682,7 @@ func (c *Converter) GroupAll(data *dto.Message) {
 		Time:        time.Now(),
 	})
 
-	atSelf := mentionedSelf(data)
-	segs, raw := c.buildSegments(data, atSelf)
+	segs, raw := c.buildSegments(data)
 	c.pushGroupMessage(data, groupOpenID, userOpenID, groupID, userID, msgID, segs, raw)
 }
 
@@ -724,7 +855,7 @@ func (c *Converter) C2C(data *dto.Message) {
 		Time:       time.Now(),
 	})
 
-	segs, raw := c.buildSegments(data, false)
+	segs, raw := c.buildSegments(data)
 	ev := map[string]any{
 		"post_type":       "message",
 		"message_type":    "private",

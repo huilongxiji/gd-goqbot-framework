@@ -8,9 +8,17 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
-	"goqbot/internal/botgo/dto"
 	"gopkg.in/yaml.v3"
+	"goqbot/internal/botgo/dto"
+)
+
+// 入站 @ 官机的上报方式（qq.mention_mode）
+const (
+	MentionModeStrip = "strip" // 丢掉 <@openid>，下游只看到后面的文本
+	MentionModeRaw   = "raw"   // 正文原样保留 QQ <@openid>
+	MentionModeAt    = "at"    // 切成 OneBot at 段 + CQ
 )
 
 // Config 适配器总配置
@@ -53,7 +61,8 @@ type QQConfig struct {
 	ShardCount            uint32   `yaml:"shard_count"`              // 分片总数，最小为 1
 	ShardID               uint32   `yaml:"shard_id"`                 // 本进程分片号，从 0 开始
 	TextIntent            []string `yaml:"text_intent"`              // 按 handler 名订阅事件，intent 自动推导
-	AddAtGroup            bool     `yaml:"add_at_group"`             // 群消息上报时是否在首段补 at self
+	MentionMode           string   `yaml:"mention_mode"`             // strip|raw|at：用户 @ 官机时的上报方式
+	AddAtGroup            bool     `yaml:"add_at_group"`             // 已废弃；仅 mention_mode 未配时 true 回退为 at
 	SelfID                int64    `yaml:"self_id"`                  // 可选：覆盖上报用 self_id，0=按 use_uin/app_id 推导
 	Disabled              bool     `yaml:"disabled"`                 // true=跳过 QQ 上游连接（仅测试 OneBot 侧时用）
 	IPRejectAction        string   `yaml:"ip_reject_action"`         // IP 白名单被拒(11298)后策略：stop(默认)/retry/exit
@@ -66,6 +75,21 @@ func (c *QQConfig) AppSecret() string {
 		return c.ClientSecret
 	}
 	return c.Token
+}
+
+// ResolvedMentionMode 规范化 mention_mode：raw / at 原样；空则按已废弃的 add_at_group 回退；其余（含 strip）为 strip。
+func (c *QQConfig) ResolvedMentionMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.MentionMode)) {
+	case MentionModeRaw, MentionModeAt, MentionModeStrip:
+		return strings.ToLower(strings.TrimSpace(c.MentionMode))
+	case "":
+		if c.AddAtGroup {
+			return MentionModeAt
+		}
+		return MentionModeStrip
+	default:
+		return MentionModeStrip
+	}
 }
 
 // OneBotConfig OneBot v11 下游连接配置

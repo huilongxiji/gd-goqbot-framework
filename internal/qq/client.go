@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/oauth2"
 	"goqbot/internal/botgo"
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/errs"
@@ -17,7 +18,6 @@ import (
 	"goqbot/internal/botgo/sessions/manager"
 	"goqbot/internal/botgo/token"
 	"goqbot/internal/botgo/websocket"
-	"golang.org/x/oauth2"
 
 	"goqbot/internal/config"
 	"goqbot/internal/filelog"
@@ -39,12 +39,12 @@ type Client struct {
 	fatalCh       chan struct{} // exit 策略下通知 main 退出
 	fatalOnce     sync.Once     // 保证 fatalCh 仅关闭一次
 
-	mu         sync.RWMutex         // 保护下列可变字段
-	botName    string               // READY 后的机器人用户名
-	ready      bool                 // 是否已完成 READY
-	wsClient   websocket.WebSocket  // 当前存活的 WS 连接（供 onIPReject 关闭）
-	ipRejected bool                 // stop 策略：永久停止重连
-	lastIPLog  time.Time            // 日志节流：避免 retry 下刷屏
+	mu         sync.RWMutex        // 保护下列可变字段
+	botName    string              // READY 后的机器人用户名
+	ready      bool                // 是否已完成 READY
+	wsClient   websocket.WebSocket // 当前存活的 WS 连接（供 onIPReject 关闭）
+	ipRejected bool                // stop 策略：永久停止重连
+	lastIPLog  time.Time           // 日志节流：避免 retry 下刷屏
 }
 
 // NewClient 创建 QQ 客户端
@@ -243,6 +243,9 @@ func (c *Client) registerHandlers() dto.Intent {
 		c.ready = true
 		c.mu.Unlock()
 		c.caller.SetNickname(data.User.Username)
+		if c.conv != nil {
+			c.conv.SetBotIdentity(data.User.ID, data.User.Username)
+		}
 		log.Printf("[qq] ====== QQ 连接成功 ======")
 		log.Printf("[qq] 机器人: %s  self_id: %d  openid: %s", data.User.Username, c.cfg.SelfID, data.User.ID)
 		log.Printf("[qq] 分片: [%d/%d]  session_id: %s", c.cfg.ShardID, c.cfg.ShardCount, data.SessionID)

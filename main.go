@@ -122,7 +122,7 @@ func main() {
 	}
 	bus := onebot.NewEventBus()
 	caller := onebot.NewCaller(selfID, appID, ids, cfg.OneBot.Debug, AppName, AppVersion)
-	conv := onebot.NewConverter(ids, bus, func() int64 { return selfID }, cfg.QQ.AddAtGroup, cfg.OneBot.MessageFormat, cfg.OneBot.DowntimeMessage, caller)
+	conv := onebot.NewConverter(ids, bus, func() int64 { return selfID }, cfg.QQ.ResolvedMentionMode(), cfg.OneBot.MessageFormat, cfg.OneBot.DowntimeMessage, caller)
 
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
