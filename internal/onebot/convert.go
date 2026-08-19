@@ -776,9 +776,9 @@ func (c *Converter) pushFallback(ev map[string]any, scene idmap.Scene, groupOpen
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if scene == idmap.SceneGroup {
-		_, _ = sender.SendGroup(ctx, groupOpenID, out)
+		_, _, _ = sender.SendGroup(ctx, groupOpenID, out)
 	} else {
-		_, _ = sender.SendC2C(ctx, userOpenID, out)
+		_, _, _ = sender.SendC2C(ctx, userOpenID, out)
 	}
 	return delivered, true
 }

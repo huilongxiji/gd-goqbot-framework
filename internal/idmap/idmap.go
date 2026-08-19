@@ -62,14 +62,27 @@ type seqEntry struct {
 	last int64 // 最近使用时间（UnixNano），atomic 读写
 }
 
-// MsgMeta 收到的 QQ 消息元信息，供发送侧被动回复使用
+// MsgMeta 消息元信息：入站供被动回复；出站供后续引用机器人自己发的消息
 type MsgMeta struct {
-	MsgID       string // QQ 原始消息 id（ROBOT1.0_...），用于占用被动回复窗口
-	RefIdx      string // 引用索引令牌（REFIDX_...，来自 message_scene.ext 的 msg_idx）；群/单聊 message_reference 须用它
+	MsgID       string // QQ 原始消息 id（ROBOT1.0_...）；仅入站消息可用作被动回复窗口
+	RefIdx      string // 引用索引令牌（REFIDX_...）。入站来自 message_scene.ext 的 msg_idx；出站来自发消息回包 ext_info.ref_idx
 	GroupOpenID string
 	UserOpenID  string
 	Scene       Scene
 	Time        time.Time
+	Outbound    bool // true=本程序发出的消息，不能当作被动 msg_id
+}
+
+// PassiveOK 是否还能当作被动回复凭证（入站且未过窗口）
+func (m MsgMeta) PassiveOK() bool {
+	if m.Outbound || m.MsgID == "" {
+		return false
+	}
+	ttl := GroupPassiveTTL
+	if m.Scene == SceneC2C {
+		ttl = C2CPassiveTTL
+	}
+	return !m.Time.IsZero() && time.Since(m.Time) < ttl
 }
 
 type lazyEntry struct {

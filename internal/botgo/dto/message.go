@@ -39,6 +39,8 @@ type Message struct {
 	SeqInChannel string `json:"seq_in_channel"`
 	// 引用的消息
 	MessageReference *MessageReference `json:"message_reference,omitempty"`
+	// 发消息回包扩展信息（含本条消息的 ref_idx，供后续引用机器人自己发的消息）
+	ExtInfo *MessageExtInfo `json:"ext_info,omitempty"`
 	// 私信场景下，该字段用来标识从哪个频道发起的私信
 	SrcGuildID string `json:"src_guild_id"`
 	// 上传富媒体文件后返回的文件信息。 注意以群或者C2C消息上传后， 同类型可以重复使用，不同类型需要不能使用。
@@ -100,4 +102,9 @@ type MessageScene struct {
 	Source       string   `json:"source,omitempty"`        // 消息来源, realtime_voice: 实时通话场景, ai_search: AI搜索 其它默认为AIO消息
 	CallbackData string   `json:"callback_data,omitempty"` // 回调数据
 	Ext          []string `json:"ext,omitempty"`           // 扩展信息：msg_idx / ref_msg_idx 等
+}
+
+// MessageExtInfo 发消息接口回包的扩展信息
+type MessageExtInfo struct {
+	RefIdx string `json:"ref_idx,omitempty"` // 本条消息的引用索引（REFIDX_...），对应入站 ext 的 msg_idx
 }

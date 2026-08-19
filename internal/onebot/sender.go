@@ -60,10 +60,10 @@ func (m *OutMessage) HasContent() bool {
 
 // MessageSender 实际调用 QQ openapi 发送/撤回消息，由 qq.Client 注入实现
 type MessageSender interface {
-	// SendGroup 向群发送消息，返回 QQ 侧消息 id
-	SendGroup(ctx context.Context, groupOpenID string, msg *OutMessage) (qqMsgID string, err error)
-	// SendC2C 向单聊用户发送消息，返回 QQ 侧消息 id
-	SendC2C(ctx context.Context, userOpenID string, msg *OutMessage) (qqMsgID string, err error)
+	// SendGroup 向群发送消息，返回 QQ 侧消息 id 与本条 REFIDX（回包 ext_info.ref_idx，可空）
+	SendGroup(ctx context.Context, groupOpenID string, msg *OutMessage) (qqMsgID, refIdx string, err error)
+	// SendC2C 向单聊用户发送消息，返回 QQ 侧消息 id 与本条 REFIDX（回包 ext_info.ref_idx，可空）
+	SendC2C(ctx context.Context, userOpenID string, msg *OutMessage) (qqMsgID, refIdx string, err error)
 	// RetractGroup 撤回一条群消息
 	RetractGroup(ctx context.Context, groupOpenID, qqMsgID string) error
 	// RetractC2C 撤回一条单聊消息

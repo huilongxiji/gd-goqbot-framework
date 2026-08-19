@@ -1018,14 +1018,14 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
-	qqMsgID, err := sender.SendGroup(ctx, groupOpenID, out)
+	qqMsgID, refIdx, err := sender.SendGroup(ctx, groupOpenID, out)
 	if err != nil {
 		logSend(action, "群", groupID, out, "", 0, start, err)
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
-		MsgID: qqMsgID, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(),
+		MsgID: qqMsgID, RefIdx: refIdx, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(), Outbound: true,
 	})
 	logSend(action, "群", groupID, out, qqMsgID, mid, start, nil)
 	return ok(map[string]any{"message_id": mid})
@@ -1097,14 +1097,14 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
-	qqMsgID, err := sender.SendC2C(ctx, userOpenID, out)
+	qqMsgID, refIdx, err := sender.SendC2C(ctx, userOpenID, out)
 	if err != nil {
 		logSend(action, "私聊", userID, out, "", 0, start, err)
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
-		MsgID: qqMsgID, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(),
+		MsgID: qqMsgID, RefIdx: refIdx, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(), Outbound: true,
 	})
 	logSend(action, "私聊", userID, out, qqMsgID, mid, start, nil)
 	data := map[string]any{"message_id": mid}
@@ -1270,15 +1270,21 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				break
 			}
 			if meta, found := c.ids.Msg(rid); found && meta.MsgID != "" {
-				// 被动 msg_id（ROBOT1.0_）占用 5 分钟被动回复窗口；
-				// message_reference 须用 REFIDX 引用索引令牌（来自入站 msg_idx）才能在群/单聊渲染「引用」气泡，
-				// 用 ROBOT1.0_ 消息 id 平台虽返回 200 但不渲染（对齐 nonebot-adapter-qq 实现）。
-				out.MsgID = meta.MsgID
+				// 引用条用 REFIDX；被动 msg_id 只能用「用户入站且未过期」的凭证。
+				// 机器人自己发出的消息（Outbound）没有被动窗口，拿它当 msg_id 会 40034005「已过期」。
 				out.RefMsgID = meta.RefIdx
-				if meta.RefIdx != "" {
-					log.Printf("[onebot] reply 命中缓存 message_id=%d → 被动 msg_id=%s，引用 REFIDX=%s", rid, meta.MsgID, meta.RefIdx)
-				} else {
-					log.Printf("[onebot] reply 命中缓存 message_id=%d → 被动 msg_id=%s，但无 REFIDX（该消息未带 msg_idx，无法渲染引用气泡）", rid, meta.MsgID)
+				if meta.PassiveOK() {
+					out.MsgID = meta.MsgID
+				}
+				switch {
+				case meta.RefIdx != "" && out.MsgID != "":
+					log.Printf("[onebot] reply 命中 message_id=%d → 被动 msg_id=%s，引用 REFIDX=%s", rid, meta.MsgID, meta.RefIdx)
+				case meta.RefIdx != "":
+					log.Printf("[onebot] reply 命中 message_id=%d → 仅引用 REFIDX=%s（出站或被动窗口已过，msg_id 交由 lazy）", rid, meta.RefIdx)
+				case out.MsgID != "":
+					log.Printf("[onebot] reply 命中 message_id=%d → 被动 msg_id=%s，但无 REFIDX（无法渲染引用气泡）", rid, meta.MsgID)
+				default:
+					log.Printf("[onebot] reply 命中 message_id=%d → 无 REFIDX 且不能作被动凭证", rid)
 				}
 			} else {
 				filelog.Warnf("[onebot] reply 段 message_id=%d 未命中本机缓存，无法引用（将退化为主动消息）", rid)
