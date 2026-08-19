@@ -86,6 +86,70 @@ func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 	c.msgCache[id] = snap
 }
 
+// cacheOutbound 把刚发出去的消息写入 get_msg 缓存，字段对齐 OneBot v11 / go-cqhttp：
+// time / message_type / message_id / real_id / sender / message / raw_message，群另带 group / group_id。
+func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, messageType string, peerID int64, peerOpenID, groupOpenID string) {
+	if mid == 0 {
+		return
+	}
+	message, raw := outboundMessageField(msg)
+	self := c.getSelfID()
+	snap := map[string]any{
+		"time":         time.Now().Unix(),
+		"message_type": messageType,
+		"message_id":   mid,
+		"real_id":      mid,
+		"sender": map[string]any{
+			"user_id":  self,
+			"nickname": c.getNickname(),
+		},
+		"message":     message,
+		"raw_message": raw,
+		"user_id":     self,
+		"qq_msg_id":   qqMsgID,
+	}
+	if messageType == "group" {
+		snap["group"] = true
+		snap["group_id"] = peerID
+		if groupOpenID != "" {
+			snap["group_openid"] = groupOpenID
+		}
+	} else {
+		snap["group"] = false
+		if peerID != 0 {
+			snap["target_id"] = peerID // 私聊对方，go-cqhttp / LLOneBot 常见扩展
+		}
+		if peerOpenID != "" {
+			snap["user_openid"] = peerOpenID
+		}
+	}
+	c.CacheMsg(mid, snap)
+}
+
+// outboundMessageField 把发送入参还原为 get_msg 的 message / raw_message。
+func outboundMessageField(msg gjson.Result) (any, string) {
+	if msg.IsArray() {
+		var segs []any
+		if err := json.Unmarshal([]byte(msg.Raw), &segs); err != nil || segs == nil {
+			segs = []any{}
+		}
+		var raw strings.Builder
+		for _, seg := range msg.Array() {
+			typ := seg.Get("type").String()
+			if typ == "text" {
+				raw.WriteString(seg.Get("data.text").String())
+				continue
+			}
+			raw.WriteString("[CQ:")
+			raw.WriteString(typ)
+			raw.WriteByte(']')
+		}
+		return segs, raw.String()
+	}
+	s := msg.String()
+	return s, s
+}
+
 // CacheForward 缓存合并转发节点，供 get_forward_msg 取回（有界，FIFO 淘汰）
 func (c *Caller) CacheForward(id string, nodes []map[string]any) {
 	if id == "" || len(nodes) == 0 {
@@ -1027,6 +1091,7 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(), Outbound: true,
 	})
+	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "group", groupID, "", groupOpenID)
 	logSend(action, "群", groupID, out, qqMsgID, mid, start, nil)
 	return ok(map[string]any{"message_id": mid})
 }
@@ -1106,6 +1171,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(), Outbound: true,
 	})
+	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "private", userID, userOpenID, "")
 	logSend(action, "私聊", userID, out, qqMsgID, mid, start, nil)
 	data := map[string]any{"message_id": mid}
 	if out.Stream != nil {

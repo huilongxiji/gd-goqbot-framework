@@ -89,7 +89,7 @@
 | `send_group_active_msg` | `group_id`, `message` | **强制主动**发群（忽略 reply / lazy 凭证） |
 | `send_private_active_msg` | `user_id`, `message` | **强制主动**发单聊 |
 | `delete_msg` | `message_id` | 撤回（按 message_id 反查 QQ 原始 msg_id） |
-| `get_msg` | `message_id` | 取回收到时缓存的消息（仅内存） |
+| `get_msg` | `message_id` | 取回消息快照（入站 + 发出，仅内存） |
 | `get_forward_msg` | `id` / `message_id` | 取回合并转发的节点数组（入站解析后缓存，FIFO 有界） |
 | `get_openid` | `user_id` / `group_id` | 把数字 id 反查回 QQ 原始 openid |
 | `put_interaction` / `send_interaction_ack` | `interaction_id`, `code`(默认 0) | 互动按钮回执 |
