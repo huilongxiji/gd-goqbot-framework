@@ -43,6 +43,17 @@ type MessagePart struct {
 	Keyboard *keyboard.MessageKeyboard // PartMarkdown 可选
 }
 
+// SendNote 解析阶段留给发消息日志框的嵌套说明（不参与发送）。
+type SendNote struct {
+	Title   string // 动作名，如 reply
+	Content string // 默认展示的一句内容
+	Fail    bool
+	ID      int64
+	Cached  bool
+	Passive bool
+	HasRef  bool
+}
+
 // OutMessage 已解析、openid 已就绪的发送请求，Parts 保持 OneBot 段的原始顺序
 type OutMessage struct {
 	MsgID    string      // 被动回复目标 QQ msg_id，可空；用于占用被动回复窗口（5 分钟时效）
@@ -51,6 +62,7 @@ type OutMessage struct {
 	IsWakeup bool        // 单聊互动召回消息：与 MsgID/EventID 互斥，仅 C2C 生效
 	Stream   *dto.Stream // 流式消息信息，仅 C2C 生效；非空时整条按流式分片发送（内容取 Parts 里的文本）
 	Parts    []MessagePart
+	Notes    []SendNote // 仅日志：reply 等随消息发送的动作说明
 }
 
 // HasContent 是否有可发送内容。流式末帧可能没有文本，只要带了 Stream 也算有内容。

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,9 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/dto/keyboard"
-	"github.com/tidwall/gjson"
 
 	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
@@ -246,6 +245,13 @@ func (c *Caller) getSender() MessageSender {
 
 // Call 处理 OneBot v11 动作请求
 func (c *Caller) Call(action string, params gjson.Result) map[string]any {
+	start := time.Now()
+	ret := c.dispatch(action, params)
+	c.logStandaloneAction(action, params, ret, start)
+	return ret
+}
+
+func (c *Caller) dispatch(action string, params gjson.Result) map[string]any {
 	switch action {
 	case "get_login_info":
 		return ok(map[string]any{
@@ -506,25 +512,25 @@ func (c *Caller) getGroupMemberInfo(params gjson.Result) map[string]any {
 		role = "member"
 	}
 	return ok(map[string]any{
-		"group_id":              params.Get("group_id").Int(),
-		"user_id":               uid,
-		"nickname":              c.getNickname(),
-		"card":                  "",
-		"sex":                   "unknown",
-		"age":                   0,
-		"area":                  "",
-		"join_time":             0,
-		"last_sent_time":        0,
-		"level":                 "0",
-		"role":                  role,
-		"unfriendly":            false,
-		"title":                 "",
-		"title_expire_time":     0,
-		"card_changeable":       false,
-		"joined_at":             st.JoinedAt,
-		"allow_proactive_msg":   st.AllowProactiveMsg,
-		"recv_msg_setting":      st.RecvMsgSetting,
-		"member_openid":         st.MemberOpenID,
+		"group_id":            params.Get("group_id").Int(),
+		"user_id":             uid,
+		"nickname":            c.getNickname(),
+		"card":                "",
+		"sex":                 "unknown",
+		"age":                 0,
+		"area":                "",
+		"join_time":           0,
+		"last_sent_time":      0,
+		"level":               "0",
+		"role":                role,
+		"unfriendly":          false,
+		"title":               "",
+		"title_expire_time":   0,
+		"card_changeable":     false,
+		"joined_at":           st.JoinedAt,
+		"allow_proactive_msg": st.AllowProactiveMsg,
+		"recv_msg_setting":    st.RecvMsgSetting,
+		"member_openid":       st.MemberOpenID,
 	})
 }
 
@@ -698,11 +704,11 @@ func (c *Caller) getGroupBan(params gjson.Result) map[string]any {
 	members := make([]map[string]any, 0, len(st.Members))
 	for _, m := range st.Members {
 		members = append(members, map[string]any{
-			"user_id":         c.ids.ID(m.MemberOpenID),
-			"user_openid":     m.MemberOpenID,
-			"mute_expire_at":  m.MuteExpireAt,
-			"username":        m.Username,
-			"union_openid":    m.UnionOpenID,
+			"user_id":        c.ids.ID(m.MemberOpenID),
+			"user_openid":    m.MemberOpenID,
+			"mute_expire_at": m.MuteExpireAt,
+			"username":       m.Username,
+			"union_openid":   m.UnionOpenID,
 		})
 	}
 	return ok(map[string]any{
@@ -945,8 +951,8 @@ func (c *Caller) getGateway() map[string]any {
 	})
 }
 
-// logSend 渲染一条"发消息"边框块（成功绿/失败红，含模式与耗时）
-func logSend(action, sceneLabel string, sceneID int64, out *OutMessage, qqMsgID string, mid int64, start time.Time, err error) {
+// logSend 渲染一条"发消息"边框块（成功绿/失败红）。reply 等 note 嵌套在段/模式与结果之间。
+func (c *Caller) logSend(action, sceneLabel string, sceneID int64, out *OutMessage, params gjson.Result, qqMsgID string, mid int64, start time.Time, err error) {
 	tone := prettylog.ToneSend
 	if err != nil {
 		tone = prettylog.ToneErr
@@ -956,22 +962,175 @@ func logSend(action, sceneLabel string, sceneID int64, out *OutMessage, qqMsgID 
 		title += " · " + sceneLabel + " " + strconv.FormatInt(sceneID, 10)
 	}
 	blk := prettylog.New(title, tone)
+	if c.debug {
+		blk.Row("接口", action)
+		if p := paramSummary(params); p != "" {
+			blk.Row("参数", p)
+		}
+		if err != nil {
+			blk.Row("状态", prettylog.Fail("failed"))
+		} else {
+			blk.Row("状态", prettylog.Ok("ok")+"  retcode=0")
+		}
+	}
 	if out != nil {
 		blk.Row("段", partSummary(out))
 		blk.Row("模式", sendMode(out))
+		for _, n := range out.Notes {
+			inner := prettylog.New(n.Title, toneForNote(n.Fail))
+			inner.Row("内容", n.Content)
+			if c.debug {
+				inner.Row("id", strconv.FormatInt(n.ID, 10))
+				inner.Row("缓存", boolCN(n.Cached))
+				inner.Row("被动", boolCN(n.Passive))
+				inner.Row("引用", boolCN(n.HasRef))
+			}
+			blk.Nest(inner)
+		}
 	}
 	elapsed := time.Since(start).Round(time.Millisecond).String()
 	if err != nil {
-		blk.Row("结果", prettylog.Fail("✘ 失败 "+err.Error())+prettylog.Dim("  耗时 "+elapsed))
+		blk.Row("结果", prettylog.Fail("✘ 失败 "+err.Error()))
+		if c.debug {
+			blk.Row("耗时", elapsed)
+		}
 	} else {
-		res := prettylog.Ok(fmt.Sprintf("✔ 成功  message_id=%d", mid))
+		res := prettylog.Ok("✔ 成功")
+		if mid != 0 {
+			res += fmt.Sprintf("  message_id=%d", mid)
+		}
 		if qqMsgID != "" {
 			res += prettylog.Dim("  QQ " + midEllipsis(qqMsgID, 14, 8))
 		}
-		res += prettylog.Dim("  耗时 " + elapsed)
+		if !c.debug {
+			res += prettylog.Dim("  耗时 " + elapsed)
+		}
 		blk.Row("结果", res)
+		if c.debug {
+			blk.Row("耗时", elapsed)
+		}
 	}
 	blk.Emit()
+}
+
+func toneForNote(fail bool) prettylog.Tone {
+	if fail {
+		return prettylog.ToneErr
+	}
+	return prettylog.ToneSend
+}
+
+func boolCN(v bool) string {
+	if v {
+		return "是"
+	}
+	return "否"
+}
+
+func isSendAction(action string) bool {
+	switch action {
+	case "send_group_msg", "send_private_msg", "send_msg",
+		"send_group_active_msg", "send_private_active_msg":
+		return true
+	}
+	return false
+}
+
+func isBoxedAction(action string) bool {
+	switch action {
+	case "delete_msg", "put_interaction", "send_interaction_ack":
+		return true
+	}
+	return false
+}
+
+func isHandshakeAction(action string) bool {
+	switch action {
+	case "get_login_info", "get_status", "get_version_info":
+		return true
+	}
+	return false
+}
+
+func (c *Caller) logStandaloneAction(action string, params gjson.Result, ret map[string]any, start time.Time) {
+	if isSendAction(action) || isBoxedAction(action) {
+		return
+	}
+	if isHandshakeAction(action) && !c.debug {
+		return
+	}
+	okRet := ret["status"] == "ok"
+	tone := prettylog.ToneSend
+	if !okRet {
+		tone = prettylog.ToneErr
+	}
+	blk := prettylog.New("动作 · "+action, tone)
+	blk.Row("内容", actionContent(action, params, ret))
+	if c.debug {
+		blk.Row("接口", action)
+		if p := paramSummary(params); p != "" {
+			blk.Row("参数", p)
+		}
+		if okRet {
+			blk.Row("状态", prettylog.Ok("ok")+"  retcode=0")
+		} else {
+			blk.Row("状态", prettylog.Fail(fmt.Sprintf("failed  retcode=%v", ret["retcode"])))
+		}
+		blk.Row("耗时", time.Since(start).Round(time.Millisecond).String())
+	}
+	blk.Emit()
+}
+
+func paramSummary(params gjson.Result) string {
+	if !params.Exists() || params.Raw == "" || params.Raw == "{}" || params.Raw == "null" {
+		return ""
+	}
+	keys := []string{
+		"group_id", "user_id", "message_id", "message_type", "id", "flag",
+		"panel_id", "interaction_id", "duration", "approve", "code",
+		"openid", "cursor", "limit",
+	}
+	var parts []string
+	for _, k := range keys {
+		v := params.Get(k)
+		if !v.Exists() || v.Raw == "" || v.Raw == "null" || v.Raw == "0" {
+			continue
+		}
+		parts = append(parts, k+"="+v.String())
+	}
+	if len(parts) == 0 {
+		raw := params.Raw
+		if len(raw) > 200 {
+			raw = raw[:200] + "…"
+		}
+		return raw
+	}
+	return strings.Join(parts, " ")
+}
+
+func actionContent(action string, params gjson.Result, ret map[string]any) string {
+	if ret["status"] != "ok" {
+		if m, ok := ret["message"].(string); ok && m != "" {
+			return m
+		}
+		return fmt.Sprintf("失败 retcode=%v", ret["retcode"])
+	}
+	data, _ := ret["data"].(map[string]any)
+	if data == nil {
+		return "成功"
+	}
+	prefer := []string{"message_id", "user_id", "group_id", "nickname", "user_openid", "group_openid",
+		"member_role", "allow_proactive_msg", "remaining", "url", "stream_id"}
+	var parts []string
+	for _, k := range prefer {
+		if v, ok := data[k]; ok && v != nil && fmt.Sprint(v) != "" {
+			parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("成功 字段×%d", len(data))
+	}
+	return strings.Join(parts, " ")
 }
 
 // partSummary 汇总待发送消息段，如 'text("ok"), image, markdown'
@@ -1047,13 +1206,20 @@ func (c *Caller) sendMsg(params gjson.Result, active bool) map[string]any {
 // sendGroup 发群消息：解析 message、按需套用被动 msg_id/event_id（active 时强制主动），
 // 调用 QQ 发送并分配 message_id，打印发消息日志块
 func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
+	action := "send_group_msg"
+	if active {
+		action = "send_group_active_msg"
+	}
+	start := time.Now()
 	sender := c.getSender()
 	if sender == nil {
+		c.logSend(action, "群", params.Get("group_id").Int(), nil, params, "", 0, start, fmt.Errorf("QQ 发送通道未就绪"))
 		return failed(1404, "QQ 发送通道未就绪")
 	}
 	groupID := params.Get("group_id").Int()
 	groupOpenID, okID := c.ids.OpenID(groupID)
 	if !okID {
+		c.logSend(action, "群", groupID, nil, params, "", 0, start, fmt.Errorf("未知 group_id（尚未收到该群消息）"))
 		return failed(1400, "未知 group_id（尚未收到该群消息）")
 	}
 	out := c.parseMessage(params.Get("message"))
@@ -1073,18 +1239,14 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		}
 	}
 	if !out.HasContent() {
+		c.logSend(action, "群", groupID, out, params, "", 0, start, fmt.Errorf("空消息"))
 		return failed(1400, "空消息")
 	}
-	action := "send_group_msg"
-	if active {
-		action = "send_group_active_msg"
-	}
-	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
 	qqMsgID, refIdx, err := sender.SendGroup(ctx, groupOpenID, out)
 	if err != nil {
-		logSend(action, "群", groupID, out, "", 0, start, err)
+		c.logSend(action, "群", groupID, out, params, "", 0, start, err)
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
@@ -1092,7 +1254,7 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		MsgID: qqMsgID, RefIdx: refIdx, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(), Outbound: true,
 	})
 	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "group", groupID, "", groupOpenID)
-	logSend(action, "群", groupID, out, qqMsgID, mid, start, nil)
+	c.logSend(action, "群", groupID, out, params, qqMsgID, mid, start, nil)
 	return ok(map[string]any{"message_id": mid})
 }
 
@@ -1123,18 +1285,27 @@ func sendTimeout(out *OutMessage) time.Duration {
 
 // sendPrivate 发私聊(C2C)消息：逻辑同 sendGroup，按 user_id 定位 openid 与被动凭证
 func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
+	action := "send_private_msg"
+	wakeup := params.Get("is_wakeup").Bool()
+	if wakeup {
+		action = "send_private_wakeup_msg"
+	} else if active {
+		action = "send_private_active_msg"
+	}
+	start := time.Now()
 	sender := c.getSender()
 	if sender == nil {
+		c.logSend(action, "私聊", params.Get("user_id").Int(), nil, params, "", 0, start, fmt.Errorf("QQ 发送通道未就绪"))
 		return failed(1404, "QQ 发送通道未就绪")
 	}
 	userID := params.Get("user_id").Int()
 	userOpenID, okID := c.ids.OpenID(userID)
 	if !okID {
+		c.logSend(action, "私聊", userID, nil, params, "", 0, start, fmt.Errorf("未知 user_id（尚未收到该用户消息）"))
 		return failed(1400, "未知 user_id（尚未收到该用户消息）")
 	}
 	out := c.parseMessage(params.Get("message"))
 	// is_wakeup：单聊互动召回消息，与 msg_id/event_id 互斥，故强制走主动语义（不套被动凭证）
-	wakeup := params.Get("is_wakeup").Bool()
 	if wakeup {
 		out.IsWakeup = true
 		out.MsgID = ""
@@ -1151,20 +1322,14 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		}
 	}
 	if !out.HasContent() {
+		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("空消息"))
 		return failed(1400, "空消息")
 	}
-	action := "send_private_msg"
-	if wakeup {
-		action = "send_private_wakeup_msg"
-	} else if active {
-		action = "send_private_active_msg"
-	}
-	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
 	qqMsgID, refIdx, err := sender.SendC2C(ctx, userOpenID, out)
 	if err != nil {
-		logSend(action, "私聊", userID, out, "", 0, start, err)
+		c.logSend(action, "私聊", userID, out, params, "", 0, start, err)
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
@@ -1172,7 +1337,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		MsgID: qqMsgID, RefIdx: refIdx, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(), Outbound: true,
 	})
 	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "private", userID, userOpenID, "")
-	logSend(action, "私聊", userID, out, qqMsgID, mid, start, nil)
+	c.logSend(action, "私聊", userID, out, params, qqMsgID, mid, start, nil)
 	data := map[string]any{"message_id": mid}
 	if out.Stream != nil {
 		// 流式：把原始 QQ 消息 id 作为 stream_id 回传，供插件在后续分片的 stream.id 里回填
@@ -1183,47 +1348,80 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 
 // ackInteraction 回执互动事件（按钮点击），由 NoneBot 决定 code（默认 0=成功）
 func (c *Caller) ackInteraction(params gjson.Result) map[string]any {
+	start := time.Now()
 	sender := c.getSender()
 	if sender == nil {
+		c.logBoxed("互动回执 · put_interaction", "put_interaction", params, start, fmt.Errorf("QQ 发送通道未就绪"),
+			[2]string{"内容", "QQ 发送通道未就绪"})
 		return failed(1404, "QQ 发送通道未就绪")
 	}
 	id := params.Get("interaction_id").String()
 	if id == "" {
+		c.logBoxed("互动回执 · put_interaction", "put_interaction", params, start, fmt.Errorf("缺少 interaction_id"),
+			[2]string{"内容", "缺少 interaction_id"})
 		return failed(1400, "缺少 interaction_id")
 	}
 	code := int(params.Get("code").Int())
-	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	err := sender.AckInteraction(ctx, id, code)
+	rows := [][2]string{
+		{"内容", fmt.Sprintf("interaction=%s code=%d", midEllipsis(id, 14, 8), code)},
+	}
+	c.logBoxed("互动回执 · put_interaction", "put_interaction", params, start, err, rows...)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(map[string]any{})
+}
+
+// logBoxed 已有专用标题的动作框（撤回/回执）。默认名称+内容+结果；debug 再加接口/参数/状态/耗时。
+func (c *Caller) logBoxed(title, action string, params gjson.Result, start time.Time, err error, rows ...[2]string) {
 	tone := prettylog.ToneSend
 	if err != nil {
 		tone = prettylog.ToneErr
 	}
-	blk := prettylog.New("互动回执 · put_interaction", tone).
-		Row("interaction", midEllipsis(id, 14, 8)).
-		Row("code", strconv.Itoa(code))
-	if err != nil {
-		blk.Row("结果", prettylog.Fail("✘ 失败 "+err.Error())+prettylog.Dim("  耗时 "+time.Since(start).Round(time.Millisecond).String()))
-		blk.Emit()
-		return failed(1500, err.Error())
+	blk := prettylog.New(title, tone)
+	for _, r := range rows {
+		blk.Row(r[0], r[1])
 	}
-	blk.Row("结果", prettylog.Ok("✔ 成功")+prettylog.Dim("  耗时 "+time.Since(start).Round(time.Millisecond).String()))
+	elapsed := time.Since(start).Round(time.Millisecond).String()
+	if err != nil {
+		blk.Row("结果", prettylog.Fail("✘ 失败 "+err.Error()))
+	} else {
+		blk.Row("结果", prettylog.Ok("✔ 成功"))
+	}
+	if c.debug {
+		blk.Row("接口", action)
+		if p := paramSummary(params); p != "" {
+			blk.Row("参数", p)
+		}
+		if err != nil {
+			blk.Row("状态", prettylog.Fail("failed"))
+		} else {
+			blk.Row("状态", prettylog.Ok("ok")+"  retcode=0")
+		}
+	}
+	blk.Row("耗时", elapsed)
 	blk.Emit()
-	return ok(map[string]any{})
 }
 
 // deleteMsg 撤回消息：按 message_id 查回 QQ msg_id 与场景，调用对应撤回接口
 func (c *Caller) deleteMsg(params gjson.Result) map[string]any {
+	start := time.Now()
 	sender := c.getSender()
 	if sender == nil {
+		c.logBoxed("撤回 · delete_msg", "delete_msg", params, start, fmt.Errorf("QQ 发送通道未就绪"),
+			[2]string{"内容", "QQ 发送通道未就绪"})
 		return failed(1404, "QQ 发送通道未就绪")
 	}
-	meta, found := c.ids.Msg(params.Get("message_id").Int())
+	mid := params.Get("message_id").Int()
+	meta, found := c.ids.Msg(mid)
 	if !found || meta.MsgID == "" {
+		c.logBoxed("撤回 · delete_msg", "delete_msg", params, start, fmt.Errorf("未知 message_id"),
+			[2]string{"内容", fmt.Sprintf("未知 message_id=%d", mid)})
 		return failed(1400, "未知 message_id")
 	}
-	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var err error
@@ -1232,20 +1430,11 @@ func (c *Caller) deleteMsg(params gjson.Result) map[string]any {
 	} else {
 		err = sender.RetractC2C(ctx, meta.UserOpenID, meta.MsgID)
 	}
-	tone := prettylog.ToneSend
+	c.logBoxed("撤回 · delete_msg", "delete_msg", params, start, err,
+		[2]string{"内容", fmt.Sprintf("message_id=%d QQ=%s", mid, midEllipsis(meta.MsgID, 14, 8))})
 	if err != nil {
-		tone = prettylog.ToneErr
-	}
-	blk := prettylog.New("撤回 · delete_msg", tone).
-		Row("message_id", strconv.FormatInt(params.Get("message_id").Int(), 10)).
-		Row("QQ", midEllipsis(meta.MsgID, 14, 8))
-	if err != nil {
-		blk.Row("结果", prettylog.Fail("✘ 失败 "+err.Error()))
-		blk.Emit()
 		return failed(1500, err.Error())
 	}
-	blk.Row("结果", prettylog.Ok("✔ 成功")+prettylog.Dim("  耗时 "+time.Since(start).Round(time.Millisecond).String()))
-	blk.Emit()
 	return ok(map[string]any{})
 }
 
@@ -1332,7 +1521,9 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				}
 			}
 			if rid == 0 {
-				filelog.Warnf("[onebot] reply 段缺少有效 id，原始 data=%s", data.Raw)
+				out.Notes = append(out.Notes, SendNote{
+					Title: "reply", Content: "缺少有效 id", Fail: true,
+				})
 				break
 			}
 			if meta, found := c.ids.Msg(rid); found && meta.MsgID != "" {
@@ -1342,18 +1533,22 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				if meta.PassiveOK() {
 					out.MsgID = meta.MsgID
 				}
+				note := SendNote{Title: "reply", ID: rid, Cached: true, Passive: out.MsgID != "", HasRef: meta.RefIdx != ""}
 				switch {
 				case meta.RefIdx != "" && out.MsgID != "":
-					log.Printf("[onebot] reply 命中 message_id=%d → 被动 msg_id=%s，引用 REFIDX=%s", rid, meta.MsgID, meta.RefIdx)
+					note.Content = fmt.Sprintf("命中 message_id=%d → 被动 msg_id=%s，引用 REFIDX=%s", rid, meta.MsgID, meta.RefIdx)
 				case meta.RefIdx != "":
-					log.Printf("[onebot] reply 命中 message_id=%d → 仅引用 REFIDX=%s（出站或被动窗口已过，msg_id 交由 lazy）", rid, meta.RefIdx)
+					note.Content = fmt.Sprintf("命中 message_id=%d → 仅引用 REFIDX=%s（出站或被动窗口已过，msg_id 交由 lazy）", rid, meta.RefIdx)
 				case out.MsgID != "":
-					log.Printf("[onebot] reply 命中 message_id=%d → 被动 msg_id=%s，但无 REFIDX（无法渲染引用气泡）", rid, meta.MsgID)
+					note.Content = fmt.Sprintf("命中 message_id=%d → 被动 msg_id=%s，但无 REFIDX（无法渲染引用气泡）", rid, meta.MsgID)
 				default:
-					log.Printf("[onebot] reply 命中 message_id=%d → 无 REFIDX 且不能作被动凭证", rid)
+					note.Content = fmt.Sprintf("命中 message_id=%d → 无 REFIDX 且不能作被动凭证", rid)
 				}
+				out.Notes = append(out.Notes, note)
 			} else {
-				filelog.Warnf("[onebot] reply 段 message_id=%d 未命中本机缓存，无法引用（将退化为主动消息）", rid)
+				out.Notes = append(out.Notes, SendNote{
+					Title: "reply", ID: rid, Content: fmt.Sprintf("message_id=%d 未命中本机缓存，无法引用（将退化为主动消息）", rid), Fail: true,
+				})
 			}
 		}
 	}
@@ -1562,16 +1757,6 @@ func (c *Caller) HandleRequest(payload []byte) []byte {
 	j := gjson.ParseBytes(payload)
 	action := strings.TrimSuffix(j.Get("action").Str, "_async")
 	params := j.Get("params")
-	if c.debug {
-		p := params.Raw
-		if len(p) > 500 {
-			p = p[:500] + "..."
-		}
-		_, _ = os.Stderr.WriteString(filelog.FormatInfo(fmt.Sprintf(
-			"[onebot] 收到动作 action=%s params=%s echo=%v",
-			action, p, j.Get("echo").Value(),
-		)))
-	}
 	if filelog.Enabled() {
 		filelog.WriteFile([]byte(filelog.FormatInfo(fmt.Sprintf(
 			"[onebot] action=%s params=%s echo=%v",

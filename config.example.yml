@@ -45,7 +45,7 @@ onebot:
   access_token: ""
   heartbeat_interval: 5000
   message_format: "array"       # message 字段恒为消息段数组；设为 string 时额外输出 message_cq(CQ 字符串)，raw_message 始终包含 CQ
-  debug: false                  # true 时打印收到的 action 请求日志
+  debug: false                  # true 时动作边框额外输出接口/参数/状态/耗时；同时显示 botgo 心跳
   downtime_message: ""          # 全下游(正/反向 WS)都掉线时回发 QQ 的兜底文本，空=关闭
   servers:
     # 正向 WS：NoneBot 作为客户端连入
