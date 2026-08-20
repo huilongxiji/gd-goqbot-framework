@@ -30,7 +30,7 @@ import (
 // 项目名称与版本，随时在此修改（上报给 NoneBot 的 get_version_info 及启动日志均取此值）
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.9.1"
+	AppVersion = "1.10.1"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
