@@ -34,6 +34,35 @@ func (o *openAPI) GroupBotState(ctx context.Context, groupID string) (*dto.Group
 	return resp.Result().(*dto.GroupBotState), nil
 }
 
+// GroupMembers 获取群成员列表（白名单；每次最多 30 条，cursor 分页）
+func (o *openAPI) GroupMembers(ctx context.Context, groupID string, pager *dto.GroupMemberListPager) (*dto.GroupMemberList, error) {
+	req := o.request(ctx).
+		SetResult(dto.GroupMemberList{}).
+		SetPathParam("group_id", groupID)
+	if pager != nil && pager.Cursor != "" {
+		req = req.SetQueryParam("cursor", pager.Cursor)
+	}
+	resp, err := baseRequest(ctx, req, http.MethodGet, o.getURL(groupMembersURI))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.GroupMemberList), nil
+}
+
+// GroupMember 获取指定群成员信息（白名单，非白名单返回 11253）
+func (o *openAPI) GroupMember(ctx context.Context, groupID, memberID string) (*dto.GroupMember, error) {
+	resp, err := baseRequest(ctx,
+		o.request(ctx).
+			SetResult(dto.GroupMember{}).
+			SetPathParam("group_id", groupID).
+			SetPathParam("member_id", memberID),
+		http.MethodGet, o.getURL(groupMemberURI))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.GroupMember), nil
+}
+
 // GroupJoinRequestList 拉取入群申请列表（需群管理员）
 func (o *openAPI) GroupJoinRequestList(ctx context.Context, groupID string, pager *dto.JoinRequestListPager) (*dto.JoinRequestList, error) {
 	req := o.request(ctx).

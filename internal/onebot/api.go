@@ -296,6 +296,8 @@ func (c *Caller) dispatch(action string, params gjson.Result) map[string]any {
 		return c.getGroupBotState(params)
 	case "get_group_member_info":
 		return c.getGroupMemberInfo(params)
+	case "get_group_member_list":
+		return c.getGroupMemberList(params)
 	case "get_group_join_requests", "get_group_system_msg":
 		return c.getGroupJoinRequests(params)
 	case "set_group_add_request":
@@ -484,7 +486,8 @@ func (c *Caller) getGroupBotState(params gjson.Result) map[string]any {
 	})
 }
 
-// getGroupMemberInfo 获取群成员信息：仅支持查询机器人自身（走 bot_state）
+// getGroupMemberInfo 获取群成员信息。
+// user_id=self_id 时走 bot_state（额外带主动推送/收消息设置）；查他人走官方 members/{member_openid}。
 func (c *Caller) getGroupMemberInfo(params gjson.Result) map[string]any {
 	groupOpenID, fail := c.resolveGroupOpenID(params)
 	if fail != nil {
@@ -494,44 +497,118 @@ func (c *Caller) getGroupMemberInfo(params gjson.Result) map[string]any {
 	if uid == 0 {
 		return failed(1400, "缺少 user_id")
 	}
-	if uid != c.getSelfID() {
-		return failed(1404, "QQ群v2无获取其他成员信息的接口；仅支持查询机器人自身（user_id=self_id，走 bot_state）")
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	gid := params.Get("group_id").Int()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if uid == c.getSelfID() {
+		st, err := sender.GetGroupBotState(ctx, groupOpenID)
+		if err != nil {
+			return failed(1500, err.Error())
+		}
+		role := st.MemberRole
+		if role == "" {
+			role = "member"
+		}
+		return ok(map[string]any{
+			"group_id":            gid,
+			"user_id":             uid,
+			"nickname":            c.getNickname(),
+			"card":                "",
+			"sex":                 "unknown",
+			"age":                 0,
+			"area":                "",
+			"join_time":           0,
+			"last_sent_time":      0,
+			"level":               "0",
+			"role":                role,
+			"unfriendly":          false,
+			"title":               "",
+			"title_expire_time":   0,
+			"card_changeable":     false,
+			"joined_at":           st.JoinedAt,
+			"allow_proactive_msg": st.AllowProactiveMsg,
+			"recv_msg_setting":    st.RecvMsgSetting,
+			"member_openid":       st.MemberOpenID,
+			"bot":                 true,
+		})
+	}
+
+	memberOpenID, okOID := c.ids.OpenID(uid)
+	if !okOID || memberOpenID == "" {
+		return failed(1404, "未知 user_id 或未收到过该用户消息")
+	}
+	m, err := sender.GetGroupMember(ctx, groupOpenID, memberOpenID)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(c.oneBotGroupMember(gid, *m))
+}
+
+// getGroupMemberList 获取群成员列表（官方白名单；每次最多 30 条，cursor 分页）
+func (c *Caller) getGroupMemberList(params gjson.Result) map[string]any {
+	groupOpenID, fail := c.resolveGroupOpenID(params)
+	if fail != nil {
+		return fail
 	}
 	sender := c.getSender()
 	if sender == nil {
 		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
 	}
+	cursor := params.Get("cursor").String()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	st, err := sender.GetGroupBotState(ctx, groupOpenID)
+	list, err := sender.GetGroupMembers(ctx, groupOpenID, cursor)
 	if err != nil {
 		return failed(1500, err.Error())
 	}
-	role := st.MemberRole
+	gid := params.Get("group_id").Int()
+	members := make([]map[string]any, 0, len(list.Members))
+	for _, m := range list.Members {
+		members = append(members, c.oneBotGroupMember(gid, m))
+	}
+	return ok(map[string]any{
+		"group_id":     gid,
+		"group_openid": groupOpenID,
+		"members":      members,
+		"next_cursor":  list.NextCursor,
+	})
+}
+
+// oneBotGroupMember 把官方群成员转成 OneBot 成员字段 + 官方扩展
+func (c *Caller) oneBotGroupMember(gid int64, m GroupMember) map[string]any {
+	role := m.MemberRole
 	if role == "" {
 		role = "member"
 	}
-	return ok(map[string]any{
-		"group_id":            params.Get("group_id").Int(),
-		"user_id":             uid,
-		"nickname":            c.getNickname(),
-		"card":                "",
-		"sex":                 "unknown",
-		"age":                 0,
-		"area":                "",
-		"join_time":           0,
-		"last_sent_time":      0,
-		"level":               "0",
-		"role":                role,
-		"unfriendly":          false,
-		"title":               "",
-		"title_expire_time":   0,
-		"card_changeable":     false,
-		"joined_at":           st.JoinedAt,
-		"allow_proactive_msg": st.AllowProactiveMsg,
-		"recv_msg_setting":    st.RecvMsgSetting,
-		"member_openid":       st.MemberOpenID,
-	})
+	return map[string]any{
+		"group_id":          gid,
+		"user_id":           c.ids.ID(m.MemberOpenID),
+		"nickname":          m.Username,
+		"card":              "",
+		"sex":               "unknown",
+		"age":               0,
+		"area":              "",
+		"join_time":         0,
+		"last_sent_time":    0,
+		"level":             "0",
+		"role":              role,
+		"unfriendly":        false,
+		"title":             "",
+		"title_expire_time": 0,
+		"card_changeable":   false,
+		"joined_at":         m.JoinedAt,
+		"member_openid":     m.MemberOpenID,
+		"user_openid":       m.MemberOpenID,
+		"username":          m.Username,
+		"member_role":       role,
+		"bot":               m.Bot,
+		"union_openid":      m.UnionOpenID,
+	}
 }
 
 // getGroupJoinRequests 拉取入群申请列表（需群管理员）
@@ -1120,7 +1197,7 @@ func actionContent(action string, params gjson.Result, ret map[string]any) strin
 		return "成功"
 	}
 	prefer := []string{"message_id", "user_id", "group_id", "nickname", "user_openid", "group_openid",
-		"member_role", "allow_proactive_msg", "remaining", "url", "stream_id"}
+		"member_role", "allow_proactive_msg", "remaining", "url", "stream_id", "next_cursor"}
 	var parts []string
 	for _, k := range prefer {
 		if v, ok := data[k]; ok && v != nil && fmt.Sprint(v) != "" {

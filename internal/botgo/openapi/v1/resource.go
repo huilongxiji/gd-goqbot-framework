@@ -27,11 +27,13 @@ const (
 	groupMessagesURI  uri = "/v2/groups/{group_id}/messages"
 	groupRichMediaURI uri = "/v2/groups/{group_id}/files"
 
-	groupInfoURI               uri = "/v2/groups/{group_id}/info"                                        // 获取群基本信息
-	groupBotStateURI           uri = "/v2/groups/{group_id}/bot_state"                                   // 获取机器人群内状态
-	groupJoinRequestListURI    uri = "/v2/groups/{group_id}/join_request_list"                           // 入群申请列表
-	groupApprovalJoinRequestURI uri = "/v2/groups/{group_id}/approval_join_request/{member_id}"          // 入群申请审批
-	groupRestrictChatURI       uri = "/v2/groups/{group_id}/restrict_chat_setting"                       // 查询/设置群禁言
+	groupInfoURI                uri = "/v2/groups/{group_id}/info"                              // 获取群基本信息
+	groupBotStateURI            uri = "/v2/groups/{group_id}/bot_state"                         // 获取机器人群内状态
+	groupMembersURI             uri = "/v2/groups/{group_id}/members"                           // 获取群成员列表
+	groupMemberURI              uri = "/v2/groups/{group_id}/members/{member_id}"               // 获取群成员信息
+	groupJoinRequestListURI     uri = "/v2/groups/{group_id}/join_request_list"                 // 入群申请列表
+	groupApprovalJoinRequestURI uri = "/v2/groups/{group_id}/approval_join_request/{member_id}" // 入群申请审批
+	groupRestrictChatURI        uri = "/v2/groups/{group_id}/restrict_chat_setting"             // 查询/设置群禁言
 
 	groupUploadPrepareURI    uri = "/v2/groups/{group_id}/upload_prepare"     // 分片上传-准备
 	groupUploadPartFinishURI uri = "/v2/groups/{group_id}/upload_part_finish" // 分片上传-单片完成
@@ -94,10 +96,10 @@ const (
 	settingGuideURI   uri = "/channels/{channel_id}/settingguide"
 	dmSettingGuideURI uri = "/dms/{guild_id}/settingguide"
 
-	menuURI        uri = "/v2/menu"                         // 查询/修改全局自定义菜单
-	panelsURI      uri = "/v2/panels"                       // 查询/创建指令面板
-	panelURI       uri = "/v2/panels/{panel_id}"            // 查询/修改/删除指令面板
-	panelTargetURI uri = "/v2/panels/{panel_id}/target"     // 修改指令面板关联对象
+	menuURI        uri = "/v2/menu"                     // 查询/修改全局自定义菜单
+	panelsURI      uri = "/v2/panels"                   // 查询/创建指令面板
+	panelURI       uri = "/v2/panels/{panel_id}"        // 查询/修改/删除指令面板
+	panelTargetURI uri = "/v2/panels/{panel_id}/target" // 修改指令面板关联对象
 )
 
 // getURL 获取接口地址，会处理沙箱环境判断

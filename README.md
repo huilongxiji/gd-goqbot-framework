@@ -96,7 +96,8 @@
 | `get_gateway`（别名 `get_gateway_bot` / `get_session_limit`） | - | 查询 WS 接入点与剩余可建连次数等频控信息 |
 | `get_group_info` | `group_id` | 获取群基本信息（官方白名单，非白名单返回 11253） |
 | `get_group_bot_state` | `group_id` | 获取机器人群内状态（白名单） |
-| `get_group_member_info` | `group_id`, `user_id` | **仅** `user_id=self_id` 时走 bot_state；查他人返回 1404 |
+| `get_group_member_list` | `group_id`, (`cursor`) | 获取群成员列表（白名单；每次最多 30 条，`next_cursor` 分页） |
+| `get_group_member_info` | `group_id`, `user_id` | `user_id=self_id` 走 bot_state；查他人走官方成员接口（须能反查 openid） |
 | `get_group_join_requests`（别名 `get_group_system_msg`） | `group_id`, (`cursor`/`limit`) | 拉取入群申请列表（需群管理员） |
 | `set_group_add_request` | `flag`, `approve`, (`reason`/`blacklist`) | 审批入群申请；`flag`=官方 `join_request_id`（需群管理员） |
 | `set_group_ban` | `group_id`, `user_id`, `duration` | 成员禁言（秒；0=解除；需群管理员） |
@@ -112,7 +113,7 @@
 >
 > **互动召回（`is_wakeup=true`）**：用户主动对话后 30 天内分 4 个周期（当天 / 1-3 天 / 3-7 天 / 7-30 天）每周期可下发 1 条，仅 C2C，与 reply / 被动 `event_id` 互斥。
 >
-> **群聊管理权限**：`info`/`bot_state` 为白名单接口；入群申请列表/审批、禁言查询/设置需机器人具备群管理员身份。权限不足时透传 QQ 原始错误，不做假成功。
+> **群聊管理权限**：`info` / `bot_state` / `get_group_member_list` / 查他人的 `get_group_member_info` 为白名单接口（内邀，非白名单返回 11253）；入群申请列表/审批、禁言查询/设置需机器人具备群管理员身份。权限不足时透传 QQ 原始错误，不做假成功。
 >
 > **C2C 推送状态**：官方无查询接口。需启用 `C2CMsgRejectEventHandler` / `C2CMsgReceiveEventHandler`，框架将开关事件落库到 idmap；`get_c2c_msg_state` 读缓存。从未手动操作过开关的用户返回 `known=false`。
 >

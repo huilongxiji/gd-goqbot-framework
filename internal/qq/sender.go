@@ -589,6 +589,46 @@ func (s *sender) GetGroupBotState(ctx context.Context, groupOpenID string) (*one
 	}, nil
 }
 
+func mapGroupMember(m *dto.GroupMember) onebot.GroupMember {
+	if m == nil {
+		return onebot.GroupMember{}
+	}
+	return onebot.GroupMember{
+		MemberOpenID: m.MemberOpenID,
+		Username:     m.Username,
+		MemberRole:   m.MemberRole,
+		Bot:          m.Bot,
+		JoinedAt:     m.JoinedAt,
+		UnionOpenID:  m.UnionOpenID,
+	}
+}
+
+// GetGroupMembers 获取群成员列表
+func (s *sender) GetGroupMembers(ctx context.Context, groupOpenID string, cursor string) (*onebot.GroupMemberList, error) {
+	list, err := s.api.GroupMembers(ctx, groupOpenID, &dto.GroupMemberListPager{Cursor: cursor})
+	if err != nil {
+		return nil, err
+	}
+	out := &onebot.GroupMemberList{NextCursor: list.NextCursor}
+	for _, item := range list.Members {
+		if item == nil {
+			continue
+		}
+		out.Members = append(out.Members, mapGroupMember(item))
+	}
+	return out, nil
+}
+
+// GetGroupMember 获取指定群成员信息
+func (s *sender) GetGroupMember(ctx context.Context, groupOpenID, memberOpenID string) (*onebot.GroupMember, error) {
+	m, err := s.api.GroupMember(ctx, groupOpenID, memberOpenID)
+	if err != nil {
+		return nil, err
+	}
+	mapped := mapGroupMember(m)
+	return &mapped, nil
+}
+
 // GetGroupJoinRequests 拉取入群申请列表
 func (s *sender) GetGroupJoinRequests(ctx context.Context, groupOpenID string, cursor string, limit int) (*onebot.JoinRequestList, error) {
 	pager := &dto.JoinRequestListPager{Cursor: cursor, Limit: limit}

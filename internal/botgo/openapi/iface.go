@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
+	"golang.org/x/oauth2"
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/openapi/options"
-	"golang.org/x/oauth2"
 )
 
 // OpenAPI openapi 完整实现
@@ -61,6 +61,10 @@ type GroupManageAPI interface {
 	GroupInfo(ctx context.Context, groupID string) (*dto.GroupInfo, error)
 	// GroupBotState 获取机器人群内状态（白名单）
 	GroupBotState(ctx context.Context, groupID string) (*dto.GroupBotState, error)
+	// GroupMembers 获取群成员列表（白名单；每次最多 30 条，cursor 分页）
+	GroupMembers(ctx context.Context, groupID string, pager *dto.GroupMemberListPager) (*dto.GroupMemberList, error)
+	// GroupMember 获取指定群成员信息（白名单）
+	GroupMember(ctx context.Context, groupID, memberID string) (*dto.GroupMember, error)
 	// GroupJoinRequestList 拉取入群申请列表（需群管理员）
 	GroupJoinRequestList(ctx context.Context, groupID string, pager *dto.JoinRequestListPager) (*dto.JoinRequestList, error)
 	// ApprovalGroupJoinRequest 审批入群申请（需群管理员）

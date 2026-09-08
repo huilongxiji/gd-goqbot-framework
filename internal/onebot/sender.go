@@ -87,6 +87,10 @@ type MessageSender interface {
 	GetGroupInfo(ctx context.Context, groupOpenID string) (*GroupInfo, error)
 	// GetGroupBotState 获取机器人群内状态（白名单）
 	GetGroupBotState(ctx context.Context, groupOpenID string) (*GroupBotState, error)
+	// GetGroupMembers 获取群成员列表（白名单；每次最多 30 条，cursor 分页）
+	GetGroupMembers(ctx context.Context, groupOpenID string, cursor string) (*GroupMemberList, error)
+	// GetGroupMember 获取指定群成员信息（白名单）
+	GetGroupMember(ctx context.Context, groupOpenID, memberOpenID string) (*GroupMember, error)
 	// GetGroupJoinRequests 拉取入群申请列表（需群管理员）
 	GetGroupJoinRequests(ctx context.Context, groupOpenID string, cursor string, limit int) (*JoinRequestList, error)
 	// ApproveGroupJoinRequest 审批入群申请（需群管理员）
@@ -131,6 +135,22 @@ type GroupBotState struct {
 	AllowProactiveMsg bool
 	RecvMsgSetting    string
 	MemberRole        string
+}
+
+// GroupMemberList 群成员列表
+type GroupMemberList struct {
+	Members    []GroupMember
+	NextCursor string
+}
+
+// GroupMember 群成员信息
+type GroupMember struct {
+	MemberOpenID string
+	Username     string
+	MemberRole   string
+	Bot          bool
+	JoinedAt     string
+	UnionOpenID  string
 }
 
 // JoinRequestList 入群申请列表
