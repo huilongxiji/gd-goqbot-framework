@@ -243,6 +243,10 @@ func (s *sender) sendGroupMedia(ctx context.Context, groupOpenID, msgID, eventID
 // 官方规定填写 markdown 后 content 必须为空。refMsgID 非空时置入 message_reference，
 // 可引用用户消息或机器人自己发过的消息（含 markdown，REFIDX 来自入站 msg_idx 或出站 ext_info.ref_idx）。
 func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, eventID, refMsgID string, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, string, error) {
+	// 图片转存失败时官方直接报错、消息不会发出（默认 false 时可能发出裂图）
+	if md != nil {
+		md.ForceVerifyImageResource = true
+	}
 	m := &dto.MessageToCreate{
 		MsgType:          dto.MarkdownMsg,
 		Markdown:         md,
@@ -454,6 +458,9 @@ func (s *sender) sendC2CMedia(ctx context.Context, userOpenID, msgID, eventID, r
 // sendC2CMarkdown 发送单聊 markdown 消息（可带 keyboard 按钮）。
 // 与群同理：content 必须为空；refMsgID 非空时置入 message_reference。
 func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID, refMsgID string, isWakeup bool, md *dto.Markdown, kb *keyboard.MessageKeyboard) (string, string, error) {
+	if md != nil {
+		md.ForceVerifyImageResource = true
+	}
 	m := &dto.MessageToCreate{
 		MsgType:          dto.MarkdownMsg,
 		Markdown:         md,

@@ -130,12 +130,13 @@ func (msg MessageReference) GetSendType() SendType {
 // 所有字段必须 omitempty：模板消息(custom_template_id+params)与原生消息(content)互斥，
 // 发模板时不应把空的 content/style/process_msg/template_id:0 一并序列化。
 type Markdown struct {
-	TemplateID       int               `json:"template_id,omitempty"`        // 模版 id
-	CustomTemplateID string            `json:"custom_template_id,omitempty"` // 自定义模板id
-	Params           []*MarkdownParams `json:"params,omitempty"`             // 模版参数
-	Content          string            `json:"content,omitempty"`            // 原生 markdown
-	Style            *MarkdownStyle    `json:"style,omitempty"`              // markdown样式
-	ProcessMsg       string            `json:"process_msg,omitempty"`        // markdown引导消息
+	TemplateID               int               `json:"template_id,omitempty"`                 // 模版 id
+	CustomTemplateID         string            `json:"custom_template_id,omitempty"`          // 自定义模板id
+	Params                   []*MarkdownParams `json:"params,omitempty"`                      // 模版参数
+	Content                  string            `json:"content,omitempty"`                     // 原生 markdown
+	Style                    *MarkdownStyle    `json:"style,omitempty"`                       // markdown样式
+	ProcessMsg               string            `json:"process_msg,omitempty"`                 // markdown引导消息
+	ForceVerifyImageResource bool              `json:"force_verify_image_resource,omitempty"` // true=图片转存失败则不发消息
 }
 
 // MarkdownStyle markdown 样式
