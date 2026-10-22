@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/oauth2"
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/log"
 	"goqbot/internal/botgo/sessions/manager"
 	"goqbot/internal/botgo/websocket"
-	"golang.org/x/oauth2"
 )
 
 // New 创建本地session管理器
@@ -98,7 +98,7 @@ func (l *ChanManager) newConnect(session dto.Session) {
 		// 一些错误不能够鉴权，比如机器人被封禁，这里就直接退出了
 		if manager.CanNotIdentify(err) {
 			msg := fmt.Sprintf("can not identify because server return %+v, so process exit", err)
-			log.Errorf(msg)
+			log.Errorf("%s", msg)
 			panic(msg) // 当机器人被下架，或者封禁，将不能再连接，所以 panic
 		}
 		// 将 session 放到 session chan 中，用于启动新的连接，当前连接退出
