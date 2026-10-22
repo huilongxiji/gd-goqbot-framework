@@ -68,13 +68,13 @@ type RenderData struct {
 
 // Action 按纽点击操作
 type Action struct {
-	Type                 ActionType    `json:"type,omitempty"`        // 操作类型
-	Permission           *Permission   `json:"permission,omitempty"`  // 可操作
-	ClickLimit           uint32        `json:"click_limit,omitempty"` // 可点击的次数, 默认不限
-	Data                 string        `json:"data,omitempty"`        // 操作相关数据
-	Reply                bool          `json:"reply,omitempty"`       // 指令按钮可用，指令是否带引用回复本消息，默认 false
-	Enter                bool          `json:"enter"`                 // 指令按钮可用，点击按钮后直接自动发送 data，默认 false
-	Anchor               int           `json:"anchor,omitempty"`      // 仅指令按钮有效；设置后忽略 enter；=1 时自动唤起手机端相册选图器
+	Type                 ActionType    `json:"type,omitempty"`                     // 操作类型
+	Permission           *Permission   `json:"permission,omitempty"`               // 可操作
+	ClickLimit           uint32        `json:"-"`                                  // 已废弃（官方 v2 文档标注）：不再下发 click_limit，保留字段仅为兼容
+	Data                 string        `json:"data,omitempty"`                     // 操作相关数据
+	Reply                bool          `json:"reply,omitempty"`                    // 指令按钮可用，指令是否带引用回复本消息，默认 false
+	Enter                bool          `json:"enter"`                              // 指令按钮可用，点击按钮后直接自动发送 data，默认 false
+	Anchor               int           `json:"anchor,omitempty"`                   // 仅指令按钮有效；设置后忽略 enter；=1 时自动唤起手机端相册选图器
 	UnsupportTips        string        `json:"unsupport_tips,omitempty"`           // 客户端不支持该 action 时弹出的 toast 文案
 	AtBotShowChannelList bool          `json:"at_bot_show_channel_list,omitempty"` // false:当前 true:弹出展示子频道选择器
 	SubscribeData        SubscribeData `json:"subscribe_data,omitempty"`           // 订阅按钮数据，type=ActionTypeSubscribe时使用

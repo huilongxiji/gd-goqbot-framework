@@ -1696,8 +1696,24 @@ func parseMarkdownSeg(data gjson.Result) (*dto.Markdown, *keyboard.MessageKeyboa
 	if kb == nil && len(tmp.Rows) > 0 {
 		kb = &keyboard.MessageKeyboard{Content: &keyboard.CustomKeyboard{Rows: tmp.Rows}}
 	}
+	if tmp.Markdown.TemplateID != 0 || tmp.Markdown.CustomTemplateID != "" {
+		deprecatedTemplateOnce.Do(func() {
+			filelog.Warnf("[onebot] markdown.template_id / custom_template_id 已被官方标注为废弃，建议改用原生 markdown(content)；本次仍按模板发送（此提示仅出现一次）")
+		})
+	}
+	if strings.Contains(raw, `"click_limit"`) {
+		deprecatedClickLimitOnce.Do(func() {
+			filelog.Warnf("[onebot] keyboard 按钮 action.click_limit 已被官方废弃，已忽略该字段（此提示仅出现一次）")
+		})
+	}
 	return tmp.Markdown, kb
 }
+
+// 废弃字段告警只提示一次，避免刷屏
+var (
+	deprecatedTemplateOnce   sync.Once
+	deprecatedClickLimitOnce sync.Once
+)
 
 // parseImageData 按 file/url 判别图片来源（base64://、http(s)、file://、本地绝对路径）并构造 OutImage
 func parseImageData(file, url string) *OutImage {
