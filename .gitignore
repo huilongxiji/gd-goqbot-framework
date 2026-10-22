@@ -42,3 +42,6 @@ go.work.sum
 
 # macOS
 .DS_Store
+
+# MCP local config
+.mcp.json

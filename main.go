@@ -92,7 +92,11 @@ func main() {
 	if err := filelog.Init(cfg.Log.FileEnabled(), logDir); err != nil {
 		filelog.Fatalf("初始化文件日志失败: %v", err)
 	}
-	defer filelog.Close()
+	defer func() {
+		if err := filelog.Close(); err != nil {
+			filelog.Fatalf("关闭文件日志失败: %v", err)
+		}
+	}()
 	log.SetFlags(0)
 	log.SetOutput(filelog.StdLogWriter())
 
@@ -103,7 +107,6 @@ func main() {
 	var ids *idmap.Store
 	if cfg.IDMap.Disabled {
 		ids = idmap.New()
-		defer ids.Close()
 		log.Println("idmap: 纯内存模式（不持久化，重启后 message_id/反查丢失）")
 	} else {
 		p := cfg.IDMap.Path
@@ -117,9 +120,13 @@ func main() {
 		if err != nil {
 			filelog.Fatalf("打开 idmap 失败: %v", err)
 		}
-		defer ids.Close()
 		log.Printf("idmap: 持久化已启用 -> %s", p)
 	}
+	defer func() {
+		if err := ids.Close(); err != nil {
+			filelog.Fatalf("关闭 idmap 失败: %v", err)
+		}
+	}()
 	bus := onebot.NewEventBus()
 	caller := onebot.NewCaller(selfID, appID, ids, cfg.OneBot.Debug, AppName, AppVersion)
 	conv := onebot.NewConverter(ids, bus, func() int64 { return selfID }, cfg.QQ.ResolvedMentionMode(), cfg.OneBot.MessageFormat, cfg.OneBot.DowntimeMessage, caller)
@@ -132,13 +139,11 @@ func main() {
 	for _, srv := range cfg.OneBot.Servers {
 		if ws := srv.WS; ws != nil && !ws.Disabled {
 			s := onebot.NewWSServer(ws, &cfg.OneBot, selfID, bus, caller)
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if err := s.Run(); err != nil {
 					filelog.Errorf("[onebot] 正向 WS 服务退出: %v", err)
 				}
-			}()
+			})
 		}
 		if rev := srv.WSReverse; rev != nil && !rev.Disabled {
 			c := onebot.NewWSClient(rev, &cfg.OneBot, selfID, bus, caller)
