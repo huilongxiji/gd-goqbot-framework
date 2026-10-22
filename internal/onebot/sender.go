@@ -60,9 +60,11 @@ type OutMessage struct {
 	EventID  string      // 被动回复目标 event_id（互动事件），可空；与 MsgID 二选一，都空=主动消息
 	RefMsgID string      // 引用回复目标 QQ msg_id，可空；置入 message_reference 渲染「引用」气泡
 	IsWakeup bool        // 单聊互动召回消息：与 MsgID/EventID 互斥，仅 C2C 生效
-	Stream   *dto.Stream // 流式消息信息，仅 C2C 生效；非空时整条按流式分片发送（内容取 Parts 里的文本）
-	Parts    []MessagePart
-	Notes    []SendNote // 仅日志：reply 等随消息发送的动作说明
+	Stream   *dto.Stream // 流式消息信息，仅 C2C 生效；非空时走独立接口 stream_messages（内容取 Parts 里的文本/markdown）
+	// StreamRemainLen 流式发送后由 sender 回填：平台返回的 remain_msg_len（剩余可写字符数），-1 表示未知
+	StreamRemainLen int
+	Parts           []MessagePart
+	Notes           []SendNote // 仅日志：reply 等随消息发送的动作说明
 }
 
 // HasContent 是否有可发送内容。流式末帧可能没有文本，只要带了 Stream 也算有内容。

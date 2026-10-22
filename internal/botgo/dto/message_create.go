@@ -72,17 +72,48 @@ type MessageToCreate struct {
 	Media            *MediaInfo                `json:"media,omitempty"`           // 富媒体信息
 	PromptKeyboard   *PromptKeyboard           `json:"prompt_keyboard,omitempty"` // 消息扩展信息
 	ActionButton     *ActionButton             `json:"action_button,omitempty"`   // 消息操作结构
-	Stream           *Stream                   `json:"stream,omitempty"`          // 流式消息信息
 	FeatureID        uint                      `json:"feature_id,omitempty"`      // 控制消息发送
 	IsWakeup         bool                      `json:"is_wakeup,omitempty"`       // 单聊互动召回消息：用户主动对话后 30 天内可下发，与 msg_id/event_id 互斥
 }
 
-// Stream 流式消息信息
+// Stream 流式消息分片描述（OneBot stream 段解析结果，发送时映射为 StreamMessageToCreate）。
+// 官方已将流式消息拆为独立接口 POST /v2/users/{user_openid}/stream_messages，
+// 普通 /messages 接口不再支持 stream 字段。
 type Stream struct {
-	State int32  `json:"state,omitempty"` // 流式消息状态 1正文生成中，10：正文生成结束， 11：引志消息生成中， 20：引导消息生成结束。
-	ID    string `json:"id,omitempty"`    // 流式消息ID，首帧留空（index=0）由平台生成，后续帧回填首帧返回的 msgID
-	Index int32  `json:"index"`           // 流式消息序号：首帧必须为 0（勿 omitempty，0 会被丢），之后每帧递增；index>=1 但无 id 会被判定为无效续帧
-	Reset bool   `json:"reset,omitempty"` // 重新生成流式消息标记，此参数只能使用于流式消息分片还没有发送完成时，reset时Index需要从0开始，需要填写流式ID。
+	State       int32  // 输入状态：1 生成中 / 10 生成结束（旧值 11/20 已无文档，按 1/10 兼容）
+	ID          string // stream_msg_id：首帧留空由平台生成，后续帧回填上一帧返回的 id
+	Index       int32  // 分片序号，从 0 开始递增
+	Reset       bool   // 旧字段：兼容为 input_mode=replace
+	InputMode   string // append（默认，content_raw 追加）/ replace（content_raw 为当前完整文本，须以已发送前缀开头）
+	ContentType string // text（默认）/ markdown
+}
+
+// 流式输入状态（stream_messages.input_state）
+const (
+	StreamStateGenerating int32 = 1  // 生成中
+	StreamStateFinished   int32 = 10 // 生成结束
+)
+
+// StreamMessageToCreate 流式发送单聊消息请求体 POST /v2/users/{user_openid}/stream_messages
+type StreamMessageToCreate struct {
+	InputMode   string `json:"input_mode,omitempty"`    // append / replace
+	InputState  int32  `json:"input_state"`             // 1 生成中 / 10 生成结束
+	Index       int32  `json:"index"`                   // 分片序号，首帧 0（勿 omitempty）
+	ContentType string `json:"content_type,omitempty"`  // text / markdown
+	ContentRaw  string `json:"content_raw"`             // 本帧内容（append 为增量，replace 为全量）
+	EventID     string `json:"event_id,omitempty"`      // 被动回复事件 id，与 msg_id 二选一
+	MsgID       string `json:"msg_id,omitempty"`        // 被动回复消息 id
+	StreamMsgID string `json:"stream_msg_id,omitempty"` // 首帧不填，后续帧填上一帧返回的 id
+	MsgSeq      uint32 `json:"msg_seq,omitempty"`       // 回复序号（同一流内保持一致）
+	IsWakeup    bool   `json:"is_wakeup,omitempty"`     // true 时不校验 msg_id/event_id 时效
+}
+
+// StreamMessageResp 流式发送回包
+type StreamMessageResp struct {
+	ID           string          `json:"id"`                 // 消息 id；首帧返回的即后续帧使用的 stream_msg_id
+	Timestamp    string          `json:"timestamp"`          // RFC3339
+	ExtInfo      *MessageExtInfo `json:"ext_info,omitempty"` // ref_idx
+	RemainMsgLen int             `json:"remain_msg_len"`     // 流式消息剩余可写长度（字符）
 }
 
 // PromptKeyboard 交互区操作

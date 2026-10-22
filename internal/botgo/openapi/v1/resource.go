@@ -39,6 +39,7 @@ const (
 	groupUploadPartFinishURI uri = "/v2/groups/{group_id}/upload_part_finish" // 分片上传-单片完成
 
 	c2cMessagesURI  uri = "/v2/users/{user_id}/messages"
+	c2cStreamURI    uri = "/v2/users/{user_id}/stream_messages" // 流式发送单聊消息（独立接口）
 	c2cRichMediaURI uri = "/v2/users/{user_id}/files"
 
 	c2cUploadPrepareURI    uri = "/v2/users/{user_id}/upload_prepare"     // 分片上传-准备

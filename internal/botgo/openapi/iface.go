@@ -140,6 +140,10 @@ type MessageAPI interface {
 	PostC2CMessage(ctx context.Context, userID string, msg dto.APIMessage, opt ...options.Option) (
 		*dto.Message, error)
 
+	// PostC2CStreamMessage 流式发送C2C消息（独立接口 /v2/users/{user_openid}/stream_messages）
+	PostC2CStreamMessage(ctx context.Context, userID string, msg *dto.StreamMessageToCreate, opt ...options.Option) (
+		*dto.StreamMessageResp, error)
+
 	// RetractC2CMessage 撤回C2C消息
 	RetractC2CMessage(ctx context.Context, userID, msgID string, opt ...options.Option) error
 

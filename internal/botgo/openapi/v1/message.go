@@ -196,6 +196,20 @@ func (o *openAPI) PostC2CMessage(ctx context.Context, userID string, msg dto.API
 	return resp.Result().(*dto.Message), nil
 }
 
+// PostC2CStreamMessage 流式发送单聊消息 POST /v2/users/{user_openid}/stream_messages
+func (o *openAPI) PostC2CStreamMessage(ctx context.Context, userID string, msg *dto.StreamMessageToCreate,
+	opt ...options.Option) (*dto.StreamMessageResp, error) {
+	reqCMD := o.request(ctx).
+		SetResult(dto.StreamMessageResp{}).
+		SetPathParam("user_id", userID).
+		SetBody(msg)
+	resp, err := baseRequest(ctx, reqCMD, http.MethodPost, o.getURL(c2cStreamURI), opt...)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result().(*dto.StreamMessageResp), nil
+}
+
 // ---- 富媒体分片上传 ----
 
 // PostGroupUploadPrepare 群分片上传-准备，返回 upload_id 与预签名分片列表

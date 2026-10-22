@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -52,9 +53,19 @@ func combineParts(msg *onebot.OutMessage) (text string, img *onebot.OutImage, ok
 
 // sender 基于 botgo openapi 实现 onebot.MessageSender
 type sender struct {
-	api openapi.OpenAPI // QQ 官方 openapi 客户端
-	ids *idmap.Store    // 被动消息 msg_seq 计数来源
+	api       openapi.OpenAPI // QQ 官方 openapi 客户端
+	ids       *idmap.Store    // 被动消息 msg_seq 计数来源
+	streamSeq sync.Map        // stream_msg_id -> streamSeqEntry：同一条流式消息各帧沿用首帧的 msg_seq
 }
+
+// streamSeqEntry 流式消息首帧分配的 msg_seq 及最近使用时间（用于回收未正常收尾的流）
+type streamSeqEntry struct {
+	seq uint32
+	at  time.Time
+}
+
+// streamSeqTTL 流式 msg_seq 记录保留时长（被动窗口 60 分钟，超过即无意义）
+const streamSeqTTL = 60 * time.Minute
 
 var _ onebot.MessageSender = (*sender)(nil)
 
@@ -413,25 +424,90 @@ func (s *sender) sendC2CText(ctx context.Context, userOpenID, msgID, eventID, re
 	return id, ref, nil
 }
 
-// sendC2CStream 发送单聊流式文本分片（msg_type=0 + stream）。
-// 首帧 stream.ID 为空，返回的 resp.ID 即流式 ID，需由下游回传到后续帧的 stream.id。
-func (s *sender) sendC2CStream(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, content string, stream *dto.Stream) (string, string, error) {
-	m := &dto.MessageToCreate{
-		Content:   content,
-		MsgType:   dto.TextMsg,
-		MsgID:     msgID,
-		EventID:   eventID,
-		IsWakeup:  isWakeup,
-		Stream:    stream,
-		MsgSeq:    s.seqFor(seqKey(msgID, eventID)),
-		Timestamp: time.Now().Unix(),
+// sendC2CStream 走独立接口 POST /v2/users/{user_openid}/stream_messages 发送一帧流式消息。
+// 首帧 stream.ID 为空，平台返回的 id 即 stream_msg_id，下游需回填到后续帧 stream.id。
+// 同一条流的各帧沿用首帧分配的 msg_seq（与官方示例一致），收尾帧(state=10)后释放。
+func (s *sender) sendC2CStream(ctx context.Context, userOpenID, msgID, eventID string, isWakeup bool, content string, st *dto.Stream) (string, string, int, error) {
+	state := st.State
+	switch state {
+	case 11:
+		state = dto.StreamStateGenerating
+	case 20:
+		state = dto.StreamStateFinished
+	case dto.StreamStateGenerating, dto.StreamStateFinished:
+	default:
+		state = dto.StreamStateGenerating
 	}
-	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
+	mode := strings.ToLower(strings.TrimSpace(st.InputMode))
+	if mode == "" && st.Reset {
+		mode = "replace"
+	}
+	if mode != "replace" {
+		mode = "append"
+	}
+	ctype := strings.ToLower(strings.TrimSpace(st.ContentType))
+	if ctype != "markdown" {
+		ctype = "text"
+	}
+
+	var seq uint32
+	if st.ID != "" {
+		if v, ok := s.streamSeq.Load(st.ID); ok {
+			e := v.(streamSeqEntry)
+			seq = e.seq
+			s.streamSeq.Store(st.ID, streamSeqEntry{seq: seq, at: time.Now()})
+		}
+	}
+	if seq == 0 {
+		seq = s.seqFor(seqKey(msgID, eventID))
+	}
+
+	m := &dto.StreamMessageToCreate{
+		InputMode:   mode,
+		InputState:  state,
+		Index:       st.Index,
+		ContentType: ctype,
+		ContentRaw:  content,
+		MsgID:       msgID,
+		EventID:     eventID,
+		StreamMsgID: st.ID,
+		MsgSeq:      seq,
+		IsWakeup:    isWakeup,
+	}
+	if msgID != "" && eventID != "" {
+		m.MsgID = "" // 二者互斥，event_id 优先（与 seqKey 一致）
+	}
+	resp, err := s.api.PostC2CStreamMessage(ctx, userOpenID, m)
 	if err != nil {
-		return "", "", err
+		return "", "", -1, err
 	}
-	id, ref := msgIDs(resp)
-	return id, ref, nil
+	id := resp.ID
+	if id == "" {
+		id = st.ID
+	}
+	ref := ""
+	if resp.ExtInfo != nil {
+		ref = resp.ExtInfo.RefIdx
+	}
+	if state == dto.StreamStateFinished {
+		s.streamSeq.Delete(st.ID)
+		s.streamSeq.Delete(id)
+	} else if id != "" && seq != 0 {
+		s.streamSeq.Store(id, streamSeqEntry{seq: seq, at: time.Now()})
+		s.sweepStreamSeq()
+	}
+	return id, ref, resp.RemainMsgLen, nil
+}
+
+// sweepStreamSeq 回收超时未收尾的流式 msg_seq 记录
+func (s *sender) sweepStreamSeq() {
+	now := time.Now()
+	s.streamSeq.Range(func(k, v any) bool {
+		if now.Sub(v.(streamSeqEntry).at) > streamSeqTTL {
+			s.streamSeq.Delete(k)
+		}
+		return true
+	})
 }
 
 // sendC2CMedia 用已上传的 file_info 发送单聊富媒体（图片等）消息
@@ -482,15 +558,31 @@ func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID
 
 // SendC2C 发单聊消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送
 func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.OutMessage) (string, string, error) {
-	// 流式消息（仅 C2C）：整条按一帧分片发送，内容取所有文本段拼接，跳过常规逐段逻辑
+	// 流式消息（仅 C2C）：整条作为一帧走 stream_messages，内容取所有文本段拼接；
+	// 若未指定 content_type 且消息里带 markdown 段，则改用 markdown 正文并按 markdown 发送。
 	if msg.Stream != nil {
 		var b strings.Builder
+		var md strings.Builder
 		for _, p := range msg.Parts {
-			if p.Kind == onebot.PartText {
+			switch p.Kind {
+			case onebot.PartText:
 				b.WriteString(p.Text)
+			case onebot.PartMarkdown:
+				if p.Markdown != nil {
+					md.WriteString(p.Markdown.Content)
+				}
+			case onebot.PartImage, onebot.PartVideo, onebot.PartRecord, onebot.PartFile:
+				filelog.Warnf("[qq] 流式消息仅支持文本/markdown，已忽略富媒体段")
 			}
 		}
-		return s.sendC2CStream(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, b.String(), msg.Stream)
+		content := b.String()
+		if md.Len() > 0 && msg.Stream.ContentType == "" {
+			msg.Stream.ContentType = "markdown"
+			content = md.String() + content
+		}
+		id, ref, remain, err := s.sendC2CStream(ctx, userOpenID, msg.MsgID, msg.EventID, msg.IsWakeup, content, msg.Stream)
+		msg.StreamRemainLen = remain
+		return id, ref, err
 	}
 	if text, img, ok := combineParts(msg); ok {
 		fi, err := s.uploadC2CImage(ctx, userOpenID, *img)

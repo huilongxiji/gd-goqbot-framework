@@ -1234,7 +1234,18 @@ func sendMode(out *OutMessage) string {
 	var base string
 	switch {
 	case out.Stream != nil:
-		base = fmt.Sprintf("流式(state=%d,index=%d)", out.Stream.State, out.Stream.Index)
+		base = fmt.Sprintf("流式(state=%d,index=%d", out.Stream.State, out.Stream.Index)
+		if out.Stream.InputMode != "" || out.Stream.Reset {
+			mode := out.Stream.InputMode
+			if mode == "" {
+				mode = "replace"
+			}
+			base += ",mode=" + mode
+		}
+		if out.Stream.ContentType != "" {
+			base += "," + out.Stream.ContentType
+		}
+		base += ")"
 		if out.Stream.ID != "" {
 			base += " id=" + midEllipsis(out.Stream.ID, 14, 8)
 		}
@@ -1402,6 +1413,10 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("空消息"))
 		return failed(1400, "空消息")
 	}
+	if out.Stream != nil && out.Stream.Index > 0 && out.Stream.ID == "" {
+		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("流式续帧缺少 stream id"))
+		return failed(1400, "流式续帧(index>=1)必须在 stream 段带上首帧返回的 stream_id")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout(out))
 	defer cancel()
 	qqMsgID, refIdx, err := sender.SendC2C(ctx, userOpenID, out)
@@ -1417,8 +1432,10 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 	c.logSend(action, "私聊", userID, out, params, qqMsgID, mid, start, nil)
 	data := map[string]any{"message_id": mid}
 	if out.Stream != nil {
-		// 流式：把原始 QQ 消息 id 作为 stream_id 回传，供插件在后续分片的 stream.id 里回填
+		// 流式：把平台返回的 id 作为 stream_id 回传，供插件在后续分片的 stream.id 里回填；
+		// remain_msg_len 为该流剩余可写字符数（平台未返回时为 -1）
 		data["stream_id"] = qqMsgID
+		data["remain_msg_len"] = out.StreamRemainLen
 	}
 	return ok(data)
 }
@@ -1581,13 +1598,26 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				out.Parts = append(out.Parts, MessagePart{Kind: PartMarkdown, Markdown: md, Keyboard: kb})
 			}
 		case "stream":
-			// 流式消息（仅 C2C）：state 1正文生成中/10正文结束/11引导生成中/20引导结束；
-			// 首帧不填 id，后续帧回传首帧返回的 stream_id，index 从 1 递增。分片文本走相邻 text 段。
+			// 流式消息（仅 C2C，走独立接口 stream_messages）：
+			//   state 1 生成中 / 10 结束（旧值 11/20 自动按 1/10 兼容）；
+			//   id 首帧不填，后续帧回填上一帧返回的 stream_id；index 从 0 递增；
+			//   input_mode append(默认，文本为增量) / replace(文本为当前全量，须以已发送前缀开头)，旧字段 reset=true 等同 replace；
+			//   content_type text(默认) / markdown。分片正文走相邻 text 段（或 markdown 段）。
+			state := int32(data.Get("state").Int())
+			if v := data.Get("input_state"); v.Exists() {
+				state = int32(v.Int())
+			}
+			id := data.Get("id").String()
+			if id == "" {
+				id = data.Get("stream_msg_id").String()
+			}
 			out.Stream = &dto.Stream{
-				State: int32(data.Get("state").Int()),
-				ID:    data.Get("id").String(),
-				Index: int32(data.Get("index").Int()),
-				Reset: data.Get("reset").Bool(),
+				State:       state,
+				ID:          id,
+				Index:       int32(data.Get("index").Int()),
+				Reset:       data.Get("reset").Bool(),
+				InputMode:   data.Get("input_mode").String(),
+				ContentType: data.Get("content_type").String(),
 			}
 		case "reply":
 			// NoneBot MessageSegment.reply 的 id 多为字符串；兼容数字
