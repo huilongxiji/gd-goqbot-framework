@@ -11,14 +11,15 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 	"goqbot/internal/botgo/constant"
 	"goqbot/internal/botgo/errs"
 	"goqbot/internal/botgo/log"
-	"golang.org/x/oauth2"
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -45,11 +46,12 @@ type qqBotTokenRsp struct {
 
 func (r *qqBotTokenRsp) UnmarshalJSON(data []byte) error {
 	// 创建一个临时结构体来解析 JSON 数据
+	// expires_in：旧接口下发字符串 "7200"，新版文档标注为 number，两种都兼容
 	var temp struct {
-		Code        int    `json:"code"`
-		Message     string `json:"message"`
-		AccessToken string `json:"access_token"`
-		ExpiresIn   string `json:"expires_in"`
+		Code        int             `json:"code"`
+		Message     string          `json:"message"`
+		AccessToken string          `json:"access_token"`
+		ExpiresIn   json.RawMessage `json:"expires_in"`
 	}
 
 	// 解析 JSON 数据到临时结构体
@@ -57,10 +59,13 @@ func (r *qqBotTokenRsp) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// 将字符串转换为 int64
-	expiresIn, err := strconv.ParseInt(temp.ExpiresIn, 10, 64)
-	if err != nil {
-		return err
+	var expiresIn int64
+	if raw := strings.Trim(strings.TrimSpace(string(temp.ExpiresIn)), `"`); raw != "" && raw != "null" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return err
+		}
+		expiresIn = v
 	}
 
 	// 赋值给结构体字段
