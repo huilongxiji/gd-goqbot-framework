@@ -44,6 +44,7 @@
 
 - **上游（连接腾讯 QQ 官方）**：仅支持 **WebSocket**，**暂不支持 Webhook** 回调方式。
 - **下游（连接 NoneBot2）**：仅支持**正向 / 反向 WebSocket**，**不支持正向 / 反向 HTTP**。
+- **接口域名**：OpenAPI 与 AccessToken 均使用官方 2026-08-10 起统一的 `https://api.bot.qq.com`，无需配置。
 
 ---
 
@@ -56,10 +57,10 @@
 - **群成员真实角色**：群消息 `sender.role` 透传真实 `owner` / `admin` / `member`，可直接配合 NoneBot `GROUP_OWNER` / `GROUP_ADMIN` 权限
 - **`union_openid` 跨 AppID 关联标识**：群 / 单聊消息在 QQ 下发时（需向平台申请配置）透传到事件级 `union_openid` 与 `sender.union_openid`，存在才写入
 - **单聊互动召回消息（`is_wakeup`）**：用户主动对话后 30 天内分 4 个周期每周期可下发 1 条（详见动作表）
-- **富媒体收发（图片 / 视频 / 语音 / 文件）**：群 / 单聊均支持**双向**收发；发送支持 `http(s)://` / `file://` / 本地绝对路径 / `base64://`，无需自建图床；**本地大文件（>10MB）自动走分片上传**
-- **单聊流式消息**：C2C 支持 `stream` 段分帧下发，实现打字机式实时输出（首帧建流并返回 `stream_id`，续帧串联，末帧收尾）
+- **富媒体收发（图片 / 视频 / 语音 / 文件）**：群 / 单聊均支持**双向**收发；发送支持 `http(s)://` / `file://` / 本地绝对路径 / `base64://`，无需自建图床；本地数据 ≤5MB 走 `file_data` 直传（失败自动回退分片），**>5MB 自动走分片上传**
+- **单聊流式消息**：C2C 支持 `stream` 段分帧下发，走官方独立接口 `stream_messages`，实现打字机式实时输出；支持增量 / 全量（`append` / `replace`）与纯文本 / markdown 两种正文
 - **单图文合一气泡**：一条消息恰含 1 张图片且无 markdown 时，文本自动并入该图片的富媒体消息，合并为一个气泡（文字在上、图在下），对齐手机 QQ 的图文混排观感
-- **Markdown + Keyboard（按钮）**：模板 / 原生 markdown + 自定义按钮；指令按钮 `action.anchor=1` 可**唤起手机端相册选图器**。群/单聊发送固定带 `force_verify_image_resource=true`：正文图片转存失败则消息不发出，下游收到失败
+- **Markdown + Keyboard（按钮）**：原生 markdown + 自定义按钮（模板 markdown 官方已废弃，仍可发送）；指令按钮 `action.anchor=1` 可**唤起手机端相册选图器**。群/单聊发送固定带 `force_verify_image_resource=true`：正文图片转存失败则消息不发出，下游收到失败
 - **互动按钮回调**闭环：点击事件上报 + 自动被动 `event_id` 回复 + `put_interaction` 回执
 - **合并转发取回**：入站合并转发（"最近十条" / 全量聊天记录）解析为节点数组并缓存，下游用 `get_forward_msg` 取回
 - 入退群、好友增删、群 / C2C 主动推送开关等 **notice** 事件
@@ -84,7 +85,7 @@
 | `get_status` | - | `{ online: true, good: true }` |
 | `get_version_info` | - | 程序名 / 版本 / 协议版本 |
 | `send_group_msg` | `group_id`, `message`, (`user_id`) | 发群消息（被动优先） |
-| `send_private_msg` | `user_id`, `message`, (`is_wakeup`) | 发单聊消息（被动优先）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id` |
+| `send_private_msg` | `user_id`, `message`, (`is_wakeup`) | 发单聊消息（被动优先）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id`、`remain_msg_len` |
 | `send_msg` | `message_type` / 自动判定 + 对应 id + `message` | 按类型分派到群 / 私聊 |
 | `send_group_active_msg` | `group_id`, `message` | **强制主动**发群（忽略 reply / lazy 凭证） |
 | `send_private_active_msg` | `user_id`, `message` | **强制主动**发单聊 |
@@ -124,21 +125,31 @@
 | 段类型 | 收（QQ → OneBot） | 发（OneBot → QQ） |
 |---|---|---|
 | `text` | ✅ | ✅ |
-| `at` | ✅（`mentions.is_you` → at self） | ✅（转 `<@openid>`，at self/all 跳过） |
-| `image` | ✅（go-cqhttp 风格 `file=<md5>.image`） | ✅（base64 / url / 本地文件直传） |
+| `at` | ✅（识别 `<qqbot-at-user id="" />`、`<qqbot-at-everyone />` 与旧 `<@openid>`；`mentions.is_you` → at self） | ✅（转官方 `<qqbot-at-user id="openid" />`；at self / all 跳过） |
+| `image` | ✅（go-cqhttp 风格 `file=<md5>.image`） | ✅（base64 / url / 本地文件；大图分片） |
 | `video` | ✅ | ✅（简单上传 / 大文件分片） |
 | `record` / `voice` / `audio`（语音） | ✅ | ✅（简单上传 / 大文件分片） |
 | `file` | ✅（带 `name` / `file_size`） | ✅（可带 `name`；大文件分片） |
-| `markdown` + `keyboard` | —— | ✅（模板 / 原生 markdown，按钮 keyboard，支持 `anchor` 唤起相册；可与 `reply` 同发引用） |
+| `markdown` + `keyboard` | —— | ✅（原生 markdown + 按钮 keyboard，支持 `anchor` 唤起相册；可与 `reply` 同发引用；模板与 `click_limit` 官方已废弃：模板仍可发，`click_limit` 不再下发，均只告警一次） |
 | `stream` | —— | ✅（**仅 C2C**，流式分帧；见下方说明） |
 | `reply` | —— | ✅（取被引用消息作被动凭证 + REFIDX 引用索引） |
 
 - 入参支持 **array 段数组** 与 **CQ 字符串** 两种格式。
 - 输出为有序 `OutMessage.Parts`，**每个非文本段单独成一条 QQ 消息按序发出**（连续文本 / at 合并）。
 - **单图快路径**：当整条消息恰好为「文本 + 1 张图片」（无 markdown）时，所有文本并入该图片富媒体消息，合并成**一个气泡**，而非拆成图、文两条。
-- **富媒体来源**：`base64://` / `http(s)://` / `file://` / 本地绝对路径；本地文件 >10MB 自动切换分片上传，`file` / `video` 建议带含扩展名的 `name`（视频分片会自动补 `.mp4`）。
+- **富媒体来源**：`base64://` / `http(s)://` / `file://` / 本地绝对路径。URL 交给平台拉取；本地数据 ≤5MB 先 `file_data` 直传、失败自动回退分片，>5MB 直接分片上传。`file` / `video` 建议带含扩展名的 `name`（视频分片自动补 `.mp4`，图片按内容补扩展名）。
 
-> **流式消息（`stream` 段，仅 C2C）**：携带 `{state, id, index, reset}`。`state`：1 生成中 / 10 结束 / 11 引导生成中 / 20 引导结束。**首帧** `index=0` 且不带 `id`，发送成功后响应额外返回 `stream_id`；**续帧**把 `stream_id` 回填到 `id`、`index` 逐帧递增；**末帧** `state=10`。`index>=1` 缺 `id` 会被平台判为无效续帧；群聊会忽略 `stream` 并告警。
+> **流式消息（`stream` 段，仅 C2C）**：走官方独立接口 `POST /v2/users/{openid}/stream_messages`，正文取同条消息里的 `text` 段（或 `markdown` 段）。
+>
+> | 字段 | 说明 |
+> |---|---|
+> | `state` | `1` 生成中 / `10` 结束（旧值 `11` / `20` 自动按 `1` / `10` 处理） |
+> | `id` | 首帧不填；续帧回填首帧返回的 `stream_id`（缺失时框架直接拒绝） |
+> | `index` | 从 `0` 开始逐帧递增 |
+> | `input_mode` | `append`（默认，文本为增量）/ `replace`（文本为当前全量，须以已发送内容为前缀；旧字段 `reset=true` 等同 `replace`） |
+> | `content_type` | `text`（默认）/ `markdown`；未指定且带 `markdown` 段时自动按 markdown 发送 |
+>
+> 发送成功后额外返回 `stream_id` 与 `remain_msg_len`（剩余可写字符数）。同一条流的各帧自动沿用首帧的 `msg_seq`。流式只发文字，图片等富媒体段会被忽略并告警；群聊不支持流式，会忽略 `stream` 按普通消息发送。
 
 ---
 
@@ -310,6 +321,7 @@ flowchart LR
 
 - **频道（guild）整条线尚未接入**：`AT_MESSAGE_CREATE`（频道@）、`DIRECT_MESSAGE_CREATE`（频道私信）目前仅打日志；`GUILD_*` / `CHANNEL_*` / `GUILD_MEMBER_*` / `FORUM_*` 未接（底层 botgo 已保留 handler，补齐只需注册 + 写映射）。
 - **双方均未实现**：`AUDIO_*`（音频）、`MESSAGE_REACTION_*`（表态）、`MESSAGE_AUDIT_*`（审核）。
+- **官方新接口暂未接入**：素材管理（`/v2/media-images`，上传后在 markdown 中以 `qqbot-media://` 引用图片）、群成员批量移除、群黑名单查询 / 管理、入群自动审批策略设置。
 
 ---
 
