@@ -25,7 +25,7 @@ type OutMedia struct {
 type PartKind int
 
 const (
-	PartText     PartKind = iota // 文本（含 <@openid> 形式的 at）
+	PartText     PartKind = iota // 文本（含 <qqbot-at-user id="" /> 或 <@openid> 形式的 at）
 	PartImage                    // 图片
 	PartMarkdown                 // markdown(+可选 keyboard)
 	PartVideo                    // 视频 file_type=2

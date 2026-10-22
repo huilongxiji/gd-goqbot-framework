@@ -24,14 +24,20 @@ import (
 // seenMsgLimit 群消息 qq_msg_id 去重缓存上限（防 GROUP_AT 与 GROUP_MESSAGE 重复上报）
 const seenMsgLimit = 5000
 
-var atOpenIDRE = regexp.MustCompile(`<@!?[^>]+>`)
+// atOpenIDRE 匹配 QQ 正文内的 @ 标记，新旧语法都识别：
+//   - 旧语法（官方标注废弃中）：<@openid> / <@!openid>
+//   - 新语法：<qqbot-at-user id="openid" /> 与 <qqbot-at-everyone />
+var atOpenIDRE = regexp.MustCompile(`<@!?[^>]+>|<qqbot-at-user\s+[^>]*?/?>|<qqbot-at-everyone\s*/?>`)
+
+// atUserIDRE 从 <qqbot-at-user ... id="xxx" ... /> 里取 id 属性（兼容单/双引号）
+var atUserIDRE = regexp.MustCompile(`\bid\s*=\s*["']([^"']*)["']`)
 
 // Converter 把 QQ 事件转换为 OneBot v11 事件并推入 EventBus
 type Converter struct {
 	ids         *idmap.Store
 	bus         *EventBus
 	selfID      func() int64
-	mentionMode string  // strip | raw | at，入站 <@openid> 的处理方式
+	mentionMode string  // strip | raw | at，入站 @ 标记（<@openid> / <qqbot-at-user>）的处理方式
 	msgFormat   string  // array 或 string
 	downtime    string  // 全下游掉线时回发 QQ 的兜底文本，空=关闭
 	caller      *Caller // 用于兜底时直接调用 QQ 发送
@@ -371,8 +377,18 @@ func cleanMentionMarkup(s string) string {
 	return strings.Trim(s, " \u00A0")
 }
 
-// mentionID 从 <@id> / <@!id> 取出内部 id
+// mentionID 从 @ 标记取出内部 id：<@id> / <@!id> / <qqbot-at-user id="id" />；
+// <qqbot-at-everyone /> 返回 "everyone"（resolveMention 映射为 at all）。
 func mentionID(token string) string {
+	switch {
+	case strings.HasPrefix(token, "<qqbot-at-everyone"):
+		return "everyone"
+	case strings.HasPrefix(token, "<qqbot-at-user"):
+		if m := atUserIDRE.FindStringSubmatch(token); m != nil {
+			return m[1]
+		}
+		return ""
+	}
 	s := strings.TrimSuffix(strings.TrimPrefix(token, "<@"), ">")
 	return strings.TrimPrefix(s, "!")
 }

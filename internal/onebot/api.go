@@ -1550,9 +1550,9 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				return
 			}
 			if openid, found := c.ids.OpenID(id); found {
-				text.WriteString("<@")
+				text.WriteString(`<qqbot-at-user id="`)
 				text.WriteString(openid)
-				text.WriteString(">")
+				text.WriteString(`" />`)
 			}
 		case "image":
 			img := parseImageData(data.Get("file").String(), data.Get("url").String())
