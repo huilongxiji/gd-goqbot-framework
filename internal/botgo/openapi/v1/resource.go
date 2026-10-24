@@ -101,6 +101,11 @@ const (
 	panelsURI      uri = "/v2/panels"                   // 查询/创建指令面板
 	panelURI       uri = "/v2/panels/{panel_id}"        // 查询/修改/删除指令面板
 	panelTargetURI uri = "/v2/panels/{panel_id}/target" // 修改指令面板关联对象
+
+	mediaImagesURI        uri = "/v2/media-images"                   // 素材列表
+	mediaImagePrepareURI  uri = "/v2/media-images/prepare"           // 素材上传-申请
+	mediaImageCompleteURI uri = "/v2/media-images/complete"          // 素材上传-完成
+	mediaImageDeleteURI   uri = "/v2/media-images/{image_id}/delete" // 删除素材
 )
 
 // getURL 获取接口地址，会处理沙箱环境判断

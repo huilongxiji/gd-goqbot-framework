@@ -326,6 +326,14 @@ func (c *Caller) dispatch(action string, params gjson.Result) map[string]any {
 		return c.deleteCommandPanel(params)
 	case "set_command_panel_target":
 		return c.setCommandPanelTarget(params)
+	case "upload_media_image":
+		return c.uploadMediaImage(params)
+	case "get_media_image":
+		return c.getMediaImage(params)
+	case "get_media_images":
+		return c.getMediaImages(params)
+	case "delete_media_image":
+		return c.deleteMediaImage(params)
 	default:
 		return failed(1404, "unsupported action: "+action)
 	}
@@ -973,6 +981,89 @@ func (c *Caller) deleteCommandPanel(params gjson.Result) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := sender.DeleteCommandPanel(ctx, panelID); err != nil {
+		return failed(1500, err.Error())
+	}
+	return ok(map[string]any{})
+}
+
+// uploadMediaImage 上传素材图片，返回 qqbot-media:// 引用链接（供 markdown 引用）。
+// 同内容且未过期的素材默认直接复用（data.cached=true），force=true 强制重新上传。
+func (c *Caller) uploadMediaImage(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	m := parseMediaData(params.Get("file").String(), params.Get("url").String(), params.Get("name").String())
+	if m == nil {
+		return failed(1400, "缺少或无法读取 file（支持 base64://、file://、本地绝对路径、http(s)）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	info, err := sender.UploadMediaImage(ctx, *m, params.Get("force").Bool())
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(info)
+}
+
+// getMediaImage 按 image_id / sha1 / file_name 查询素材是否已上传且仍有效
+func (c *Caller) getMediaImage(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	q := MediaImageQuery{
+		ImageID: strings.TrimSpace(params.Get("image_id").String()),
+		SHA1:    strings.TrimSpace(params.Get("sha1").String()),
+	}
+	// file_name 允许直接传本地路径，按 basename 匹配
+	if name := strings.TrimSpace(params.Get("file_name").String()); name != "" {
+		q.FileName = filepath.Base(strings.TrimPrefix(name, "file://"))
+	}
+	if q.ImageID == "" && q.SHA1 == "" && q.FileName == "" {
+		return failed(1400, "缺少查询条件（image_id / sha1 / file_name 至少一个）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	images, err := sender.FindMediaImages(ctx, q)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	if images == nil {
+		images = []*MediaImageInfo{}
+	}
+	return ok(map[string]any{"found": len(images) > 0, "images": images})
+}
+
+// getMediaImages 查询素材图片列表
+func (c *Caller) getMediaImages(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	pager := &dto.MediaImageListPager{Cursor: params.Get("cursor").String()}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := sender.ListMediaImages(ctx, pager)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	return okJSON(resp)
+}
+
+// deleteMediaImage 删除素材图片
+func (c *Caller) deleteMediaImage(params gjson.Result) map[string]any {
+	sender, fail := c.requireSender()
+	if fail != nil {
+		return fail
+	}
+	imageID := strings.TrimSpace(params.Get("image_id").String())
+	if imageID == "" {
+		return failed(1400, "缺少 image_id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := sender.DeleteMediaImage(ctx, imageID); err != nil {
 		return failed(1500, err.Error())
 	}
 	return ok(map[string]any{})

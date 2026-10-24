@@ -118,6 +118,34 @@ type MessageSender interface {
 	DeleteCommandPanel(ctx context.Context, panelID string) error
 	// SetCommandPanelTarget 修改指令面板关联对象（仅 specific 面板）
 	SetCommandPanelTarget(ctx context.Context, panelID string, req *dto.PanelTargetReq) error
+	// UploadMediaImage 上传素材图片，返回 qqbot-media:// 引用链接；force=false 时同内容且未过期的素材直接复用
+	UploadMediaImage(ctx context.Context, m OutMedia, force bool) (*MediaImageInfo, error)
+	// FindMediaImages 按 image_id / 内容 sha1 / 文件名查询素材（以官方列表为准，过滤掉已删除/已过期的）
+	FindMediaImages(ctx context.Context, q MediaImageQuery) ([]*MediaImageInfo, error)
+	// ListMediaImages 查询素材图片列表（cursor 分页）
+	ListMediaImages(ctx context.Context, pager *dto.MediaImageListPager) (*dto.MediaImageList, error)
+	// DeleteMediaImage 删除素材图片（同时清理本地上传记录）
+	DeleteMediaImage(ctx context.Context, imageID string) error
+}
+
+// MediaImageInfo 素材图片（官方列表信息合并本地上传记录）
+type MediaImageInfo struct {
+	ImageID    string   `json:"image_id"`
+	URL        string   `json:"url"`                   // qqbot-media:// 引用链接
+	FileName   string   `json:"file_name"`             // 官方记录的文件名
+	LocalNames []string `json:"local_names,omitempty"` // 上传 / 复用时传入过的原始文件名（本地文件名 / QQ 下发 file_name）
+	SHA1       string   `json:"sha1,omitempty"`        // 内容 sha1；仅框架上传过的素材有
+	PreviewURL string   `json:"preview_url,omitempty"`
+	CreatedAt  int64    `json:"created_at,omitempty"` // Unix 秒
+	ExpiresAt  int64    `json:"expires_at,omitempty"` // Unix 秒；每次被消息引用后官方会顺延
+	Cached     bool     `json:"cached"`               // true=命中已有素材，未重复上传
+}
+
+// MediaImageQuery 素材查询条件，三者至少填一个，同时填写时需全部满足
+type MediaImageQuery struct {
+	ImageID  string // 官方素材 ID
+	SHA1     string // 图片内容 sha1（hex）
+	FileName string // 本地文件名 / QQ 下发 file_name / 入站图片段的 <md5>.image
 }
 
 // GroupInfo 群基本信息（OneBot 侧视图）

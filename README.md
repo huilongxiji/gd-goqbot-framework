@@ -109,12 +109,20 @@
 | `get_command_panels` / `get_command_panel` | `scope` / `panel_id` | 查询指令面板列表 / 详情 |
 | `create_command_panel` / `set_command_panel` / `delete_command_panel` | `scope`,`panel` / `panel_id` | 创建 / 覆盖 / 删除指令面板 |
 | `set_command_panel_target` | `panel_id`,`op`,`user_openids`/`group_openids` | 修改 specific 面板的关联对象 |
+| `upload_media_image` | `file`, (`name`/`force`) | 上传素材图片，返回 `image_id` 与 `qqbot-media://` 引用链接 `url`；同内容且未过期的素材直接复用（`cached=true`） |
+| `get_media_image` | `image_id` / `sha1` / `file_name` | 查询素材是否已上传且仍有效，返回 `found` 与匹配的 `images` |
+| `get_media_images` | (`cursor`) | 查询有效素材图片列表（按创建时间倒序，`next_cursor` 分页） |
+| `delete_media_image` | `image_id` | 删除素材图片并释放额度（已发出的消息不受影响） |
 
 > 未识别的 action 返回 `status=failed`、`retcode=1404`（`message: unsupported action: xxx`），符合 OneBot v11 规范；已实现的动作按 QQ 实际调用结果透传成功/失败码。
 >
 > **互动召回（`is_wakeup=true`）**：用户主动对话后 30 天内分 4 个周期（当天 / 1-3 天 / 3-7 天 / 7-30 天）每周期可下发 1 条，仅 C2C，与 reply / 被动 `event_id` 互斥。
 >
 > **群聊管理权限**：`info` / `bot_state` / `get_group_member_list` / 查他人的 `get_group_member_info` 为白名单接口（内邀，非白名单返回 11253）；入群申请列表/审批、禁言查询/设置需机器人具备群管理员身份。权限不足时透传 QQ 原始错误，不做假成功。
+>
+> **素材管理**：`upload_media_image` 的 `file` 支持 `base64://`、`file://`、本地绝对路径、http(s)（框架先下载再上传）。仅 png/jpeg/gif/webp，单张 ≤10MB，每个机器人最多 100 张，有效期 90 天。返回的 `url` 只能在 markdown 消息里引用：`![描述 #800px #400px](qqbot-media://image/v1/...)`；`preview_url` 是短时链接，不要持久化。
+>
+> **素材查重与查询**：官方接口不返回图片 md5/sha1，框架会把自己上传过的素材（内容 sha1、`image_id`、传入过的文件名）记到 idmap 库。再次上传同一内容时，先用官方列表确认旧素材还在、且剩余有效期超过 1 小时，满足就直接返回旧素材（`cached=true`），不占新名额；`force=true` 可跳过查重。`get_media_image` 的 `file_name` 可以是本地文件名（传路径时取文件名部分）、QQ 下发的原始文件名（入站图片段的 `file_name`），或入站图片段的 `file`（`<md5>.image`）。查询结果以官方列表为准，已删除或已过期的不会返回。在框架之外上传的素材没有本地记录，只能按官方记录的 `file_name` 或 `image_id` 查到。
 >
 > **C2C 推送状态**：官方无查询接口。需启用 `C2CMsgRejectEventHandler` / `C2CMsgReceiveEventHandler`，框架将开关事件落库到 idmap；`get_c2c_msg_state` 读缓存。从未手动操作过开关的用户返回 `known=false`。
 >
@@ -321,7 +329,7 @@ flowchart LR
 
 - **频道（guild）整条线尚未接入**：`AT_MESSAGE_CREATE`（频道@）、`DIRECT_MESSAGE_CREATE`（频道私信）目前仅打日志；`GUILD_*` / `CHANNEL_*` / `GUILD_MEMBER_*` / `FORUM_*` 未接（底层 botgo 已保留 handler，补齐只需注册 + 写映射）。
 - **双方均未实现**：`AUDIO_*`（音频）、`MESSAGE_REACTION_*`（表态）、`MESSAGE_AUDIT_*`（审核）。
-- **官方新接口暂未接入**：素材管理（`/v2/media-images`，上传后在 markdown 中以 `qqbot-media://` 引用图片）、群成员批量移除、群黑名单查询 / 管理、入群自动审批策略设置。
+- **官方新接口暂未接入**：群成员批量移除、群黑名单查询 / 管理、入群自动审批策略设置。
 
 ---
 

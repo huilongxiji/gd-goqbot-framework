@@ -96,7 +96,18 @@ var (
 	bucketIDs      = []byte("ids")      // i:<int64> -> openid（反查）
 	bucketMsgMeta  = []byte("msgmeta")  // <int64 message_id> -> json(MsgMeta)
 	bucketC2CState = []byte("c2cstate") // openid -> json(C2CMsgState)
+	bucketMediaImg = []byte("mediaimg") // image_id -> json(MediaImageRecord)
 )
+
+// MediaImageRecord 框架上传过的素材图片记录（官方接口不返回 md5/sha1，需本地记账才能按内容查重）。
+// 以 image_id 为键：force 重传等情况下同一 sha1 可能对应多条记录。
+type MediaImageRecord struct {
+	ImageID    string   `json:"image_id"`    // 官方素材 ID
+	SHA1       string   `json:"sha1"`        // 图片内容 sha1（hex）
+	URL        string   `json:"url"`         // qqbot-media:// 引用链接
+	FileNames  []string `json:"file_names"`  // 上传 / 复用时传入过的原始文件名（本地文件名 / QQ 下发 file_name）
+	UploadedAt int64    `json:"uploaded_at"` // 上传时间(秒)
+}
 
 // JoinRequestMeta 入群申请上下文，供 set_group_add_request 按 flag 反查审批参数
 type JoinRequestMeta struct {
@@ -124,6 +135,8 @@ type Store struct {
 	joinReq sync.Map // string(flag=join_request_id) -> JoinRequestMeta
 
 	c2cState sync.Map // string(openid) -> C2CMsgState
+
+	mediaImg sync.Map // string(image_id) -> MediaImageRecord（纯内存模式的唯一存储；持久化模式下 db 为准）
 
 	lazy       sync.Map // string(key) -> *lazyEntry
 	seqCounter sync.Map // string(msgID) -> *seqEntry
@@ -153,7 +166,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketIDs, bucketMsgMeta, bucketC2CState} {
+		for _, b := range [][]byte{bucketIDs, bucketMsgMeta, bucketC2CState, bucketMediaImg} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -437,6 +450,88 @@ func (s *Store) GetC2CMsgState(openid string) (C2CMsgState, bool) {
 	}
 	s.c2cState.Store(openid, st)
 	return st, true
+}
+
+// PutMediaImage 登记素材图片上传记录（同一 image_id 覆盖旧记录）
+func (s *Store) PutMediaImage(rec MediaImageRecord) {
+	if rec.ImageID == "" {
+		return
+	}
+	s.mediaImg.Store(rec.ImageID, rec)
+	if s.db != nil {
+		if b, err := json.Marshal(rec); err == nil {
+			_ = s.db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket(bucketMediaImg).Put([]byte(rec.ImageID), b)
+			})
+		}
+	}
+}
+
+// MediaImagesBySHA1 按内容 sha1 取回素材记录，最近上传的在前
+func (s *Store) MediaImagesBySHA1(sha1 string) []MediaImageRecord {
+	var out []MediaImageRecord
+	for _, rec := range s.MediaImages() {
+		if strings.EqualFold(rec.SHA1, sha1) {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UploadedAt > out[j].UploadedAt })
+	return out
+}
+
+// AddMediaImageName 给已有素材记录追加一个文件名（同内容以新文件名复用时调用，便于后续按名查询）
+func (s *Store) AddMediaImageName(imageID, name string) {
+	if name == "" {
+		return
+	}
+	for _, rec := range s.MediaImages() {
+		if rec.ImageID != imageID {
+			continue
+		}
+		for _, n := range rec.FileNames {
+			if n == name {
+				return
+			}
+		}
+		rec.FileNames = append(rec.FileNames, name)
+		s.PutMediaImage(rec)
+		return
+	}
+}
+
+// MediaImages 返回全部素材记录（持久化模式读 db，否则读内存）。单机器人上限 100 张，全量扫描即可。
+func (s *Store) MediaImages() []MediaImageRecord {
+	var out []MediaImageRecord
+	if s.db == nil {
+		s.mediaImg.Range(func(_, v any) bool {
+			out = append(out, v.(MediaImageRecord))
+			return true
+		})
+		return out
+	}
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketMediaImg).ForEach(func(_, v []byte) error {
+			var rec MediaImageRecord
+			if err := json.Unmarshal(v, &rec); err == nil {
+				out = append(out, rec)
+			}
+			return nil
+		})
+	})
+	return out
+}
+
+// DeleteMediaImage 按官方 image_id 删除素材记录
+func (s *Store) DeleteMediaImage(imageID string) {
+	if imageID == "" {
+		return
+	}
+	s.mediaImg.Delete(imageID)
+	if s.db != nil {
+		_ = s.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(bucketMediaImg).Delete([]byte(imageID))
+		})
+	}
 }
 
 // startJanitor 启动后台清理协程，周期性回收具有时效性的内存条目。

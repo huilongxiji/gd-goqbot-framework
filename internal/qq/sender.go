@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -817,6 +818,319 @@ func (s *sender) DeleteCommandPanel(ctx context.Context, panelID string) error {
 // SetCommandPanelTarget 修改指令面板关联对象（仅 specific 面板）
 func (s *sender) SetCommandPanelTarget(ctx context.Context, panelID string, req *dto.PanelTargetReq) error {
 	return s.api.SetCommandPanelTarget(ctx, panelID, req)
+}
+
+// ---- 素材管理 ----
+
+// mediaImageMaxSize 素材图片大小上限（官方默认 10MB）
+const mediaImageMaxSize = 10 << 20
+
+// mediaImageFetchClient 下载 URL 来源的素材图片
+var mediaImageFetchClient = &http.Client{Timeout: 30 * time.Second}
+
+// mediaImageReuseMargin 复用已有素材时要求的最少剩余有效期，留出发送余量
+const mediaImageReuseMargin = time.Hour
+
+// UploadMediaImage 上传素材图片：prepare → PUT 预签名地址 → complete，返回 qqbot-media:// 引用链接。
+// force=false 时先按内容 sha1 查本地上传记录，并用官方列表确认仍有效，命中则直接复用不再上传。
+func (s *sender) UploadMediaImage(ctx context.Context, m onebot.OutMedia, force bool) (*onebot.MediaImageInfo, error) {
+	data, err := mediaImageBytes(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("素材图片内容为空")
+	}
+	if len(data) > mediaImageMaxSize {
+		return nil, fmt.Errorf("素材图片超过 %dMB 上限（%d 字节）", mediaImageMaxSize>>20, len(data))
+	}
+	contentType := http.DetectContentType(data)
+	switch contentType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+	default:
+		return nil, fmt.Errorf("素材图片仅支持 png/jpeg/gif/webp，当前为 %s", contentType)
+	}
+	sha1Sum := sha1.Sum(data)
+	sha1Hex := hex.EncodeToString(sha1Sum[:])
+	if !force {
+		if info := s.reuseMediaImage(ctx, sha1Hex, m.FileName); info != nil {
+			filelog.Infof("[qq] 素材图片已存在，直接复用 image_id=%s sha1=%s", info.ImageID, sha1Hex)
+			return info, nil
+		}
+	}
+
+	fileName := mediaImageFileName(m.FileName, data)
+	md5Sum := md5.Sum(data)
+	md5Hex := hex.EncodeToString(md5Sum[:])
+	prep, err := s.api.PrepareMediaImage(ctx, &dto.MediaImagePrepareReq{
+		FileName:    fileName,
+		FileSize:    uint64(len(data)),
+		ContentType: contentType,
+		MD5:         md5Hex,
+		SHA1:        sha1Hex,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("素材上传 prepare 失败: %w", err)
+	}
+	etag, err := s.api.PutMediaImage(ctx, prep.PresignedURL, contentType, data)
+	if err != nil {
+		return nil, fmt.Errorf("素材上传 PUT 失败: %w", err)
+	}
+	if etag == "" {
+		etag = md5Hex
+	}
+	resp, err := s.api.CompleteMediaImage(ctx, &dto.MediaImageCompleteReq{UploadID: prep.UploadID, MD5: etag})
+	if err != nil {
+		return nil, fmt.Errorf("素材上传 complete 失败: %w", err)
+	}
+	filelog.Infof("[qq] 素材图片上传成功 image_id=%s file=%s size=%d", resp.ImageID, fileName, len(data))
+
+	localName := m.FileName
+	if localName == "" {
+		localName = fileName
+	}
+	now := time.Now().Unix()
+	s.ids.PutMediaImage(idmap.MediaImageRecord{
+		ImageID:    resp.ImageID,
+		SHA1:       sha1Hex,
+		URL:        resp.URL,
+		FileNames:  []string{localName},
+		UploadedAt: now,
+	})
+	return &onebot.MediaImageInfo{
+		ImageID:    resp.ImageID,
+		URL:        resp.URL,
+		FileName:   fileName,
+		LocalNames: []string{localName},
+		SHA1:       sha1Hex,
+		PreviewURL: resp.PreviewURL,
+		CreatedAt:  now,
+		ExpiresAt:  now + int64(resp.TTL),
+	}, nil
+}
+
+// reuseMediaImage 按内容 sha1 查本地上传记录，并用官方列表确认素材仍在且未临近过期；命中返回素材信息，
+// 并把本次传入的文件名追加到记录里，便于之后按该名查询。
+func (s *sender) reuseMediaImage(ctx context.Context, sha1Hex, name string) *onebot.MediaImageInfo {
+	recs := s.ids.MediaImagesBySHA1(sha1Hex)
+	if len(recs) == 0 {
+		return nil
+	}
+	live, err := s.allMediaImages(ctx)
+	if err != nil {
+		filelog.Warnf("[qq] 查询素材列表失败，跳过查重直接上传: %v", err)
+		return nil
+	}
+	byID := make(map[string]*dto.MediaImage, len(live))
+	for _, img := range live {
+		byID[img.ImageID] = img
+	}
+	for _, rec := range recs { // 最近上传的优先
+		img, ok := byID[rec.ImageID]
+		if !ok {
+			s.ids.DeleteMediaImage(rec.ImageID) // 官方已删除 / 已过期：丢弃记录
+			continue
+		}
+		if img.ExpiresAt > 0 && time.Until(time.Unix(int64(img.ExpiresAt), 0)) < mediaImageReuseMargin {
+			continue // 即将过期，不复用；记录保留到官方列表里消失为止
+		}
+		s.ids.AddMediaImageName(rec.ImageID, name)
+		if name != "" && !containsString(rec.FileNames, name) {
+			rec.FileNames = append(rec.FileNames, name)
+		}
+		info := mediaImageInfo(img, &rec)
+		info.Cached = true
+		return info
+	}
+	return nil
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// FindMediaImages 按 image_id / 内容 sha1 / 文件名查询素材。以官方列表为准，只返回仍有效的素材；
+// 顺带清理本地记录里官方已不存在的条目。
+func (s *sender) FindMediaImages(ctx context.Context, q onebot.MediaImageQuery) ([]*onebot.MediaImageInfo, error) {
+	live, err := s.allMediaImages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	recs := map[string]*idmap.MediaImageRecord{} // image_id -> 本地上传记录
+	for _, r := range s.ids.MediaImages() {
+		r := r
+		recs[r.ImageID] = &r
+	}
+	alive := make(map[string]bool, len(live))
+	now := time.Now().Unix()
+	var out []*onebot.MediaImageInfo
+	for _, img := range live {
+		alive[img.ImageID] = true
+		if img.ExpiresAt > 0 && int64(img.ExpiresAt) <= now {
+			continue
+		}
+		rec := recs[img.ImageID]
+		if matchMediaImage(q, img, rec) {
+			out = append(out, mediaImageInfo(img, rec))
+		}
+	}
+	for id := range recs {
+		if !alive[id] {
+			s.ids.DeleteMediaImage(id)
+		}
+	}
+	return out, nil
+}
+
+// ListMediaImages 查询素材图片列表
+func (s *sender) ListMediaImages(ctx context.Context, pager *dto.MediaImageListPager) (*dto.MediaImageList, error) {
+	return s.api.ListMediaImages(ctx, pager)
+}
+
+// DeleteMediaImage 删除素材图片，成功后清理本地上传记录
+func (s *sender) DeleteMediaImage(ctx context.Context, imageID string) error {
+	if err := s.api.DeleteMediaImage(ctx, imageID); err != nil {
+		return err
+	}
+	s.ids.DeleteMediaImage(imageID)
+	return nil
+}
+
+// allMediaImages 翻页拉取全部有效素材（单机器人上限 100 张，页数很少）
+func (s *sender) allMediaImages(ctx context.Context) ([]*dto.MediaImage, error) {
+	var out []*dto.MediaImage
+	pager := &dto.MediaImageListPager{}
+	for i := 0; i < 50; i++ { // 兜底页数上限，防止 cursor 异常时死循环
+		page, err := s.api.ListMediaImages(ctx, pager)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Images...)
+		if page.NextCursor == "" || page.NextCursor == pager.Cursor {
+			break
+		}
+		pager.Cursor = page.NextCursor
+	}
+	return out, nil
+}
+
+// mediaImageInfo 合并官方素材信息与本地上传记录（rec 可空）
+func mediaImageInfo(img *dto.MediaImage, rec *idmap.MediaImageRecord) *onebot.MediaImageInfo {
+	info := &onebot.MediaImageInfo{
+		ImageID:    img.ImageID,
+		URL:        img.URL,
+		FileName:   img.FileName,
+		PreviewURL: img.PreviewURL,
+		CreatedAt:  int64(img.CreatedAt),
+		ExpiresAt:  int64(img.ExpiresAt),
+	}
+	if rec != nil {
+		info.LocalNames = rec.FileNames
+		info.SHA1 = rec.SHA1
+		if info.URL == "" {
+			info.URL = rec.URL
+		}
+	}
+	return info
+}
+
+// matchMediaImage 判断素材是否满足查询条件（各条件之间为「且」）
+func matchMediaImage(q onebot.MediaImageQuery, img *dto.MediaImage, rec *idmap.MediaImageRecord) bool {
+	if q.ImageID != "" && q.ImageID != img.ImageID {
+		return false
+	}
+	if q.SHA1 != "" && (rec == nil || !strings.EqualFold(rec.SHA1, q.SHA1)) {
+		return false
+	}
+	if q.FileName != "" {
+		names := []string{img.FileName}
+		if rec != nil {
+			names = append(names, rec.FileNames...)
+		}
+		if !matchFileName(q.FileName, names...) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchFileName 文件名匹配：原样相等，或与入站图片段的 <md5>.image 形式相等
+func matchFileName(want string, names ...string) bool {
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		if n == want || onebot.ImageFileID(n) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// mediaImageFileName 生成 prepare 用的文件名：保留原始文件名主体，扩展名按内容修正（须与 content_type 一致）
+func mediaImageFileName(name string, data []byte) string {
+	want := imageFileName(data) // image.png / image.jpg / ...
+	if name == "" {
+		return want
+	}
+	ext := want[strings.LastIndex(want, "."):]
+	if strings.EqualFold(fileExt(name), ext) {
+		return name
+	}
+	if i := strings.LastIndex(name, "."); i > 0 {
+		name = name[:i]
+	}
+	return name + ext
+}
+
+// mediaImageBytes 取素材图片字节：base64 直接解码，URL 来源先下载（限 mediaImageMaxSize）
+func mediaImageBytes(ctx context.Context, m onebot.OutMedia) ([]byte, error) {
+	if m.Base64 != "" {
+		data, err := base64.StdEncoding.DecodeString(m.Base64)
+		if err != nil {
+			return nil, fmt.Errorf("素材图片 base64 解码失败: %w", err)
+		}
+		return data, nil
+	}
+	if m.URL == "" {
+		return nil, fmt.Errorf("缺少素材图片来源")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.URL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := mediaImageFetchClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("下载素材图片失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("下载素材图片失败: status=%d", resp.StatusCode)
+	}
+	// 多读 1 字节用于判断是否超限
+	data, err := io.ReadAll(io.LimitReader(resp.Body, mediaImageMaxSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("下载素材图片失败: %w", err)
+	}
+	return data, nil
+}
+
+// fileExt 取文件扩展名（含点），.jpeg 归一为 .jpg
+func fileExt(name string) string {
+	i := strings.LastIndex(name, ".")
+	if i < 0 {
+		return ""
+	}
+	ext := name[i:]
+	if strings.EqualFold(ext, ".jpeg") {
+		return ".jpg"
+	}
+	return ext
 }
 
 // ---- 富媒体上传（群/单聊共用） ----

@@ -142,8 +142,8 @@ func cqParamEscape(s string) string {
 	return r.Replace(s)
 }
 
-// imageFileID 由附件 FileName 生成 go-cqhttp 风格的 file 字段（<md5>.image），与 Gensokyo 对齐
-func imageFileID(fileName string) string {
+// ImageFileID 由附件 FileName 生成 go-cqhttp 风格的 file 字段（<md5>.image），与 Gensokyo 对齐
+func ImageFileID(fileName string) string {
 	id := fileName
 	for _, ext := range []string{"{", "}", ".png", ".jpg", ".gif", "-"} {
 		id = strings.ReplaceAll(id, ext, "")
@@ -578,11 +578,15 @@ func (c *Converter) buildSegments(data *dto.Message) (Message, string) {
 		}
 		if typ == "image" {
 			// 与 Gensokyo 对齐：file=<md5>.image, subType=0, url=真实链接
-			file := imageFileID(att.FileName)
+			file := ImageFileID(att.FileName)
 			imgData := map[string]any{
 				"file":    file,
 				"subType": "0",
 				"url":     url,
+			}
+			// 透传 QQ 下发的原始文件名，下游可作为素材上传 name / 按名查询素材
+			if att.FileName != "" {
+				imgData["file_name"] = att.FileName
 			}
 			// 透传图片宽高，便于下游（如 markdown 图片 #宽px #高px）按比例展示
 			if att.Width > 0 {

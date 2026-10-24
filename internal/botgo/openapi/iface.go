@@ -32,6 +32,22 @@ type OpenAPI interface {
 	MessageSettingAPI
 	GroupManageAPI
 	MenuPanelAPI
+	MediaImageAPI
+}
+
+// MediaImageAPI 素材管理接口
+// 文档：https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html
+type MediaImageAPI interface {
+	// PrepareMediaImage 申请上传任务，拿 upload_id 与预签名地址
+	PrepareMediaImage(ctx context.Context, req *dto.MediaImagePrepareReq) (*dto.MediaImagePrepareResp, error)
+	// PutMediaImage 将图片二进制 PUT 到预签名地址，返回 ETag（文件 md5）
+	PutMediaImage(ctx context.Context, presignedURL, contentType string, data []byte) (string, error)
+	// CompleteMediaImage 完成上传，换取 qqbot-media:// 引用链接
+	CompleteMediaImage(ctx context.Context, req *dto.MediaImageCompleteReq) (*dto.MediaImageCompleteResp, error)
+	// ListMediaImages 查询有效图片列表（cursor 分页）
+	ListMediaImages(ctx context.Context, pager *dto.MediaImageListPager) (*dto.MediaImageList, error)
+	// DeleteMediaImage 删除图片并释放额度
+	DeleteMediaImage(ctx context.Context, imageID string) error
 }
 
 // MenuPanelAPI 自定义菜单与指令面板接口
