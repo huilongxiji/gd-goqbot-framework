@@ -68,7 +68,7 @@ type RenderData struct {
 
 // Action 按纽点击操作
 type Action struct {
-	Type                 ActionType    `json:"type,omitempty"`                     // 操作类型
+	Type                 ActionType    `json:"type"`                               // 操作类型（不能 omitempty：0 = 跳转按钮）
 	Permission           *Permission   `json:"permission,omitempty"`               // 可操作
 	ClickLimit           uint32        `json:"-"`                                  // 已废弃（官方 v2 文档标注）：不再下发 click_limit，保留字段仅为兼容
 	Data                 string        `json:"data,omitempty"`                     // 操作相关数据
@@ -90,8 +90,8 @@ type Modal struct {
 
 // Permission 按纽操作权限
 type Permission struct {
-	// Type 操作权限类型
-	Type PermissionType `json:"type,omitempty"`
+	// Type 操作权限类型（不能 omitempty：0 = 仅指定用户，丢掉 type 后 specify_user_ids 不生效）
+	Type PermissionType `json:"type"`
 	// SpecifyRoleIDs 身份组
 	SpecifyRoleIDs []string `json:"specify_role_ids,omitempty"`
 	// SpecifyUserIDs 指定 UserID
