@@ -31,6 +31,7 @@ const (
 	PartVideo                    // 视频 file_type=2
 	PartRecord                   // 语音 file_type=3
 	PartFile                     // 文件 file_type=4
+	PartCard                     // 图文卡片 msg_type=8
 )
 
 // MessagePart 一个有序消息段，对应一条独立 QQ 消息
@@ -41,6 +42,7 @@ type MessagePart struct {
 	Media    OutMedia                  // PartVideo/PartRecord/PartFile
 	Markdown *dto.Markdown             // PartMarkdown
 	Keyboard *keyboard.MessageKeyboard // PartMarkdown 可选
+	Card     *dto.MessageCard          // PartCard
 }
 
 // SendNote 解析阶段留给发消息日志框的嵌套说明（不参与发送）。

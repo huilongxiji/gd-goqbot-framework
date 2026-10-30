@@ -50,12 +50,13 @@ const (
 	ATMsg          MessageType = 5 // @消息
 	InputNotifyMsg MessageType = 6 // 输入状态消息
 	RichMediaMsg   MessageType = 7 // 富媒体消息（图片，视频等）
+	CardMsg        MessageType = 8 // 图文卡片消息
 )
 
 // MessageToCreate 发送消息结构体定义
 type MessageToCreate struct {
 	Content string      `json:"content,omitempty"`
-	MsgType MessageType `json:"msg_type"` // 消息类型: 0 文本, 2 md, 3 ark, 4 embed, 7 media；群/单聊接口必填，勿 omitempty（0 会被丢掉）
+	MsgType MessageType `json:"msg_type"` // 消息类型: 0 文本, 2 md, 3 ark, 4 embed, 7 media, 8 card；群/单聊接口必填，勿 omitempty（0 会被丢掉）
 	Embed   *Embed      `json:"embed,omitempty"`
 	Ark     *Ark        `json:"ark,omitempty"`
 	Image   string      `json:"image,omitempty"`
@@ -74,6 +75,24 @@ type MessageToCreate struct {
 	ActionButton     *ActionButton             `json:"action_button,omitempty"`   // 消息操作结构
 	FeatureID        uint                      `json:"feature_id,omitempty"`      // 控制消息发送
 	IsWakeup         bool                      `json:"is_wakeup,omitempty"`       // 单聊互动召回消息：用户主动对话后 30 天内可下发，与 msg_id/event_id 互斥
+	Card             *MessageCard              `json:"card,omitempty"`            // 图文卡片，msg_type=8 时必填
+}
+
+// CardTypeTuwen 图文卡片类型
+const CardTypeTuwen = "tuwen"
+
+// MessageCard 卡片消息（msg_type=8），目前仅支持 type=tuwen 图文卡片
+type MessageCard struct {
+	Type    string       `json:"type"`    // 卡片类型：tuwen
+	Content *CardContent `json:"content"` // 卡片元素
+}
+
+// CardContent 图文卡片元素，四个字段在 type=tuwen 时均必填
+type CardContent struct {
+	Title       string `json:"title"`       // 标题，1-50 字符
+	Description string `json:"description"` // 描述，1-200 字符
+	URL         string `json:"url"`         // 点击跳转链接，必须 https，≤1024 字符
+	PicURL      string `json:"pic_url"`     // 封面图链接，必须 https，≤1024 字符
 }
 
 // Stream 流式消息分片描述（OneBot stream 段解析结果，发送时映射为 StreamMessageToCreate）。

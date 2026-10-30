@@ -262,6 +262,25 @@ func (s *sender) sendGroupMarkdown(ctx context.Context, groupOpenID, msgID, even
 	return id, ref, nil
 }
 
+// sendGroupCard 发送群图文卡片消息（msg_type=8），只填 card，不带 content/markdown。
+func (s *sender) sendGroupCard(ctx context.Context, groupOpenID, msgID, eventID, refMsgID string, card *dto.MessageCard) (string, string, error) {
+	m := &dto.MessageToCreate{
+		MsgType:          dto.CardMsg,
+		Card:             card,
+		MsgID:            msgID,
+		EventID:          eventID,
+		MessageReference: msgReference(refMsgID),
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
+	}
+	resp, err := s.api.PostGroupMessage(ctx, groupOpenID, m)
+	if err != nil {
+		return "", "", err
+	}
+	id, ref := msgIDs(resp)
+	return id, ref, nil
+}
+
 // SendGroup 发群消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送。
 // 引用气泡只加在首条已发消息上，避免多段回复出现多个引用。
 func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.OutMessage) (string, string, error) {
@@ -314,6 +333,13 @@ func (s *sender) SendGroup(ctx context.Context, groupOpenID string, msg *onebot.
 			lastID, lastRef = id, newRef
 		case onebot.PartMarkdown:
 			id, newRef, err := s.sendGroupMarkdown(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, p.Markdown, p.Keyboard)
+			if err != nil {
+				return "", "", err
+			}
+			ref = ""
+			lastID, lastRef = id, newRef
+		case onebot.PartCard:
+			id, newRef, err := s.sendGroupCard(ctx, groupOpenID, msg.MsgID, msg.EventID, ref, p.Card)
 			if err != nil {
 				return "", "", err
 			}
@@ -527,6 +553,26 @@ func (s *sender) sendC2CMarkdown(ctx context.Context, userOpenID, msgID, eventID
 	return id, ref, nil
 }
 
+// sendC2CCard 发送单聊图文卡片消息（msg_type=8），只填 card，不带 content/markdown。
+func (s *sender) sendC2CCard(ctx context.Context, userOpenID, msgID, eventID, refMsgID string, isWakeup bool, card *dto.MessageCard) (string, string, error) {
+	m := &dto.MessageToCreate{
+		MsgType:          dto.CardMsg,
+		Card:             card,
+		MsgID:            msgID,
+		EventID:          eventID,
+		MessageReference: msgReference(refMsgID),
+		IsWakeup:         isWakeup,
+		MsgSeq:           s.seqFor(seqKey(msgID, eventID)),
+		Timestamp:        time.Now().Unix(),
+	}
+	resp, err := s.api.PostC2CMessage(ctx, userOpenID, m)
+	if err != nil {
+		return "", "", err
+	}
+	id, ref := msgIDs(resp)
+	return id, ref, nil
+}
+
 // SendC2C 发单聊消息：单图(无 markdown)时把全部文本并入富媒体一条气泡，否则按 Parts 逐段发送
 func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.OutMessage) (string, string, error) {
 	// 流式消息（仅 C2C）：整条作为一帧走 stream_messages，内容取所有文本段拼接；
@@ -542,8 +588,8 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 				if p.Markdown != nil {
 					md.WriteString(p.Markdown.Content)
 				}
-			case onebot.PartImage, onebot.PartVideo, onebot.PartRecord, onebot.PartFile:
-				filelog.Warnf("[qq] 流式消息仅支持文本/markdown，已忽略富媒体段")
+			case onebot.PartImage, onebot.PartVideo, onebot.PartRecord, onebot.PartFile, onebot.PartCard:
+				filelog.Warnf("[qq] 流式消息仅支持文本/markdown，已忽略富媒体/卡片段")
 			}
 		}
 		content := b.String()
@@ -601,6 +647,13 @@ func (s *sender) SendC2C(ctx context.Context, userOpenID string, msg *onebot.Out
 			lastID, lastRef = id, newRef
 		case onebot.PartMarkdown:
 			id, newRef, err := s.sendC2CMarkdown(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, p.Markdown, p.Keyboard)
+			if err != nil {
+				return "", "", err
+			}
+			ref = ""
+			lastID, lastRef = id, newRef
+		case onebot.PartCard:
+			id, newRef, err := s.sendC2CCard(ctx, userOpenID, msg.MsgID, msg.EventID, ref, msg.IsWakeup, p.Card)
 			if err != nil {
 				return "", "", err
 			}

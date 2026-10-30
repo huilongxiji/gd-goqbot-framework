@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 	"goqbot/internal/botgo/dto"
@@ -1315,6 +1316,8 @@ func partSummary(out *OutMessage) string {
 			parts = append(parts, "image")
 		case PartMarkdown:
 			parts = append(parts, "markdown")
+		case PartCard:
+			parts = append(parts, fmt.Sprintf("card(%q)", clip(p.Card.Content.Title, 30)))
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -1688,6 +1691,17 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				flushText()
 				out.Parts = append(out.Parts, MessagePart{Kind: PartMarkdown, Markdown: md, Keyboard: kb})
 			}
+		case "share", "card":
+			// 图文卡片 msg_type=8：兼容 OneBot v11 share 段 {url,title,content,image}
+			// 与官方同名字段 {title,description,url,pic_url}
+			card, reason := parseCardSeg(data)
+			if card == nil {
+				filelog.Warnf("[onebot] %s 段无法转为图文卡片，已忽略: %s", typ, reason)
+				out.Notes = append(out.Notes, SendNote{Title: typ, Content: reason, Fail: true})
+				return
+			}
+			flushText()
+			out.Parts = append(out.Parts, MessagePart{Kind: PartCard, Card: card})
 		case "stream":
 			// 流式消息（仅 C2C，走独立接口 stream_messages）：
 			//   state 1 生成中 / 10 结束（旧值 11/20 自动按 1/10 兼容）；
@@ -1828,6 +1842,44 @@ func parseMarkdownSeg(data gjson.Result) (*dto.Markdown, *keyboard.MessageKeyboa
 		})
 	}
 	return tmp.Markdown, kb
+}
+
+// parseCardSeg 解析 share/card 段为图文卡片（type=tuwen）。
+// description 缺省取 content，pic_url 缺省取 image，再缺省用 title 兜底描述。
+// 不合规（长度越界、非 https）时返回 nil 与原因，不做截断，避免静默改写内容。
+func parseCardSeg(data gjson.Result) (*dto.MessageCard, string) {
+	pick := func(keys ...string) string {
+		for _, k := range keys {
+			if v := strings.TrimSpace(data.Get(k).String()); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	c := &dto.CardContent{
+		Title:       pick("title"),
+		Description: pick("description", "content", "desc"),
+		URL:         pick("url"),
+		PicURL:      pick("pic_url", "image"),
+	}
+	if c.Description == "" {
+		c.Description = c.Title
+	}
+	if n := utf8.RuneCountInString(c.Title); n < 1 || n > 50 {
+		return nil, fmt.Sprintf("title 长度须为 1-50 字符（当前 %d）", n)
+	}
+	if n := utf8.RuneCountInString(c.Description); n > 200 {
+		return nil, fmt.Sprintf("description 长度须为 1-200 字符（当前 %d）", n)
+	}
+	for _, f := range []struct{ name, val string }{{"url", c.URL}, {"pic_url", c.PicURL}} {
+		if !strings.HasPrefix(f.val, "https://") {
+			return nil, fmt.Sprintf("%s 必须为 https 链接（当前 %q）", f.name, clip(f.val, 40))
+		}
+		if n := utf8.RuneCountInString(f.val); n > 1024 {
+			return nil, fmt.Sprintf("%s 长度须 ≤1024 字符（当前 %d）", f.name, n)
+		}
+	}
+	return &dto.MessageCard{Type: dto.CardTypeTuwen, Content: c}, ""
 }
 
 // 废弃字段告警只提示一次，避免刷屏

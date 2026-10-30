@@ -1,8 +1,8 @@
-"""板块二：消息段 —— text / at / reply / CQ 字符串 / 多段顺序 / 空消息。"""
+"""板块二：消息段 —— text / at / reply / CQ 字符串 / 多段顺序 / 图文卡片 / 空消息。"""
 
 from nonebot.adapters.onebot.v11 import MessageSegment
 
-from ..common import Ctx, Section, b64, make_png
+from ..common import Ctx, Section, b64, cfg, make_png
 
 sec = Section("消息测试", "消息段", "文本、@、引用回复、CQ 码字符串入参、多段拆分顺序与异常入参")
 
@@ -79,6 +79,45 @@ async def _(ctx: Ctx):
         + MessageSegment.text("⑤ 末尾文本")
     )
     await ctx.send(msg)
+
+
+CARD_URL = "https://github.com/huilongxiji/gd-goqbot-docs"
+
+
+@sec.case("卡片", "图文卡片 msg_type=8：OneBot v11 share 段（url/title/content/image）")
+async def _(ctx: Ctx):
+    await ctx.send(
+        MessageSegment.share(
+            url=CARD_URL,
+            title="goqbot 图文卡片",
+            content="由 share 段转换为官方 tuwen 卡片，点击跳转文档",
+            image=cfg.goqbot_test_image_url,
+        )
+    )
+
+
+@sec.case("卡片别名", "card 段（官方字段名 title/description/url/pic_url），引用当前消息同发")
+async def _(ctx: Ctx):
+    card = MessageSegment(
+        "card",
+        {
+            "title": "card 段测试",
+            "description": "使用官方同名字段构造的图文卡片",
+            "url": CARD_URL,
+            "pic_url": cfg.goqbot_test_image_url,
+        },
+    )
+    await ctx.send(MessageSegment.reply(ctx.event.message_id) + MessageSegment.text("卡片前的文本") + card)
+
+
+@sec.case("卡片失效", "http 链接的卡片，期望被丢弃并返回 1400 空消息")
+async def _(ctx: Ctx):
+    params = {"group_id": ctx.group_id} if ctx.is_group else {"user_id": ctx.user_id}
+    action = "send_group_msg" if ctx.is_group else "send_private_msg"
+    seg = {"type": "share", "data": {"url": "http://example.com", "title": "t", "image": cfg.goqbot_test_image_url}}
+    r = await ctx.call(action, message=[seg], **params)
+    ok = not r.ok and r.retcode == 1400
+    await ctx.send(("✅ 符合预期\n" if ok else "❌ 不符合预期\n") + r.brief())
 
 
 @sec.case("send_msg", "send_msg 不带 message_type，按 group_id 有无自动分派")

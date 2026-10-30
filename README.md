@@ -79,40 +79,40 @@
 
 下游通过 OneBot V11 动作请求调用（`action` 自动去除 `_async` 后缀，回填 `echo`）。
 
-| action | 主要参数 | 说明 |
-|---|---|---|
-| `get_login_info` | - | 返回 `user_id`(self_id) 与机器人 `nickname`（READY 后为真实昵称，未就绪回退 app_id） |
-| `get_status` | - | `{ online: true, good: true }` |
-| `get_version_info` | - | 程序名 / 版本 / 协议版本 |
-| `send_group_msg` | `group_id`, `message`, (`user_id`) | 发群消息（被动优先） |
-| `send_private_msg` | `user_id`, `message`, (`is_wakeup`) | 发单聊消息（被动优先）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id`、`remain_msg_len` |
-| `send_msg` | `message_type` / 自动判定 + 对应 id + `message` | 按类型分派到群 / 私聊 |
-| `send_group_active_msg` | `group_id`, `message` | **强制主动**发群（忽略 reply / lazy 凭证） |
-| `send_private_active_msg` | `user_id`, `message` | **强制主动**发单聊 |
-| `delete_msg` | `message_id` | 撤回（按 message_id 反查 QQ 原始 msg_id） |
-| `get_msg` | `message_id` | 取回消息快照（入站 + 发出，仅内存） |
-| `get_forward_msg` | `id` / `message_id` | 取回合并转发的节点数组（入站解析后缓存，FIFO 有界） |
-| `get_openid` | `user_id` / `group_id` | 把数字 id 反查回 QQ 原始 openid |
-| `put_interaction` / `send_interaction_ack` | `interaction_id`, `code`(默认 0) | 互动按钮回执 |
-| `get_gateway`（别名 `get_gateway_bot` / `get_session_limit`） | - | 查询 WS 接入点与剩余可建连次数等频控信息 |
-| `get_group_info` | `group_id` | 获取群基本信息（官方白名单，非白名单返回 11253） |
-| `get_group_bot_state` | `group_id` | 获取机器人群内状态（白名单） |
-| `get_group_member_list` | `group_id`, (`cursor`) | 获取群成员列表（白名单；每次最多 30 条，`next_cursor` 分页） |
-| `get_group_member_info` | `group_id`, `user_id` | `user_id=self_id` 走 bot_state；查他人走官方成员接口（须能反查 openid） |
-| `get_group_join_requests`（别名 `get_group_system_msg`） | `group_id`, (`cursor`/`limit`) | 拉取入群申请列表（需群管理员） |
-| `set_group_add_request` | `flag`, `approve`, (`reason`/`blacklist`) | 审批入群申请；`flag`=官方 `join_request_id`（需群管理员） |
-| `set_group_ban` | `group_id`, `user_id`, `duration` | 成员禁言（秒；0=解除；需群管理员） |
-| `get_group_ban`（别名 `get_group_mute`） | `group_id` | 查询群禁言状态（需群管理员） |
-| `set_group_whole_ban` | - | **不支持**（官方设置接口仅成员级，返回 1404） |
-| `get_c2c_msg_state`（别名 `get_friend_msg_state`） | `user_id` / `user_openid` | 查询用户 C2C 主动消息推送开关（**非官方接口**，基于本地事件缓存） |
-| `get_menu` / `set_menu` | `menu.items` | 查询 / 整体覆盖全局自定义菜单（仅单聊底部；`set_menu` 约 5 QPM） |
-| `get_command_panels` / `get_command_panel` | `scope` / `panel_id` | 查询指令面板列表 / 详情 |
-| `create_command_panel` / `set_command_panel` / `delete_command_panel` | `scope`,`panel` / `panel_id` | 创建 / 覆盖 / 删除指令面板 |
-| `set_command_panel_target` | `panel_id`,`op`,`user_openids`/`group_openids` | 修改 specific 面板的关联对象 |
-| `upload_media_image` | `file`, (`name`/`force`) | 上传素材图片，返回 `image_id` 与 `qqbot-media://` 引用链接 `url`；同内容且未过期的素材直接复用（`cached=true`） |
-| `get_media_image` | `image_id` / `sha1` / `file_name` | 查询素材是否已上传且仍有效，返回 `found` 与匹配的 `images` |
-| `get_media_images` | (`cursor`) | 查询有效素材图片列表（按创建时间倒序，`next_cursor` 分页） |
-| `delete_media_image` | `image_id` | 删除素材图片并释放额度（已发出的消息不受影响） |
+| action                                                                | 主要参数                                        | 说明                                                                                                                      |
+|-----------------------------------------------------------------------|-------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `get_login_info`                                                      | -                                               | 返回 `user_id`(self_id) 与机器人 `nickname`（READY 后为真实昵称，未就绪回退 app_id）                                      |
+| `get_status`                                                          | -                                               | `{ online: true, good: true }`                                                                                            |
+| `get_version_info`                                                    | -                                               | 程序名 / 版本 / 协议版本                                                                                                  |
+| `send_group_msg`                                                      | `group_id`, `message`, (`user_id`)              | 发群消息（被动优先）                                                                                                      |
+| `send_private_msg`                                                    | `user_id`, `message`, (`is_wakeup`)             | 发单聊消息（被动优先）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id`、`remain_msg_len` |
+| `send_msg`                                                            | `message_type` / 自动判定 + 对应 id + `message` | 按类型分派到群 / 私聊                                                                                                     |
+| `send_group_active_msg`                                               | `group_id`, `message`                           | **强制主动**发群（忽略 reply / lazy 凭证）                                                                                |
+| `send_private_active_msg`                                             | `user_id`, `message`                            | **强制主动**发单聊                                                                                                        |
+| `delete_msg`                                                          | `message_id`                                    | 撤回（按 message_id 反查 QQ 原始 msg_id）                                                                                 |
+| `get_msg`                                                             | `message_id`                                    | 取回消息快照（入站 + 发出，仅内存）                                                                                       |
+| `get_forward_msg`                                                     | `id` / `message_id`                             | 取回合并转发的节点数组（入站解析后缓存，FIFO 有界）                                                                       |
+| `get_openid`                                                          | `user_id` / `group_id`                          | 把数字 id 反查回 QQ 原始 openid                                                                                           |
+| `put_interaction` / `send_interaction_ack`                            | `interaction_id`, `code`(默认 0)                | 互动按钮回执                                                                                                              |
+| `get_gateway`（别名 `get_gateway_bot` / `get_session_limit`）         | -                                               | 查询 WS 接入点与剩余可建连次数等频控信息                                                                                  |
+| `get_group_info`                                                      | `group_id`                                      | 获取群基本信息（官方白名单，非白名单返回 11253）                                                                          |
+| `get_group_bot_state`                                                 | `group_id`                                      | 获取机器人群内状态（白名单）                                                                                              |
+| `get_group_member_list`                                               | `group_id`, (`cursor`)                          | 获取群成员列表（白名单；每次最多 30 条，`next_cursor` 分页）                                                              |
+| `get_group_member_info`                                               | `group_id`, `user_id`                           | `user_id=self_id` 走 bot_state；查他人走官方成员接口（须能反查 openid）                                                   |
+| `get_group_join_requests`（别名 `get_group_system_msg`）              | `group_id`, (`cursor`/`limit`)                  | 拉取入群申请列表（需群管理员）                                                                                            |
+| `set_group_add_request`                                               | `flag`, `approve`, (`reason`/`blacklist`)       | 审批入群申请；`flag`=官方 `join_request_id`（需群管理员）                                                                 |
+| `set_group_ban`                                                       | `group_id`, `user_id`, `duration`               | 成员禁言（秒；0=解除；需群管理员）                                                                                        |
+| `get_group_ban`（别名 `get_group_mute`）                              | `group_id`                                      | 查询群禁言状态（需群管理员）                                                                                              |
+| `set_group_whole_ban`                                                 | -                                               | **不支持**（官方设置接口仅成员级，返回 1404）                                                                             |
+| `get_c2c_msg_state`（别名 `get_friend_msg_state`）                    | `user_id` / `user_openid`                       | 查询用户 C2C 主动消息推送开关（**非官方接口**，基于本地事件缓存）                                                         |
+| `get_menu` / `set_menu`                                               | `menu.items`                                    | 查询 / 整体覆盖全局自定义菜单（仅单聊底部；`set_menu` 约 5 QPM）                                                          |
+| `get_command_panels` / `get_command_panel`                            | `scope` / `panel_id`                            | 查询指令面板列表 / 详情                                                                                                   |
+| `create_command_panel` / `set_command_panel` / `delete_command_panel` | `scope`,`panel` / `panel_id`                    | 创建 / 覆盖 / 删除指令面板                                                                                                |
+| `set_command_panel_target`                                            | `panel_id`,`op`,`user_openids`/`group_openids`  | 修改 specific 面板的关联对象                                                                                              |
+| `upload_media_image`                                                  | `file`, (`name`/`force`)                        | 上传素材图片，返回 `image_id` 与 `qqbot-media://` 引用链接 `url`；同内容且未过期的素材直接复用（`cached=true`）           |
+| `get_media_image`                                                     | `image_id` / `sha1` / `file_name`               | 查询素材是否已上传且仍有效，返回 `found` 与匹配的 `images`                                                                |
+| `get_media_images`                                                    | (`cursor`)                                      | 查询有效素材图片列表（按创建时间倒序，`next_cursor` 分页）                                                                |
+| `delete_media_image`                                                  | `image_id`                                      | 删除素材图片并释放额度（已发出的消息不受影响）                                                                            |
 
 > 未识别的 action 返回 `status=failed`、`retcode=1404`（`message: unsupported action: xxx`），符合 OneBot v11 规范；已实现的动作按 QQ 实际调用结果透传成功/失败码。
 >
@@ -130,17 +130,17 @@
 
 ### 消息段支持（`parseMessage`）
 
-| 段类型 | 收（QQ → OneBot） | 发（OneBot → QQ） |
-|---|---|---|
-| `text` | ✅ | ✅ |
-| `at` | ✅（识别 `<qqbot-at-user id="" />`、`<qqbot-at-everyone />` 与旧 `<@openid>`；`mentions.is_you` → at self） | ✅（转官方 `<qqbot-at-user id="openid" />`；at self / all 跳过） |
-| `image` | ✅（go-cqhttp 风格 `file=<md5>.image`） | ✅（base64 / url / 本地文件；大图分片） |
-| `video` | ✅ | ✅（简单上传 / 大文件分片） |
-| `record` / `voice` / `audio`（语音） | ✅ | ✅（简单上传 / 大文件分片） |
-| `file` | ✅（带 `name` / `file_size`） | ✅（可带 `name`；大文件分片） |
-| `markdown` + `keyboard` | —— | ✅（原生 markdown + 按钮 keyboard，支持 `anchor` 唤起相册；可与 `reply` 同发引用；模板与 `click_limit` 官方已废弃：模板仍可发，`click_limit` 不再下发，均只告警一次） |
-| `stream` | —— | ✅（**仅 C2C**，流式分帧；见下方说明） |
-| `reply` | —— | ✅（取被引用消息作被动凭证 + REFIDX 引用索引） |
+| 段类型                               | 收（QQ → OneBot）                                                                                           | 发（OneBot → QQ）                                                                                                                                                     |
+|--------------------------------------|-------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `text`                               | ✅                                                                                                          | ✅                                                                                                                                                                    |
+| `at`                                 | ✅（识别 `<qqbot-at-user id="" />`、`<qqbot-at-everyone />` 与旧 `<@openid>`；`mentions.is_you` → at self） | ✅（转官方 `<qqbot-at-user id="openid" />`；at self / all 跳过）                                                                                                      |
+| `image`                              | ✅（go-cqhttp 风格 `file=<md5>.image`）                                                                     | ✅（base64 / url / 本地文件；大图分片）                                                                                                                               |
+| `video`                              | ✅                                                                                                          | ✅（简单上传 / 大文件分片）                                                                                                                                           |
+| `record` / `voice` / `audio`（语音） | ✅                                                                                                          | ✅（简单上传 / 大文件分片）                                                                                                                                           |
+| `file`                               | ✅（带 `name` / `file_size`）                                                                               | ✅（可带 `name`；大文件分片）                                                                                                                                         |
+| `markdown` + `keyboard`              | ——                                                                                                          | ✅（原生 markdown + 按钮 keyboard，支持 `anchor` 唤起相册；可与 `reply` 同发引用；模板与 `click_limit` 官方已废弃：模板仍可发，`click_limit` 不再下发，均只告警一次） |
+| `stream`                             | ——                                                                                                          | ✅（**仅 C2C**，流式分帧；见下方说明）                                                                                                                                |
+| `reply`                              | ——                                                                                                          | ✅（取被引用消息作被动凭证 + REFIDX 引用索引）                                                                                                                        |
 
 - 入参支持 **array 段数组** 与 **CQ 字符串** 两种格式。
 - 输出为有序 `OutMessage.Parts`，**每个非文本段单独成一条 QQ 消息按序发出**（连续文本 / at 合并）。
@@ -149,13 +149,13 @@
 
 > **流式消息（`stream` 段，仅 C2C）**：走官方独立接口 `POST /v2/users/{openid}/stream_messages`，正文取同条消息里的 `text` 段（或 `markdown` 段）。
 >
-> | 字段 | 说明 |
-> |---|---|
-> | `state` | `1` 生成中 / `10` 结束（旧值 `11` / `20` 自动按 `1` / `10` 处理） |
-> | `id` | 首帧不填；续帧回填首帧返回的 `stream_id`（缺失时框架直接拒绝） |
-> | `index` | 从 `0` 开始逐帧递增 |
-> | `input_mode` | `append`（默认，文本为增量）/ `replace`（文本为当前全量，须以已发送内容为前缀；旧字段 `reset=true` 等同 `replace`） |
-> | `content_type` | `text`（默认）/ `markdown`；未指定且带 `markdown` 段时自动按 markdown 发送 |
+> | 字段           | 说明                                                                                                                |
+> |----------------|---------------------------------------------------------------------------------------------------------------------|
+> | `state`        | `1` 生成中 / `10` 结束（旧值 `11` / `20` 自动按 `1` / `10` 处理）                                                   |
+> | `id`           | 首帧不填；续帧回填首帧返回的 `stream_id`（缺失时框架直接拒绝）                                                      |
+> | `index`        | 从 `0` 开始逐帧递增                                                                                                 |
+> | `input_mode`   | `append`（默认，文本为增量）/ `replace`（文本为当前全量，须以已发送内容为前缀；旧字段 `reset=true` 等同 `replace`） |
+> | `content_type` | `text`（默认）/ `markdown`；未指定且带 `markdown` 段时自动按 markdown 发送                                          |
 >
 > 发送成功后额外返回 `stream_id` 与 `remain_msg_len`（剩余可写字符数）。同一条流的各帧自动沿用首帧的 `msg_seq`。流式只发文字，图片等富媒体段会被忽略并告警；群聊不支持流式，会忽略 `stream` 按普通消息发送。
 
@@ -163,24 +163,24 @@
 
 ## 入站事件支持矩阵
 
-| QQ 事件 | 中文名称 | OneBot 上报 | handler 名 |
-|---|---|---|---|
-| GROUP_AT_MESSAGE_CREATE | 群内 @ 机器人消息 | `message/group` | `GroupATMessageEventHandler` |
-| GROUP_MESSAGE_CREATE | 群内全部消息（需群主开启） | `message/group` | `GroupMessageEventHandler` |
-| C2C_MESSAGE_CREATE | 单聊(C2C)消息 | `message/private` | `C2CMessageEventHandler` |
-| GROUP_ADD_ROBOT | 机器人被加入群 | `notice/group_increase` | `GroupAddRobotEventHandler` |
-| GROUP_DEL_ROBOT | 机器人被移出群 | `notice/group_decrease` | `GroupDelRobotEventHandler` |
-| GROUP_MSG_REJECT | 群关闭主动消息推送 | `notice/group_msg_reject`（自定义） | `GroupMsgRejectEventHandler` |
-| GROUP_MSG_RECEIVE | 群开启主动消息推送 | `notice/group_msg_receive`（自定义） | `GroupMsgReceiveEventHandler` |
-| GROUP_JOIN_REQUEST | 用户申请加群 | `request/group`（`flag`=`join_request_id`） | `GroupJoinRequestEventHandler`（需群管理员） |
-| GROUP_MEMBER_ADD | 群成员加入 | `notice/group_increase` | `GroupMemberEventHandler` |
-| GROUP_MEMBER_REMOVE | 群成员退出 | `notice/group_decrease` | `GroupMemberEventHandler` |
-| FRIEND_ADD | 用户添加机器人好友 | `notice/friend_add` | `C2CFriendEventHandler` |
-| FRIEND_DEL | 用户删除机器人好友 | `notice/friend_decrease`（自定义） | `C2CFriendEventHandler` |
-| C2C_MSG_REJECT | 用户关闭单聊主动消息 | `notice/c2c_msg_reject`（自定义） | `C2CMsgRejectEventHandler` |
-| C2C_MSG_RECEIVE | 用户开启单聊主动消息 | `notice/c2c_msg_receive`（自定义） | `C2CMsgReceiveEventHandler` |
-| INTERACTION_CREATE | 按钮 / 互动回调 | `notice/interaction` + `message` | `InteractionHandler` |
-| 连接成功 | 连接生命周期 / 心跳 | `meta_event/lifecycle`、`heartbeat` | `ReadyHandler` / 内部 |
+| QQ 事件                 | 中文名称                   | OneBot 上报                                 | handler 名                                   |
+|-------------------------|----------------------------|---------------------------------------------|----------------------------------------------|
+| GROUP_AT_MESSAGE_CREATE | 群内 @ 机器人消息          | `message/group`                             | `GroupATMessageEventHandler`                 |
+| GROUP_MESSAGE_CREATE    | 群内全部消息（需群主开启） | `message/group`                             | `GroupMessageEventHandler`                   |
+| C2C_MESSAGE_CREATE      | 单聊(C2C)消息              | `message/private`                           | `C2CMessageEventHandler`                     |
+| GROUP_ADD_ROBOT         | 机器人被加入群             | `notice/group_increase`                     | `GroupAddRobotEventHandler`                  |
+| GROUP_DEL_ROBOT         | 机器人被移出群             | `notice/group_decrease`                     | `GroupDelRobotEventHandler`                  |
+| GROUP_MSG_REJECT        | 群关闭主动消息推送         | `notice/group_msg_reject`（自定义）         | `GroupMsgRejectEventHandler`                 |
+| GROUP_MSG_RECEIVE       | 群开启主动消息推送         | `notice/group_msg_receive`（自定义）        | `GroupMsgReceiveEventHandler`                |
+| GROUP_JOIN_REQUEST      | 用户申请加群               | `request/group`（`flag`=`join_request_id`） | `GroupJoinRequestEventHandler`（需群管理员） |
+| GROUP_MEMBER_ADD        | 群成员加入                 | `notice/group_increase`                     | `GroupMemberEventHandler`                    |
+| GROUP_MEMBER_REMOVE     | 群成员退出                 | `notice/group_decrease`                     | `GroupMemberEventHandler`                    |
+| FRIEND_ADD              | 用户添加机器人好友         | `notice/friend_add`                         | `C2CFriendEventHandler`                      |
+| FRIEND_DEL              | 用户删除机器人好友         | `notice/friend_decrease`（自定义）          | `C2CFriendEventHandler`                      |
+| C2C_MSG_REJECT          | 用户关闭单聊主动消息       | `notice/c2c_msg_reject`（自定义）           | `C2CMsgRejectEventHandler`                   |
+| C2C_MSG_RECEIVE         | 用户开启单聊主动消息       | `notice/c2c_msg_receive`（自定义）          | `C2CMsgReceiveEventHandler`                  |
+| INTERACTION_CREATE      | 按钮 / 互动回调            | `notice/interaction` + `message`            | `InteractionHandler`                         |
+| 连接成功                | 连接生命周期 / 心跳        | `meta_event/lifecycle`、`heartbeat`         | `ReadyHandler` / 内部                        |
 
 > 订阅哪些事件由 `qq.text_intent` 里启用的 handler 动态推导 intent，亦可用 `qq.intents` 硬覆盖。
 
@@ -210,14 +210,14 @@
 
 前往本仓库 [Releases](../../releases) 下载对应平台的可执行文件（每次更新都会同步发布最新版）：
 
-| 平台 | 文件 |
-|---|---|
-| Linux x86_64 | `goqbot-linux-amd64` |
-| Linux ARM64 | `goqbot-linux-arm64` |
-| Windows x64 | `goqbot-windows-amd64.exe` |
-| Windows ARM64 | `goqbot-windows-arm64.exe` |
-| macOS Intel | `goqbot-darwin-amd64` |
-| macOS Apple Silicon | `goqbot-darwin-arm64` |
+| 平台                | 文件                       |
+|---------------------|----------------------------|
+| Linux x86_64        | `goqbot-linux-amd64`       |
+| Linux ARM64         | `goqbot-linux-arm64`       |
+| Windows x64         | `goqbot-windows-amd64.exe` |
+| Windows ARM64       | `goqbot-windows-arm64.exe` |
+| macOS Intel         | `goqbot-darwin-amd64`      |
+| macOS Apple Silicon | `goqbot-darwin-arm64`      |
 
 > Linux / macOS 下载后需赋予执行权限：`chmod +x goqbot-*`。
 
@@ -337,7 +337,7 @@ flowchart LR
 
 - [tencent-connect/botgo](https://github.com/tencent-connect/botgo) —— QQ 官方机器人 Go SDK（本项目内化使用）
 - [Mrs4s/go-cqhttp](https://github.com/Mrs4s/go-cqhttp) —— OneBot 实现思路参考
-- [Hoshinonyaruko/Gensokyo](https://github.com/Hoshinonyaruko/Gensokyo) —— QQ 官方机器人 ↔ OneBot 适配的对标项目
+- [Hoshinonyaruko/Gensokyo](https://github.com/Hoshinonyaruko/Gensokyo) —— QQ 官方机器人 ↔ OneBot 适配的项目
 - [nonebot/nonebot2](https://github.com/nonebot/nonebot2) —— 下游机器人框架
 
 ---
