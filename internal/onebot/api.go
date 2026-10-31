@@ -27,6 +27,10 @@ import (
 // msgCacheLimit get_msg 内存缓存的最大条数，超出按 FIFO 淘汰最早的
 const msgCacheLimit = 10000
 
+// RetNoPassive 发送时带 passive_only=true 但当前没有可用的被动凭证（reply 命中的入站 msg_id / lazy 窗口内凭证）。
+// 此时不降级为主动消息，直接返回该码，交由下游自行决定是否改走 send_*_active_msg。
+const RetNoPassive = 1460
+
 // fwdCacheLimit get_forward_msg 内存缓存的最大条数，超出按 FIFO 淘汰最早的
 const fwdCacheLimit = 1000
 
@@ -1405,6 +1409,7 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		return failed(1400, "未知 group_id（尚未收到该群消息）")
 	}
 	out := c.parseMessage(params.Get("message"))
+	passiveOnly := !active && params.Get("passive_only").Bool()
 	if active {
 		out.MsgID = "" // 强制主动：忽略 reply、不套 lazy
 	} else if out.MsgID == "" {
@@ -1419,6 +1424,10 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 				out.MsgID = id
 			}
 		}
+	}
+	if passiveOnly && out.MsgID == "" && out.EventID == "" {
+		c.logSend(action, "群", groupID, out, params, "", 0, start, fmt.Errorf("passive_only：无可用被动凭证，未降级主动"))
+		return failed(RetNoPassive, "无可用被动凭证（passive_only=true，未降级为主动消息）")
 	}
 	if !out.HasContent() {
 		c.logSend(action, "群", groupID, out, params, "", 0, start, fmt.Errorf("空消息"))
@@ -1487,6 +1496,11 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		return failed(1400, "未知 user_id（尚未收到该用户消息）")
 	}
 	out := c.parseMessage(params.Get("message"))
+	passiveOnly := !active && params.Get("passive_only").Bool()
+	if wakeup && passiveOnly {
+		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("is_wakeup 与 passive_only 互斥"))
+		return failed(1400, "is_wakeup 与 passive_only 互斥")
+	}
 	// is_wakeup：单聊互动召回消息，与 msg_id/event_id 互斥，故强制走主动语义（不套被动凭证）
 	if wakeup {
 		out.IsWakeup = true
@@ -1502,6 +1516,10 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 				out.MsgID = id
 			}
 		}
+	}
+	if passiveOnly && out.MsgID == "" && out.EventID == "" {
+		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("passive_only：无可用被动凭证，未降级主动"))
+		return failed(RetNoPassive, "无可用被动凭证（passive_only=true，未降级为主动消息）")
 	}
 	if !out.HasContent() {
 		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("空消息"))

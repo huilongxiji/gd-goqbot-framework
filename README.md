@@ -84,8 +84,8 @@
 | `get_login_info`                                                      | -                                               | 返回 `user_id`(self_id) 与机器人 `nickname`（READY 后为真实昵称，未就绪回退 app_id）                                      |
 | `get_status`                                                          | -                                               | `{ online: true, good: true }`                                                                                            |
 | `get_version_info`                                                    | -                                               | 程序名 / 版本 / 协议版本                                                                                                  |
-| `send_group_msg`                                                      | `group_id`, `message`, (`user_id`)              | 发群消息（被动优先）                                                                                                      |
-| `send_private_msg`                                                    | `user_id`, `message`, (`is_wakeup`)             | 发单聊消息（被动优先）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id`、`remain_msg_len` |
+| `send_group_msg`                                                      | `group_id`, `message`, (`user_id`, `passive_only`) | 发群消息（被动优先）；`passive_only=true` 时无被动凭证直接返回 `retcode=1460`，不降级主动                             |
+| `send_private_msg`                                                    | `user_id`, `message`, (`is_wakeup`, `passive_only`) | 发单聊消息（被动优先，`passive_only` 同上）；`is_wakeup=true` 走互动召回；带 `stream` 段则**流式发送**并额外返回 `stream_id`、`remain_msg_len` |
 | `send_msg`                                                            | `message_type` / 自动判定 + 对应 id + `message` | 按类型分派到群 / 私聊                                                                                                     |
 | `send_group_active_msg`                                               | `group_id`, `message`                           | **强制主动**发群（忽略 reply / lazy 凭证）                                                                                |
 | `send_private_active_msg`                                             | `user_id`, `message`                            | **强制主动**发单聊                                                                                                        |
@@ -115,6 +115,8 @@
 | `delete_media_image`                                                  | `image_id`                                      | 删除素材图片并释放额度（已发出的消息不受影响）                                                                            |
 
 > 未识别的 action 返回 `status=failed`、`retcode=1404`（`message: unsupported action: xxx`），符合 OneBot v11 规范；已实现的动作按 QQ 实际调用结果透传成功/失败码。
+>
+> **仅被动（`passive_only=true`）**：`send_group_msg` / `send_private_msg` / `send_msg` 可选参数。默认在找不到被动凭证（reply 命中的入站消息或 lazy 窗口内凭证）时会自动降级为主动消息；带上 `passive_only=true` 则改为返回 `status=failed`、`retcode=1460`，由下游自行决定是否改调 `send_*_active_msg`。适合多个下游共用一个机器人、需要精确控制主动消息额度的场景（如 MaiBot 适配插件）。与 `is_wakeup` 互斥。
 >
 > **互动召回（`is_wakeup=true`）**：用户主动对话后 30 天内分 4 个周期（当天 / 1-3 天 / 3-7 天 / 7-30 天）每周期可下发 1 条，仅 C2C，与 reply / 被动 `event_id` 互斥。
 >
