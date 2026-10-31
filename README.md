@@ -1,7 +1,7 @@
 # goqbot
 
 <p align="center">
-  一个由 Go 编写的 <b>QQ 官方机器人 ↔ OneBot V11</b> 适配器，让 QQ 官方机器人（群 / 单聊）无缝接入 NoneBot 等 OneBot V11 生态。
+  一个由 Go 编写的 <b>QQ 官方机器人 OneBot V11 协议端</b>：一个协议端，同时接入 NoneBot2、AstrBot、MaiBot 等多个框架。
 </p>
 
 <p align="center">
@@ -19,7 +19,8 @@
 `goqbot` 把 **QQ 官方机器人**（基于内化的 [botgo](https://github.com/tencent-connect/botgo)）的上游事件转换为 **OneBot V11** 事件，通过正向 / 反向 WebSocket 对接下游框架；并把下游下发的 OneBot 动作翻译为 QQ 官方接口调用。思路参考 [go-cqhttp](https://github.com/Mrs4s/go-cqhttp) 与 [Gensokyo](https://github.com/Hoshinonyaruko/Gensokyo)，目标是 QQ 群 / 单聊维度的双向打通。
 
 - **自包含单文件**：botgo 已内化进 `internal/botgo`，`go.mod` 无 `replace`、无外部 botgo 依赖；Go 静态编译为**单个二进制**，运行只需 `goqbot` + `config.yml`。
-- **双连接形态**：既可作正向 WS 服务端等 NoneBot 连入，也可作反向 WS 客户端主动连 NoneBot 的 OneBot V11 适配器。
+- **双连接形态**：既可作正向 WS 服务端等下游框架连入，也可作反向 WS 客户端主动连下游的 OneBot V11 服务端。
+- **一个协议端，多个应用端**：`onebot.servers` 可同时配置多条连接，事件广播给所有下游；NoneBot2、AstrBot、MaiBot（通过 [MaiBot-GoqBot-Adapter](https://github.com/huilongxiji/MaiBot-GoqBot-Adapter) 插件）等框架可共用同一个官方机器人，详见文档 [多框架接入](https://huilongxiji.github.io/gd-goqbot-docs/guide/multi-framework)。
 - **被动 / 主动消息**：自动选择 `msg_id` / `event_id` 被动凭证（免费、窗口内），也支持强制主动推送。
 - **持久化 ID 映射**：openid ↔ 数字 id、message_id 基于 bbolt 持久化，重启后仍可撤回 / 反查。
 
@@ -33,8 +34,9 @@
 
 - 本项目**本质上是开发者的个人自用程序**，开源出来**仅供学习与交流用途**。
 - 它会**长期维护**，但完全按照**开发者本人的使用习惯**来设计与取舍功能。
-- **从立项之初就没有打算做成一个面向所有框架的通用适配器**，不追求「彻底多框架通用」。
-- 核心目标是**服务于 NoneBot2（nb2）的消息段（message segment）写法**。若你的用法与此不同，可能需要自行改造，恕不保证适配，也不一定接受相关需求。
+- 定位是**一个协议端对多个应用端**：支持 OneBot V11 正向 / 反向 WebSocket 的框架（NoneBot2、AstrBot 等）都可以和其他框架一起连在同一个 goqbot 上；MaiBot 通过 [MaiBot-GoqBot-Adapter](https://github.com/huilongxiji/MaiBot-GoqBot-Adapter) 插件接入。
+- 标准 OneBot V11 消息段（文本、@、图片、引用等）在各框架中通用；markdown、按钮、流式、图文卡片等 **QQ 官方特有能力以 NoneBot2（nb2）的消息段写法为参考设计**，其他框架需按相同的段格式构造。
+- 不保证适配所有框架的所有用法；与上述设计不同的需求可能需要自行改造，也不一定接受。
 
 ---
 
@@ -43,7 +45,7 @@
 当前版本的连接能力边界如下：
 
 - **上游（连接腾讯 QQ 官方）**：仅支持 **WebSocket**，**暂不支持 Webhook** 回调方式。
-- **下游（连接 NoneBot2）**：仅支持**正向 / 反向 WebSocket**，**不支持正向 / 反向 HTTP**。
+- **下游（连接 OneBot V11 框架）**：仅支持**正向 / 反向 WebSocket**，**不支持正向 / 反向 HTTP**；可同时配置多条，连接多个框架。
 - **接口域名**：OpenAPI 与 AccessToken 均使用官方 2026-08-10 起统一的 `https://api.bot.qq.com`，无需配置。
 
 ---
@@ -60,6 +62,9 @@
 - **富媒体收发（图片 / 视频 / 语音 / 文件）**：群 / 单聊均支持**双向**收发；发送支持 `http(s)://` / `file://` / 本地绝对路径 / `base64://`，无需自建图床；本地数据 ≤5MB 走 `file_data` 直传（失败自动回退分片），**>5MB 自动走分片上传**
 - **单聊流式消息**：C2C 支持 `stream` 段分帧下发，走官方独立接口 `stream_messages`，实现打字机式实时输出；支持增量 / 全量（`append` / `replace`）与纯文本 / markdown 两种正文
 - **单图文合一气泡**：一条消息恰含 1 张图片且无 markdown 时，文本自动并入该图片的富媒体消息，合并为一个气泡（文字在上、图在下），对齐手机 QQ 的图文混排观感
+- **图文卡片**：`share` / `card` 段发送 QQ 图文卡片（msg_type=8），兼容 OneBot V11 share 字段与官方字段
+- **素材管理**：`upload_media_image` 预先上传图片，得到 `qqbot-media://` 引用链接供 markdown 引用；同内容未过期自动复用，另有查询 / 列表 / 删除动作
+- **只发被动（`passive_only`）**：发送动作带 `passive_only=true` 时，没有被动凭证返回 `retcode=1460` 而不降级为主动，便于多个下游共用时精确控制主动消息
 - **Markdown + Keyboard（按钮）**：原生 markdown + 自定义按钮（模板 markdown 官方已废弃，仍可发送）；指令按钮 `action.anchor=1` 可**唤起手机端相册选图器**。群/单聊发送固定带 `force_verify_image_resource=true`：正文图片转存失败则消息不发出，下游收到失败
 - **互动按钮回调**闭环：点击事件上报 + 自动被动 `event_id` 回复 + `put_interaction` 回执
 - **合并转发取回**：入站合并转发（"最近十条" / 全量聊天记录）解析为节点数组并缓存，下游用 `get_forward_msg` 取回
@@ -136,12 +141,13 @@
 |--------------------------------------|-------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `text`                               | ✅                                                                                                          | ✅                                                                                                                                                                    |
 | `at`                                 | ✅（识别 `<qqbot-at-user id="" />`、`<qqbot-at-everyone />` 与旧 `<@openid>`；`mentions.is_you` → at self） | ✅（转官方 `<qqbot-at-user id="openid" />`；at self / all 跳过）                                                                                                      |
-| `image`                              | ✅（go-cqhttp 风格 `file=<md5>.image`）                                                                     | ✅（base64 / url / 本地文件；大图分片）                                                                                                                               |
+| `image`                              | ✅（go-cqhttp 风格 `file=<md5>.image`；带 `url`，有则带 `file_name` / `width` / `height`）              | ✅（base64 / url / 本地文件；大图分片）                                                                                                                               |
 | `video`                              | ✅                                                                                                          | ✅（简单上传 / 大文件分片）                                                                                                                                           |
 | `record` / `voice` / `audio`（语音） | ✅                                                                                                          | ✅（简单上传 / 大文件分片）                                                                                                                                           |
 | `file`                               | ✅（带 `name` / `file_size`）                                                                               | ✅（可带 `name`；大文件分片）                                                                                                                                         |
 | `markdown` + `keyboard`              | ——                                                                                                          | ✅（原生 markdown + 按钮 keyboard，支持 `anchor` 唤起相册；可与 `reply` 同发引用；模板与 `click_limit` 官方已废弃：模板仍可发，`click_limit` 不再下发，均只告警一次） |
 | `stream`                             | ——                                                                                                          | ✅（**仅 C2C**，流式分帧；见下方说明）                                                                                                                                |
+| `share` / `card`（图文卡片）         | ——                                                                                                          | ✅（msg_type=8；`title` 1–50 字、`description`（别名 `content`）≤200 字、`url` 与 `pic_url`（别名 `image`）须为 https；不合规整段丢弃并告警，不截断） |
 | `reply`                              | ——                                                                                                          | ✅（取被引用消息作被动凭证 + REFIDX 引用索引）                                                                                                                        |
 
 - 入参支持 **array 段数组** 与 **CQ 字符串** 两种格式。
@@ -271,7 +277,9 @@ onebot:
 
 ---
 
-## 与 NoneBot 的连接
+## 与下游框架的连接
+
+> 多个框架同时接入的完整配置见文档 [多框架接入](https://huilongxiji.github.io/gd-goqbot-docs/guide/multi-framework)。
 
 - **正向 WS 服务端**：路由 `/event`（仅事件）、`/api`（仅动作）、`/`（universal 合一）；鉴权读 `Authorization: Token xxx` 或 query `access_token`。
 - **反向 WS 客户端**：支持 `universal` 或 `api`+`event` 拓扑，带 `X-Client-Role` / `X-Self-ID` / `Authorization` 头，断线自动重连。
@@ -318,7 +326,7 @@ flowchart LR
   CV --> BUS["EventBus"]
   BUS --> FWD["正向 WS 服务端"]
   BUS --> REV["反向 WS 客户端"]
-  FWD --> NB["NoneBot"]
+  FWD --> NB["NoneBot2 / AstrBot / MaiBot 等下游"]
   REV --> NB
   NB -->|"OneBot 动作"| CALL["onebot Caller"]
   CALL --> SND["qq Sender"]
