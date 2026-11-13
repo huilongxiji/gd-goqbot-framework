@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -24,6 +25,7 @@ import (
 	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
 	"goqbot/internal/onebot"
+	"goqbot/internal/plugins"
 	"goqbot/internal/qq"
 )
 
@@ -31,7 +33,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.11.1"
+	AppVersion = "1.12.0"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -136,6 +138,29 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 插件：扫描插件目录（相对路径=可执行文件同级），每个子目录一个插件，开关写在各自的 plugin.yml
+	pluginDir := cfg.Plugins.Path
+	if !filepath.IsAbs(pluginDir) {
+		pluginDir = filepath.Join(exeDir, pluginDir)
+	}
+	pluginConfigs, skipped, perr := plugins.Discover(pluginDir)
+	if perr != nil {
+		filelog.Errorf("[plugins] %v", perr)
+	}
+	for _, msg := range skipped {
+		filelog.Warnf("[plugins] %s", msg)
+	}
+	for _, pc := range pluginConfigs {
+		if err := pc.Validate(); err != nil {
+			filelog.Errorf("[plugins] %s 配置无效，不会加载: %v", pc.Name, err)
+		}
+	}
+	pluginManager := plugins.New(pluginConfigs, plugins.Options{
+		HostVersion: AppVersion,
+		LogDir:      filepath.Join(logDir, "plugins"),
+	})
+	caller.SetPlugins(pluginManager)
+
 	// 启动 OneBot 下游连接
 	for _, srv := range cfg.OneBot.Servers {
 		if ws := srv.WS; ws != nil && !ws.Disabled {
@@ -160,6 +185,19 @@ func main() {
 	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
 	if err := qqClient.Start(ctx); err != nil {
 		filelog.Fatalf("启动 QQ 客户端失败: %v", err)
+	}
+	// 上游启动成功后才拉起插件，避免 Fatalf 跳过 defer 留下子进程。
+	// 插件在后台握手，单个插件失败不影响 OneBot 与 QQ 连接；状态可用 get_plugin_list 查询。
+	defer pluginManager.Close()
+	if n := pluginManager.EnabledCount(); n > 0 {
+		if strings.TrimSpace(cfg.OneBot.AccessToken) == "" {
+			// 插件可能返回 Cookie 等凭证，不允许在下游免鉴权时启用
+			pluginManager.Refuse(plugins.ErrAuthRequired)
+			filelog.Errorf("[plugins] 已开启 %d 个插件，但未设置 onebot.access_token，插件不会启动", n)
+		} else {
+			pluginManager.Start(ctx)
+			log.Printf("[plugins] 插件目录 %s: 共 %d 个插件，已开启 %d 个，正在后台启动", pluginDir, len(pluginConfigs), n)
+		}
 	}
 
 	log.Printf("%s %s 已启动，等待连接...", AppName, AppVersion)

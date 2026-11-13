@@ -43,7 +43,8 @@ flowchart LR
 5. 🖼️ **富媒体省心**：图片、视频、语音、文件都能收发；发送时直接给 URL、本地路径或 base64，不用自建图床，大文件自动分片上传。
 6. 🧠 **自动选择被动 / 主动消息**：优先使用免费的被动回复额度，过期了再改发主动消息；也可以用 `passive_only` 精确控制主动消息额度。
 7. 💾 **重启不丢 ID**：用户、群、消息的 ID 映射会持久化保存，重启后仍然可以撤回消息、反查用户。
-8. 🪶 **适合长期挂机**：Go 单进程，各类缓存都有上限和自动清理；日志在终端按颜色分级显示，同时按天写入文件。
+8. 🪶 **适合长期挂机**：Go 单进程，各类缓存都有上限和自动清理；网络断开、电脑休眠唤醒后自动重连；日志在终端按颜色分级显示，同时按天写入文件。
+9. 🧩 **插件扩展**：能力插件是独立程序，放进 `plugins/` 目录、打开开关即可使用，不用时关掉开关或移走文件夹，不需要重新编译。
 
 ## 🧩 支持的框架
 
@@ -123,6 +124,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 | 群管理 | ✅ | — | 群信息、成员列表、禁言、入群审批 |
 | 通知事件 | ✅ | ✅ | 入退群、好友增删、主动推送开关、入群申请 |
 | 菜单 / 指令面板 / 素材 | 全局 | 全局 | 自定义菜单、指令面板、素材图片管理 |
+| 插件 | 全局 | 全局 | `get_plugin_list` / `call_plugin` |
 
 <details>
 <summary>全部 OneBot 动作</summary>
@@ -135,6 +137,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 | 群聊管理 | `get_group_info` · `get_group_bot_state` · `get_group_member_list` · `get_group_member_info` · `get_group_join_requests` · `set_group_add_request` · `set_group_ban` · `get_group_ban` |
 | 菜单与面板 | `get_menu` · `set_menu` · `get_command_panels` · `get_command_panel` · `create_command_panel` · `set_command_panel` · `delete_command_panel` · `set_command_panel_target` |
 | 素材管理 | `upload_media_image` · `get_media_image` · `get_media_images` · `delete_media_image` |
+| 插件 | `get_plugin_list` · `call_plugin` |
 
 参数和返回值见 [API 文档](https://huilongxiji.github.io/gd-goqbot-docs/api/overview)；消息段写法见 [消息段](https://huilongxiji.github.io/gd-goqbot-docs/protocol/segments)；能收到哪些事件见 [入站事件](https://huilongxiji.github.io/gd-goqbot-docs/protocol/events)。
 

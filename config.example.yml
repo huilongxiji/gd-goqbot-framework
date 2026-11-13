@@ -51,10 +51,12 @@ onebot:
     # 正向 WS：NoneBot 作为客户端连入
     - ws:
         address: 0.0.0.0:6700
+        # allow-sensitive-plugins: true  # 可选：允许经此连入的下游调用插件的敏感能力（如获取 Cookie），默认关闭
     # 反向 WS：适配器主动连 NoneBot 官方 OneBot V11 适配器
     - ws-reverse:
         universal: ws://127.0.0.1:8080/onebot/v11/ws
         reconnect-interval: 3000
+        # allow-sensitive-plugins: true  # 可选：允许该下游调用插件的敏感能力，默认关闭
 
 idmap:
   # disabled: true     # 设为 true 则纯内存、不持久化（重启后 message_id/反查丢失）
@@ -63,6 +65,12 @@ idmap:
 log:
   enabled: true        # false=仅终端输出，不写本地日志文件
   path: "logs"           # 日志目录；相对路径=可执行文件同级；按天生成 goqbot-YYYY-MM-DD.log
+
+# 可选：插件。插件是独立程序，不打包在 goqbot 里：每个插件放在插件目录下的一个子目录中，
+# 在该子目录的 plugin.yml 里把 enabled 改为 true 即可加载；不用时改回 false 或把整个文件夹移出插件目录。
+# 增删插件、切换开关后重启 goqbot 生效。开启任何插件都必须设置 onebot.access_token。
+# plugins:
+#   path: "plugins"    # 插件目录，默认 plugins；相对路径=可执行文件同级；不存在会自动创建
 
 # ─── QQ Bot API v2 能力/频控说明（无需配置，仅备忘）───
 # 主动推送：

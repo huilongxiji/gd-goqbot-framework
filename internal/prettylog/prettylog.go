@@ -188,6 +188,7 @@ func (b *Block) Emit() {
 	}
 }
 
+// renderWidth 按可用宽度（终端列数减去行前缀）渲染整个日志块，标题过长时截断
 func (b *Block) renderWidth(termCols, prefixCols int) string {
 	avail := termCols - prefixCols
 	if avail < minWidth {
@@ -381,6 +382,7 @@ func wrapEven(s string, maxCol int) []string {
 	return lines
 }
 
+// splitTokens 把一行文本切成折行用的片段：在空格之后、箭头和逗号之前断开，ANSI 颜色码保持完整
 func splitTokens(s string) []string {
 	rs := []rune(s)
 	var toks []string
@@ -419,6 +421,7 @@ func splitTokens(s string) []string {
 	return toks
 }
 
+// hardWrap 按显示宽度强制折行（中文等宽字符算 2 列），用于单个片段本身就超宽的情况
 func hardWrap(s string, maxCol int) []string {
 	if maxCol < 1 {
 		maxCol = 1

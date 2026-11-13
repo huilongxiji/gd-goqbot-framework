@@ -125,7 +125,7 @@ func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool
 	header := http.Header{
 		"X-Client-Role": []string{typ},
 		"X-Self-ID":     []string{strconv.FormatInt(c.selfID, 10)},
-		"User-Agent":    []string{"goqbot/0.1.0"},
+		"User-Agent":    []string{c.caller.appName + "/" + c.caller.appVersion},
 	}
 	if c.obCfg.AccessToken != "" {
 		header["Authorization"] = []string{"Token " + c.obCfg.AccessToken}
@@ -142,7 +142,7 @@ func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool
 	}
 	log.Printf("[onebot] 反向 WS 连接成功 %s -> %s", typ, addr)
 
-	wrapped := newWSConn(conn, c.caller, c.cacheFailure)
+	wrapped := newWSConn(conn, c.caller, c.cacheFailure, requestScope{allowSensitivePlugins: c.cfg.AllowSensitivePlugins})
 	if conptr != nil {
 		c.mu.Lock()
 		if *conptr != nil {

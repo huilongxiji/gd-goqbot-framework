@@ -27,19 +27,27 @@ var errConnClosed = errors.New("ws connection closed")
 // wsConn 包装一个 websocket 连接，所有写入经由专用 writer goroutine 串行化
 type wsConn struct {
 	conn       *websocket.Conn
-	caller     *Caller       // 处理收到的动作请求
-	writeCh    chan []byte   // 待写消息队列
-	closeCh    chan struct{} // 关闭信号
-	closeOnce  sync.Once     // 保证只关闭一次
-	onWriteErr func([]byte)  // 写失败时回调（用于反向客户端缓存待重发消息）
+	caller     *Caller            // 处理收到的动作请求
+	scope      requestScope       // 本连接发起的动作请求所拥有的权限
+	writeCh    chan outboundFrame // 待写消息队列
+	closeCh    chan struct{}      // 关闭信号
+	closeOnce  sync.Once          // 保证只关闭一次
+	onWriteErr func([]byte)       // 写失败时回调（用于反向客户端缓存待重发消息）
+}
+
+// outboundFrame 待写出的一帧
+type outboundFrame struct {
+	payload []byte
+	replay  bool // 写失败时能否进入重连重发缓存；插件响应可能含凭证，不能跨连接重发
 }
 
 // newWSConn 创建连接包装并启动写 goroutine
-func newWSConn(conn *websocket.Conn, caller *Caller, onWriteErr func([]byte)) *wsConn {
+func newWSConn(conn *websocket.Conn, caller *Caller, onWriteErr func([]byte), scope requestScope) *wsConn {
 	c := &wsConn{
 		conn:       conn,
 		caller:     caller,
-		writeCh:    make(chan []byte, 256),
+		scope:      scope,
+		writeCh:    make(chan outboundFrame, 256),
 		closeCh:    make(chan struct{}),
 		onWriteErr: onWriteErr,
 	}
@@ -51,11 +59,11 @@ func newWSConn(conn *websocket.Conn, caller *Caller, onWriteErr func([]byte)) *w
 func (c *wsConn) startWriter() {
 	for {
 		select {
-		case b := <-c.writeCh:
+		case frame := <-c.writeCh:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
-			if err := c.conn.WriteMessage(websocket.TextMessage, b); err != nil {
-				if c.onWriteErr != nil {
-					c.onWriteErr(b)
+			if err := c.conn.WriteMessage(websocket.TextMessage, frame.payload); err != nil {
+				if frame.replay && c.onWriteErr != nil {
+					c.onWriteErr(frame.payload)
 				}
 				_ = c.close()
 				return
@@ -68,6 +76,11 @@ func (c *wsConn) startWriter() {
 
 // writeText 将消息投递到写队列；连接已关闭则返回 errConnClosed
 func (c *wsConn) writeText(b []byte) error {
+	return c.writeFrame(outboundFrame{payload: b, replay: true})
+}
+
+// writeFrame 将一帧投递到写队列；连接已关闭则返回 errConnClosed
+func (c *wsConn) writeFrame(frame outboundFrame) error {
 	select {
 	case <-c.closeCh:
 		return errConnClosed
@@ -76,7 +89,7 @@ func (c *wsConn) writeText(b []byte) error {
 	select {
 	case <-c.closeCh:
 		return errConnClosed
-	case c.writeCh <- b:
+	case c.writeCh <- frame:
 		return nil
 	}
 }
@@ -91,13 +104,14 @@ func (c *wsConn) close() error {
 func (c *wsConn) handleRequest(payload []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			filelog.Errorf("[onebot] API handler panic: %v", r)
+			filelog.Errorf("[onebot] 处理动作请求时发生 panic: %v", r)
 			_ = c.close()
 		}
 	}()
-	resp := c.caller.HandleRequest(payload)
-	if err := c.writeText(resp); err != nil {
-		filelog.Errorf("[onebot] write API response failed: %v", err)
+	resp := c.caller.handleScopedRequest(payload, c.scope)
+	// 插件结果可能包含 Cookie 等凭证，只属于本次连接，不放入重连重发缓存
+	if err := c.writeFrame(outboundFrame{payload: resp, replay: !isPluginRequest(payload)}); err != nil {
+		filelog.Errorf("[onebot] 写回动作响应失败: %v", err)
 	}
 }
 
@@ -213,9 +227,26 @@ func checkAuth(r *http.Request, token string) int {
 	return http.StatusOK
 }
 
+// scope 经本监听连入的下游所拥有的权限
+func (s *WSServer) scope() requestScope {
+	return requestScope{allowSensitivePlugins: s.cfg.AllowSensitivePlugins}
+}
+
 // handshake 返回连接建立时下发的 lifecycle connect 元事件
 func (s *WSServer) handshake(_ bool) []byte {
 	return LifecycleConnect(s.selfID)
+}
+
+// clientLabel 用握手请求的 User-Agent 标识下游（多个框架可同时接入，不能默认是 NoneBot），未携带时显示「未知」
+func clientLabel(r *http.Request) string {
+	ua := []rune(strings.TrimSpace(r.UserAgent()))
+	if len(ua) == 0 {
+		return "未知"
+	}
+	if len(ua) > 64 {
+		ua = append(ua[:64], '…')
+	}
+	return string(ua)
 }
 
 // handleEvent 处理 /event 端点：升级、握手并登记为事件推送连接（只推不收）
@@ -226,15 +257,15 @@ func (s *WSServer) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		filelog.Errorf("[onebot] upgrade /event failed: %v", err)
+		filelog.Errorf("[onebot] /event 升级为 WebSocket 失败: %v", err)
 		return
 	}
 	if err = c.WriteMessage(websocket.TextMessage, s.handshake(false)); err != nil {
 		_ = c.Close()
 		return
 	}
-	log.Printf("[onebot] 正向 WS 连接成功: NoneBot %s (/event)", r.RemoteAddr)
-	conn := newWSConn(c, s.caller, nil)
+	log.Printf("[onebot] 正向 WS 连接成功: %s (/event)，客户端 %s", r.RemoteAddr, clientLabel(r))
+	conn := newWSConn(c, s.caller, nil, s.scope())
 	s.mu.Lock()
 	s.eventCon = append(s.eventCon, conn)
 	s.mu.Unlock()
@@ -250,8 +281,8 @@ func (s *WSServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	log.Printf("[onebot] 正向 WS 连接成功: NoneBot %s (/api)", r.RemoteAddr)
-	conn := newWSConn(c, s.caller, nil)
+	log.Printf("[onebot] 正向 WS 连接成功: %s (/api)，客户端 %s", r.RemoteAddr, clientLabel(r))
+	conn := newWSConn(c, s.caller, nil, s.scope())
 	conn.listenAPI()
 }
 
@@ -269,8 +300,8 @@ func (s *WSServer) handleAny(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close()
 		return
 	}
-	log.Printf("[onebot] 正向 WS 连接成功: NoneBot %s (/)", r.RemoteAddr)
-	conn := newWSConn(c, s.caller, nil)
+	log.Printf("[onebot] 正向 WS 连接成功: %s (/)，客户端 %s", r.RemoteAddr, clientLabel(r))
+	conn := newWSConn(c, s.caller, nil, s.scope())
 	s.mu.Lock()
 	s.eventCon = append(s.eventCon, conn)
 	s.mu.Unlock()

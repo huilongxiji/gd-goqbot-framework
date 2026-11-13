@@ -82,6 +82,7 @@ func (c *Converter) SetBotIdentity(openid, name string) {
 	c.botName = name
 }
 
+// botIdentity 返回 READY 后记录的机器人 openid 与昵称
 func (c *Converter) botIdentity() (openid, name string) {
 	c.botMu.RLock()
 	defer c.botMu.RUnlock()
@@ -720,6 +721,7 @@ func roleOf(data *dto.Message) string {
 	}
 }
 
+// pushGroupMessage 组装群消息事件（含合并转发、引用、发送者信息等）并推送给下游，同时登记被动回复凭证与 get_msg 缓存
 func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID string, groupID, userID, msgID int64, segs Message, raw string) {
 	// 102 聊天记录 / 103 最近十条：统一解析为 OneBot forward 段
 	var fwdTitle string
@@ -968,7 +970,7 @@ func (c *Converter) logRecvMessage(scene string, sceneID int64, data *dto.Messag
 	if fellBack {
 		blk.Row("推送", prettylog.Warn(fmt.Sprintf("下游全断，已兜底回发 (×%d)", delivered)))
 	} else {
-		blk.Row("推送", prettylog.Dim(fmt.Sprintf("NoneBot ×%d", delivered)))
+		blk.Row("推送", prettylog.Dim(fmt.Sprintf("下游 ×%d", delivered)))
 	}
 	blk.Emit()
 }
@@ -989,7 +991,7 @@ func (c *Converter) logNotice(ev map[string]any, delivered int) {
 	if v, ok := ev["operator_id"]; ok {
 		blk.Row("操作者", fmt.Sprintf("%v", v))
 	}
-	blk.Row("推送", prettylog.Dim(fmt.Sprintf("NoneBot ×%d", delivered)))
+	blk.Row("推送", prettylog.Dim(fmt.Sprintf("下游 ×%d", delivered)))
 	blk.Emit()
 }
 

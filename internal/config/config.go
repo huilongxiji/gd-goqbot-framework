@@ -1,6 +1,6 @@
 // Package config 定义适配器的 YAML 配置结构，并负责加载、填充默认值与校验。
 // 配置分四段：qq（上游凭据与连接选项）、onebot（下游正/反向 WS 与行为开关）、
-// idmap（id 映射的持久化）、log（本地文件日志）。
+// idmap（id 映射的持久化）、log（本地文件日志），以及可选的 plugins（插件目录）。
 package config
 
 import (
@@ -23,10 +23,16 @@ const (
 
 // Config 适配器总配置
 type Config struct {
-	QQ     QQConfig     `yaml:"qq"`
-	OneBot OneBotConfig `yaml:"onebot"`
-	IDMap  IDMapConfig  `yaml:"idmap"`
-	Log    LogConfig    `yaml:"log"`
+	QQ      QQConfig      `yaml:"qq"`
+	OneBot  OneBotConfig  `yaml:"onebot"`
+	IDMap   IDMapConfig   `yaml:"idmap"`
+	Log     LogConfig     `yaml:"log"`
+	Plugins PluginsConfig `yaml:"plugins"`
+}
+
+// PluginsConfig 插件配置。插件本身放在插件目录下，开关写在各插件目录的 plugin.yml 中。
+type PluginsConfig struct {
+	Path string `yaml:"path"` // 插件目录，默认 plugins；相对路径=可执行文件同级
 }
 
 // LogConfig 本地文件日志配置
@@ -110,17 +116,19 @@ type ServerConfig struct {
 
 // WSServerConfig 正向 WS 服务端：本进程监听，等待下游接入
 type WSServerConfig struct {
-	Disabled bool   `yaml:"disabled"` // true=不启用该监听
-	Address  string `yaml:"address"`  // 监听地址，如 0.0.0.0:8080
+	Disabled              bool   `yaml:"disabled"`                // true=不启用该监听
+	Address               string `yaml:"address"`                 // 监听地址，如 0.0.0.0:8080
+	AllowSensitivePlugins bool   `yaml:"allow-sensitive-plugins"` // true=经此监听连入的下游可调用插件的敏感能力（如获取 Cookie）
 }
 
 // WSReverseServerConfig 反向 WS 客户端：本进程主动连接下游
 type WSReverseServerConfig struct {
-	Disabled          bool   `yaml:"disabled"`           // true=不启用该连接
-	Universal         string `yaml:"universal"`          // API+Event 合一端点；设置后优先于 api/event
-	API               string `yaml:"api"`                // 仅收动作请求的端点
-	Event             string `yaml:"event"`              // 仅推事件的端点
-	ReconnectInterval int    `yaml:"reconnect-interval"` // 断线重连间隔毫秒，默认 3000
+	Disabled              bool   `yaml:"disabled"`                // true=不启用该连接
+	Universal             string `yaml:"universal"`               // API+Event 合一端点；设置后优先于 api/event
+	API                   string `yaml:"api"`                     // 仅收动作请求的端点
+	Event                 string `yaml:"event"`                   // 仅推事件的端点
+	ReconnectInterval     int    `yaml:"reconnect-interval"`      // 断线重连间隔毫秒，默认 3000
+	AllowSensitivePlugins bool   `yaml:"allow-sensitive-plugins"` // true=该下游可调用插件的敏感能力（如获取 Cookie）
 }
 
 // EnsureComplete 校验配置文件是否缺少参数，缺失的键按模板补齐默认值后写回文件。
@@ -228,6 +236,7 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// applyDefaults 为未填写的配置项填充默认值
 func (c *Config) applyDefaults() {
 	// self_id：use_uin && uin!=0 时用 uin，否则解析 app_id
 	if c.QQ.SelfID == 0 {
@@ -266,6 +275,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Log.Path == "" {
 		c.Log.Path = "logs"
+	}
+	if c.Plugins.Path == "" {
+		c.Plugins.Path = "plugins"
 	}
 	for i := range c.OneBot.Servers {
 		if rev := c.OneBot.Servers[i].WSReverse; rev != nil && rev.ReconnectInterval == 0 {

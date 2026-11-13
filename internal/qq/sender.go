@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -712,6 +713,7 @@ func (s *sender) GetGroupBotState(ctx context.Context, groupOpenID string) (*one
 	}, nil
 }
 
+// mapGroupMember 把官方群成员结构转换为 onebot 层的 GroupMember
 func mapGroupMember(m *dto.GroupMember) onebot.GroupMember {
 	if m == nil {
 		return onebot.GroupMember{}
@@ -907,7 +909,7 @@ func (s *sender) UploadMediaImage(ctx context.Context, m onebot.OutMedia, force 
 	sha1Hex := hex.EncodeToString(sha1Sum[:])
 	if !force {
 		if info := s.reuseMediaImage(ctx, sha1Hex, m.FileName); info != nil {
-			filelog.Infof("[qq] 素材图片已存在，直接复用 image_id=%s sha1=%s", info.ImageID, sha1Hex)
+			log.Printf("[qq] 素材图片已存在，直接复用 image_id=%s sha1=%s", info.ImageID, sha1Hex)
 			return info, nil
 		}
 	}
@@ -936,7 +938,7 @@ func (s *sender) UploadMediaImage(ctx context.Context, m onebot.OutMedia, force 
 	if err != nil {
 		return nil, fmt.Errorf("素材上传 complete 失败: %w", err)
 	}
-	filelog.Infof("[qq] 素材图片上传成功 image_id=%s file=%s size=%d", resp.ImageID, fileName, len(data))
+	log.Printf("[qq] 素材图片上传成功 image_id=%s file=%s size=%d", resp.ImageID, fileName, len(data))
 
 	localName := m.FileName
 	if localName == "" {
@@ -998,6 +1000,7 @@ func (s *sender) reuseMediaImage(ctx context.Context, sha1Hex, name string) *one
 	return nil
 }
 
+// containsString 判断 list 中是否包含 s
 func containsString(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {

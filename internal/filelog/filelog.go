@@ -159,6 +159,7 @@ func WriteFileLine(s string) {
 	WriteFile([]byte(s))
 }
 
+// openTodayLocked 确保当前日志文件是今天的，跨天时关闭旧文件并打开新文件（调用方须持有锁）
 func openTodayLocked() error {
 	today := time.Now().Format("2006-01-02")
 	if file != nil && currentDay == today {
@@ -188,6 +189,7 @@ func StdLogWriter() io.Writer {
 	return &stdLogWriter{}
 }
 
+// Write 实现 io.Writer：按行切分标准 log 的输出，逐行格式化后写入终端与日志文件
 func (w *stdLogWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
 	for {

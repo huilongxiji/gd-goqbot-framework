@@ -145,7 +145,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	intent := c.registerHandlers()
 	log.Printf("[qq] 订阅 intent=%d (shard %d/%d)", intent, c.cfg.ShardID, c.cfg.ShardCount)
-	log.Printf("[qq] IP 白名单被拒策略: action=%s retry_interval=%s", c.action, c.retryInterval)
+	log.Printf("[qq] IP 白名单被拒策略: %s，重试间隔 %d 秒", c.action, int(c.retryInterval/time.Second))
 
 	go c.runShard(runCtx, api, tokenSource, intent)
 	return nil
@@ -184,7 +184,7 @@ func (c *Client) onIPReject(where string, err error) {
 	case "retry":
 		// 不取消、不置 ipRejected；由 runShard / Start 等待后重试
 		if !throttle {
-			filelog.Warnf("[qq] 将在 %s 后重试连接", c.retryInterval)
+			filelog.Warnf("[qq] 将在 %d 秒后重试连接", int(c.retryInterval/time.Second))
 		}
 	case "exit":
 		c.mu.Lock()
@@ -393,6 +393,8 @@ func (c *Client) registerHandlers() dto.Intent {
 func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.TokenSource, intent dto.Intent) {
 	var session dto.Session
 	sessionReady := false
+	// 获取接入点失败（断网、DNS 解析失败、休眠唤醒后网络未就绪等）时的重试等待：3s 起每次翻倍，最多 60s
+	gatewayWait := gatewayRetryMin
 
 	for {
 		if ctx.Err() != nil || c.isIPRejected() {
@@ -414,9 +416,16 @@ func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.To
 				sessionReady = false
 				continue
 			}
-			filelog.Errorf("[qq] 获取 WebSocket 接入点失败: %v", err)
-			return
+			filelog.Errorf("[qq] 获取 WebSocket 接入点失败，%d 秒后重试: %v", int(gatewayWait/time.Second), err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(gatewayWait):
+			}
+			gatewayWait = min(gatewayWait*2, gatewayRetryMax)
+			continue
 		}
+		gatewayWait = gatewayRetryMin
 		if !sessionReady {
 			log.Printf("[qq] WebSocket 接入点: url=%s shards=%d", wsAP.URL, wsAP.Shards)
 			log.Printf("[qq] WS 连接频控(/gateway/bot): 剩余 %d/%d 次, %d 秒后重置, 最大并发 %d",
@@ -460,11 +469,17 @@ func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.To
 	}
 }
 
+// 获取 WebSocket 接入点失败后的重试等待范围
+const (
+	gatewayRetryMin = 3 * time.Second
+	gatewayRetryMax = time.Minute
+)
+
 // connectOnce 执行一次连接生命周期，结束后由 runShard 决定是否重连
 func (c *Client) connectOnce(session *dto.Session) {
 	defer func() {
 		if r := recover(); r != nil {
-			filelog.Errorf("[qq] 连接 panic: %v", r)
+			filelog.Errorf("[qq] 连接过程中发生 panic: %v", r)
 		}
 		c.mu.Lock()
 		c.wsClient = nil
@@ -486,11 +501,11 @@ func (c *Client) connectOnce(session *dto.Session) {
 		err = wsClient.Identify()
 	}
 	if err != nil {
-		filelog.Errorf("[qq] Identify/Resume 失败: %v", err)
+		filelog.Errorf("[qq] 发送鉴权或恢复会话请求失败: %v", err)
 		return
 	}
 	if err = wsClient.Listening(); err != nil {
-		filelog.Warnf("[qq] Listening 退出: %v", err)
+		filelog.Warnf("[qq] WebSocket 监听结束: %v", err)
 		// Listening 因 IP 被拒关闭时也会到这里
 		if errs.IsIPWhitelistRejected(err) {
 			c.onIPReject("ws-listen", err)

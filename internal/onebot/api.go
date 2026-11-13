@@ -20,6 +20,7 @@ import (
 
 	"goqbot/internal/filelog"
 	"goqbot/internal/idmap"
+	"goqbot/internal/plugins"
 	"goqbot/internal/prettylog"
 	"goqbot/internal/stats"
 )
@@ -36,15 +37,16 @@ const fwdCacheLimit = 1000
 
 // Caller OneBot v11 API 动作调用器
 type Caller struct {
-	mu         sync.RWMutex   // 保护下列可在运行期被注入/更新的字段
-	selfID     int64          // 上报用 self_id
-	appID      string         // 机器人 AppID，昵称缺省时作回退
-	nickname   string         // READY 后写入的真实机器人用户名
-	appName    string         // get_version_info 用程序名
-	appVersion string         // get_version_info 用版本号
-	sender     MessageSender  // QQ 发送通道，由 qq.Client 注入
-	gateway    GatewayQuerier // /gateway/bot 查询器，由 qq.Client 注入
-	debug      bool           // true=打印收到的动作日志
+	mu         sync.RWMutex     // 保护下列可在运行期被注入/更新的字段
+	selfID     int64            // 上报用 self_id
+	appID      string           // 机器人 AppID，昵称缺省时作回退
+	nickname   string           // READY 后写入的真实机器人用户名
+	appName    string           // get_version_info 用程序名
+	appVersion string           // get_version_info 用版本号
+	sender     MessageSender    // QQ 发送通道，由 qq.Client 注入
+	gateway    GatewayQuerier   // /gateway/bot 查询器，由 qq.Client 注入
+	debug      bool             // true=打印收到的动作日志
+	plugins    *plugins.Manager // 插件宿主，由 main 注入；未注入时插件动作返回不可用
 
 	ids *idmap.Store // openid<->数字 id 映射，用于动作里的 id 反查
 
@@ -248,15 +250,21 @@ func (c *Caller) getSender() MessageSender {
 	return c.sender
 }
 
-// Call 处理 OneBot v11 动作请求
+// Call 处理 OneBot v11 动作请求（按无额外权限的连接处理）
 func (c *Caller) Call(action string, params gjson.Result) map[string]any {
+	return c.callScoped(action, params, requestScope{})
+}
+
+// callScoped 处理动作请求；scope 为发起请求的连接权限
+func (c *Caller) callScoped(action string, params gjson.Result, scope requestScope) map[string]any {
 	start := time.Now()
-	ret := c.dispatch(action, params)
+	ret := c.dispatch(action, params, scope)
 	c.logStandaloneAction(action, params, ret, start)
 	return ret
 }
 
-func (c *Caller) dispatch(action string, params gjson.Result) map[string]any {
+// dispatch 按动作名分派到具体处理函数；scope 为发起请求的连接权限
+func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope) map[string]any {
 	switch action {
 	case "get_login_info":
 		return ok(map[string]any{
@@ -339,6 +347,10 @@ func (c *Caller) dispatch(action string, params gjson.Result) map[string]any {
 		return c.getMediaImages(params)
 	case "delete_media_image":
 		return c.deleteMediaImage(params)
+	case "get_plugin_list":
+		return c.getPluginList()
+	case "call_plugin":
+		return c.callPlugin(params, scope)
 	default:
 		return failed(1404, "unsupported action: "+action)
 	}
@@ -1137,7 +1149,7 @@ func (c *Caller) logSend(action, sceneLabel string, sceneID int64, out *OutMessa
 	blk := prettylog.New(title, tone)
 	if c.debug {
 		blk.Row("接口", action)
-		if p := paramSummary(params); p != "" {
+		if p := safeParamSummary(action, params); p != "" {
 			blk.Row("参数", p)
 		}
 		if err != nil {
@@ -1186,6 +1198,7 @@ func (c *Caller) logSend(action, sceneLabel string, sceneID int64, out *OutMessa
 	blk.Emit()
 }
 
+// toneForNote 发消息日志中嵌套说明的配色：失败用错误色，否则用发送色
 func toneForNote(fail bool) prettylog.Tone {
 	if fail {
 		return prettylog.ToneErr
@@ -1193,6 +1206,7 @@ func toneForNote(fail bool) prettylog.Tone {
 	return prettylog.ToneSend
 }
 
+// boolCN 布尔值转「是 / 否」，用于日志展示
 func boolCN(v bool) string {
 	if v {
 		return "是"
@@ -1200,6 +1214,7 @@ func boolCN(v bool) string {
 	return "否"
 }
 
+// isSendAction 是否为发消息动作（这类动作由 logSend 输出专门的日志块）
 func isSendAction(action string) bool {
 	switch action {
 	case "send_group_msg", "send_private_msg", "send_msg",
@@ -1209,6 +1224,7 @@ func isSendAction(action string) bool {
 	return false
 }
 
+// isBoxedAction 是否为自行输出日志块的动作（撤回、互动回执等）
 func isBoxedAction(action string) bool {
 	switch action {
 	case "delete_msg", "put_interaction", "send_interaction_ack":
@@ -1217,6 +1233,7 @@ func isBoxedAction(action string) bool {
 	return false
 }
 
+// isHandshakeAction 是否为下游连接时的例行查询动作（非 debug 模式下不打印日志）
 func isHandshakeAction(action string) bool {
 	switch action {
 	case "get_login_info", "get_status", "get_version_info":
@@ -1225,6 +1242,7 @@ func isHandshakeAction(action string) bool {
 	return false
 }
 
+// logStandaloneAction 为发消息以外的动作输出日志块；debug 模式下额外展示接口、参数、状态与耗时
 func (c *Caller) logStandaloneAction(action string, params gjson.Result, ret map[string]any, start time.Time) {
 	if isSendAction(action) || isBoxedAction(action) {
 		return
@@ -1241,7 +1259,7 @@ func (c *Caller) logStandaloneAction(action string, params gjson.Result, ret map
 	blk.Row("内容", actionContent(action, params, ret))
 	if c.debug {
 		blk.Row("接口", action)
-		if p := paramSummary(params); p != "" {
+		if p := safeParamSummary(action, params); p != "" {
 			blk.Row("参数", p)
 		}
 		if okRet {
@@ -1254,6 +1272,7 @@ func (c *Caller) logStandaloneAction(action string, params gjson.Result, ret map
 	blk.Emit()
 }
 
+// paramSummary 日志用参数摘要：只展示常见 id 类字段，避免把消息正文等长内容打进日志
 func paramSummary(params gjson.Result) string {
 	if !params.Exists() || params.Raw == "" || params.Raw == "{}" || params.Raw == "null" {
 		return ""
@@ -1281,7 +1300,19 @@ func paramSummary(params gjson.Result) string {
 	return strings.Join(parts, " ")
 }
 
+// safeParamSummary 日志用参数摘要；插件动作的参数可能含凭证，只展示插件名与能力名
+func safeParamSummary(action string, params gjson.Result) string {
+	if isPluginAction(action) {
+		return pluginParamSummary(params)
+	}
+	return paramSummary(params)
+}
+
+// actionContent 动作日志「内容」行：失败时为错误信息，成功时为该动作的结果摘要
 func actionContent(action string, params gjson.Result, ret map[string]any) string {
+	if isPluginAction(action) {
+		return pluginActionContent(params, ret)
+	}
 	if ret["status"] != "ok" {
 		if m, ok := ret["message"].(string); ok && m != "" {
 			return m
@@ -2036,18 +2067,23 @@ func mustJSON(m map[string]string) string {
 	return string(b)
 }
 
-// HandleRequest 解析 WS 动作请求并返回 JSON 响应
+// HandleRequest 解析 WS 动作请求并返回 JSON 响应（按无额外权限的连接处理）
 func (c *Caller) HandleRequest(payload []byte) []byte {
+	return c.handleScopedRequest(payload, requestScope{})
+}
+
+// handleScopedRequest 解析 WS 动作请求并返回 JSON 响应；scope 为发起请求的连接权限
+func (c *Caller) handleScopedRequest(payload []byte, scope requestScope) []byte {
 	j := gjson.ParseBytes(payload)
 	action := strings.TrimSuffix(j.Get("action").Str, "_async")
 	params := j.Get("params")
-	if filelog.Enabled() {
+	if filelog.Enabled() && !isPluginAction(action) {
 		filelog.WriteFile([]byte(filelog.FormatInfo(fmt.Sprintf(
 			"[onebot] action=%s params=%s echo=%v",
 			action, params.Raw, j.Get("echo").Value(),
 		))))
 	}
-	ret := c.Call(action, params)
+	ret := c.callScoped(action, params, scope)
 	if echo := j.Get("echo"); echo.Exists() {
 		ret["echo"] = echo.Value()
 	}

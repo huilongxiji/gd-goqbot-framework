@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"regexp"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,6 +21,13 @@ import (
 
 // DefaultQueueSize 监听队列的缓冲长度
 const DefaultQueueSize = 10000
+
+// heartbeatMissLimit 连续这么多个心跳周期收不到服务端任何消息（含心跳回包），即判定连接已失效并主动断开重连。
+// 不依赖系统 TCP 超时：网络被静默断开时，系统层面往往要好几分钟才报错，期间的消息全部丢失。
+const heartbeatMissLimit = 2
+
+// tokenFieldRE 匹配鉴权报文里的 token 字段，用于日志脱敏
+var tokenFieldRE = regexp.MustCompile(`"token":"([^"]{0,10})[^"]*"`)
 
 // Setup 依赖注册
 func Setup() {
@@ -44,6 +53,9 @@ type Client struct {
 	user            *dto.WSUser
 	closeChan       closeErrorChan
 	heartBeatTicker *time.Ticker // 用于维持定时心跳
+
+	heartbeatInterval atomic.Int64 // hello 下发的心跳间隔（纳秒），0=尚未收到 hello
+	lastRecv          atomic.Int64 // 最近一次收到服务端消息的时间（UnixNano）
 }
 
 type messageChan chan *dto.WSPayload
@@ -109,6 +121,12 @@ func (c *Client) Listening() error {
 			}
 			return err
 		case <-c.heartBeatTicker.C:
+			if c.heartbeatTimedOut() {
+				// 关闭底层连接，读协程随即报错并经 closeChan 走正常的断线重连（Resume）流程
+				log.Warnf("%s %d 个心跳周期内未收到服务端任何消息，判定连接已失效，主动断开重连", c.session, heartbeatMissLimit)
+				_ = c.conn.Close()
+				continue
+			}
 			log.Debugf("%s listened heartBeat", c.session)
 			heartBeatEvent := &dto.WSPayload{
 				WSPayloadBase: dto.WSPayloadBase{
@@ -122,10 +140,25 @@ func (c *Client) Listening() error {
 	}
 }
 
+// heartbeatTimedOut 是否已连续 heartbeatMissLimit 个心跳周期没有收到服务端任何消息
+func (c *Client) heartbeatTimedOut() bool {
+	interval := time.Duration(c.heartbeatInterval.Load())
+	last := c.lastRecv.Load()
+	if interval <= 0 || last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) > interval*heartbeatMissLimit+5*time.Second
+}
+
+// maskToken 日志脱敏：鉴权报文里的 token 只保留前 10 个字符（含 "QQBot " 前缀）
+func maskToken(s string) string {
+	return tokenFieldRE.ReplaceAllString(s, `"token":"${1}***"`)
+}
+
 // Write 往 ws 写入数据
 func (c *Client) Write(message *dto.WSPayload) error {
 	m, _ := json.Marshal(message)
-	log.Infof("%s write %s message, %v", c.session, dto.OPMeans(message.OPCode), string(m))
+	log.Infof("%s write %s message, %v", c.session, dto.OPMeans(message.OPCode), maskToken(string(m)))
 
 	if err := c.conn.WriteMessage(wss.TextMessage, m); err != nil {
 		log.Errorf("%s WriteMessage failed, %v", c.session, err)
@@ -144,7 +177,9 @@ func (c *Client) Resume() error {
 	}
 	payload := &dto.WSPayload{
 		Data: &dto.WSResumeData{
-			Token:     token.AccessToken,
+			// 与 Identify 一致须带 "QQBot " 前缀，缺少前缀会被服务端以 4004 Authentication fail 拒绝，
+			// 导致每次断线都无法续传，只能重新 Identify（丢失断线期间的事件并多耗一次建连额度）
+			Token:     fmt.Sprintf("%s %s", token.TokenType, token.AccessToken),
 			SessionID: c.session.ID,
 			Seq:       c.session.LastSeq,
 		},
@@ -194,6 +229,9 @@ func (c *Client) Session() *dto.Session {
 func (c *Client) readMessageToQueue() {
 	for {
 		_, message, err := c.conn.ReadMessage()
+		if err == nil {
+			c.lastRecv.Store(time.Now().UnixNano())
+		}
 		if err != nil {
 			log.Errorf("%s read message failed, %v, message %s", c.session, err, string(message))
 			close(c.messageQueue)
@@ -274,7 +312,12 @@ func (c *Client) startHeartBeatTicker(message []byte) {
 		log.Errorf("%s hello data parse failed, %v, message %v", c.session, err, message)
 	}
 	// 根据 hello 的回包，重新设置心跳的定时器时间
-	c.heartBeatTicker.Reset(time.Duration(helloData.HeartbeatInterval) * time.Millisecond)
+	interval := time.Duration(helloData.HeartbeatInterval) * time.Millisecond
+	if interval <= 0 {
+		return
+	}
+	c.heartbeatInterval.Store(int64(interval))
+	c.heartBeatTicker.Reset(interval)
 }
 
 // readyHandler 针对ready返回的处理，需要记录 sessionID 等相关信息

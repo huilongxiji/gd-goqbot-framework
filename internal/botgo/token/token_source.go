@@ -127,7 +127,8 @@ func (w *QQBotTokenSource) getNewToken() (*oauth2.Token, error) {
 		return nil, err
 	}
 	payload := bytes.NewReader(data)
-	log.Debugf("retrieve access token URL:%v req:%v", getTokenURL(), string(data))
+	// 请求体含 clientSecret，日志只记录 appId
+	log.Debugf("retrieve access token URL:%v appId:%v", getTokenURL(), w.credentials.AppID)
 	req, err := http.NewRequest(http.MethodPost, getTokenURL(), payload)
 	if err != nil {
 		log.Errorf("init http req failed:%v", err)
@@ -151,7 +152,8 @@ func (w *QQBotTokenSource) getNewToken() (*oauth2.Token, error) {
 		log.Errorf("read rsp failed:%v", err)
 		return nil, err
 	}
-	log.Debugf("access token:%v traceID:%v", string(body), rspTraceID)
+	// 响应体含 access_token，不写入日志
+	log.Debugf("retrieve access token rsp size:%d traceID:%v", len(body), rspTraceID)
 	retrieveRsp := &qqBotTokenRsp{}
 	if err = json.Unmarshal(body, retrieveRsp); err != nil {
 		log.Errorf("unmarshal rsp failed:%v traceID:%v", err, rspTraceID)
@@ -186,7 +188,7 @@ func StartRefreshAccessToken(ctx context.Context, tokenSource oauth2.TokenSource
 	if err != nil {
 		return err
 	}
-	log.Debugf("token:%+v ", tk)
+	log.Debugf("token type:%v expiry:%v", tk.TokenType, tk.Expiry)
 	go func() {
 		var consecutiveFailures int
 		for {
