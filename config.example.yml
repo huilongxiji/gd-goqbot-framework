@@ -66,11 +66,12 @@ log:
   enabled: true        # false=仅终端输出，不写本地日志文件
   path: "logs"           # 日志目录；相对路径=可执行文件同级；按天生成 goqbot-YYYY-MM-DD.log
 
-# 可选：插件。插件是独立程序，不打包在 goqbot 里：每个插件放在插件目录下的一个子目录中，
-# 在该子目录的 plugin.yml 里把 enabled 改为 true 即可加载；不用时改回 false 或把整个文件夹移出插件目录。
-# 增删插件、切换开关后重启 goqbot 生效。开启任何插件都必须设置 onebot.access_token。
+# 可选：插件。把插件文件夹（JS / TS 源代码，或编译好的可执行文件）放进插件目录，重启 goqbot 即可载入，
+# 不需要编译、不需要写配置；JS / TS 插件用发布包自带的 Node 运行。不用时把它移出插件目录。
+# 插件的敏感能力（如获取 Cookie）只对设置了 onebot.access_token、且开启了 allow-sensitive-plugins 的连接开放。
 # plugins:
 #   path: "plugins"    # 插件目录，默认 plugins；相对路径=可执行文件同级；不存在会自动创建
+#   node: ""           # 运行 JS / TS 插件的 Node 程序路径；留空=依次找同级的 runtime/node、系统里安装的 node（需要 22.18 及以上）
 
 # ─── QQ Bot API v2 能力/频控说明（无需配置，仅备忘）───
 # 主动推送：

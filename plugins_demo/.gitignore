@@ -1,0 +1,2 @@
+# 开发示例插件时 npm install 生成的依赖（只用于编辑器提示，不上传）
+node_modules/

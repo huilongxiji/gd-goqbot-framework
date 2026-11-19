@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "goqbot 示例插件的开发环境：只为编辑器提供 Node 自带模块的类型说明，插件运行时不需要",
+  "devDependencies": {
+    "@types/node": "^26.0.0"
+  }
+}

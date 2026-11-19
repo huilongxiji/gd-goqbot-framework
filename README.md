@@ -36,7 +36,7 @@ flowchart LR
 
 ## ✨ 为什么用 goqbot
 
-1. 📦 **开箱即用**：单个可执行文件加一份 `config.yml`，不用装任何运行环境；首次运行自动生成配置。Windows / Linux / macOS 都能跑，x64 和 ARM64（含树莓派）都有现成的包。
+1. 📦 **开箱即用**：解压后运行 goqbot 即可，不用装任何运行环境；首次运行自动生成配置。Windows / Linux / macOS 都能跑，x64 和 ARM64（含树莓派）都有现成的包。
 2. 🔀 **一个协议端，多个框架**：NoneBot2、AstrBot、MaiBot 可以同时接入。每条消息都会发给所有框架，由各个框架自己决定回不回复。
 3. 🔌 **标准 OneBot V11**：支持正向 / 反向 WebSocket，消息段写法和 go-cqhttp 生态一致，已有插件基本不用改。
 4. 💬 **QQ 官方特色能力**：Markdown + 按钮（含点击回调）、图文卡片、单聊流式消息（打字机效果）、素材管理、自定义菜单与指令面板。
@@ -44,7 +44,7 @@ flowchart LR
 6. 🧠 **自动选择被动 / 主动消息**：优先使用免费的被动回复额度，过期了再改发主动消息；也可以用 `passive_only` 精确控制主动消息额度。
 7. 💾 **重启不丢 ID**：用户、群、消息的 ID 映射会持久化保存，重启后仍然可以撤回消息、反查用户。
 8. 🪶 **适合长期挂机**：Go 单进程，各类缓存都有上限和自动清理；网络断开、电脑休眠唤醒后自动重连；日志在终端按颜色分级显示，同时按天写入文件。
-9. 🧩 **插件扩展**：能力插件是独立程序，放进 `plugins/` 目录、打开开关即可使用，不用时关掉开关或移走文件夹，不需要重新编译。
+9. 🧩 **插件扩展**：插件可以直接用 JavaScript / TypeScript 写，所有人下载同一份源代码，放进 `plugins/` 重启就能用，不用编译、不用装 Node（完整发布包自带 Node 26）。插件的能力直接成为 OneBot 动作，插件也能用 goqbot 的全部能力（收发消息、订阅事件、改配置、重启、更新），WebUI 这类插件也能写，写法可以参考 [`examples/plugins`](examples/plugins) 里的示例。
 
 ## 🧩 支持的框架
 
@@ -61,20 +61,20 @@ flowchart LR
 
 **准备工作**：在 [QQ 开放平台](https://q.qq.com/qqbot) 创建机器人，拿到 **AppID** 和 **AppSecret**，并把运行 goqbot 的机器的公网 IP 加进开放平台的 IP 白名单。
 
-**1. 下载**：到 [Releases](https://github.com/huilongxiji/gd-goqbot-framework/releases) 下载对应平台的文件。
+**1. 下载**：到 [Releases](https://github.com/huilongxiji/gd-goqbot-framework/releases) 下载对应平台的压缩包。完整包自带 Node，能运行 JS / TS 插件，推荐下载；文件名带 `-lite` 的精简包只有 goqbot，体积小。
 
-| 平台 | 文件 |
-|---|---|
-| Linux x86_64 | `goqbot-linux-amd64` |
-| Linux ARM64（树莓派等） | `goqbot-linux-arm64` |
-| Windows x64 / ARM64 | `goqbot-windows-amd64.exe` / `goqbot-windows-arm64.exe` |
-| macOS Intel / Apple Silicon | `goqbot-darwin-amd64` / `goqbot-darwin-arm64` |
+| 平台 | 完整包 | 精简包 |
+|---|---|---|
+| Linux x86_64 | `goqbot-v<版本>-linux-amd64.zip` | `goqbot-v<版本>-linux-amd64-lite.zip` |
+| Linux ARM64（树莓派等） | `goqbot-v<版本>-linux-arm64.zip` | `goqbot-v<版本>-linux-arm64-lite.zip` |
+| Windows x64 / ARM64 | `goqbot-v<版本>-windows-amd64.zip` / `…-windows-arm64.zip` | 同名加 `-lite` |
+| macOS Intel / Apple Silicon | `goqbot-v<版本>-darwin-amd64.zip` / `…-darwin-arm64.zip` | 同名加 `-lite` |
 
-**2. 首次运行**：把文件放进一个空目录后运行，同目录会自动生成 `config.yml`。
+**2. 首次运行**：解压后运行里面的 goqbot（Windows 双击 `goqbot.exe`），同目录会自动生成 `config.yml`。
 
 ```bash
-chmod +x goqbot-*      # Linux / macOS 需要先加执行权限
-./goqbot-linux-amd64   # 换成你下载的文件名
+cd goqbot-v<版本>-linux-amd64   # 换成你解压出的文件夹
+./goqbot
 ```
 
 **3. 填写配置**：打开 `config.yml`，至少填好下面几项（以反向连接 NoneBot2 为例）。
@@ -124,7 +124,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 | 群管理 | ✅ | — | 群信息、成员列表、禁言、入群审批 |
 | 通知事件 | ✅ | ✅ | 入退群、好友增删、主动推送开关、入群申请 |
 | 菜单 / 指令面板 / 素材 | 全局 | 全局 | 自定义菜单、指令面板、素材图片管理 |
-| 插件 | 全局 | 全局 | `get_plugin_list` / `call_plugin` |
+| 插件 | 全局 | 全局 | 插件注册的动作直接调用；`get_plugin_list` / `call_plugin` |
 
 <details>
 <summary>全部 OneBot 动作</summary>
@@ -137,7 +137,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 | 群聊管理 | `get_group_info` · `get_group_bot_state` · `get_group_member_list` · `get_group_member_info` · `get_group_join_requests` · `set_group_add_request` · `set_group_ban` · `get_group_ban` |
 | 菜单与面板 | `get_menu` · `set_menu` · `get_command_panels` · `get_command_panel` · `create_command_panel` · `set_command_panel` · `delete_command_panel` · `set_command_panel_target` |
 | 素材管理 | `upload_media_image` · `get_media_image` · `get_media_images` · `delete_media_image` |
-| 插件 | `get_plugin_list` · `call_plugin` |
+| 插件 | `get_plugin_list` · `call_plugin` · 插件注册的动作 |
 
 参数和返回值见 [API 文档](https://huilongxiji.github.io/gd-goqbot-docs/api/overview)；消息段写法见 [消息段](https://huilongxiji.github.io/gd-goqbot-docs/protocol/segments)；能收到哪些事件见 [入站事件](https://huilongxiji.github.io/gd-goqbot-docs/protocol/events)。
 

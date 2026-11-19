@@ -1,31 +1,32 @@
 // Package plugins 实现 goqbot 的进程外能力插件宿主。
 //
-// 插件是独立的可执行程序，不编译进 goqbot：每个插件占插件目录（默认可执行文件同级的 plugins/）
-// 下的一个子目录，目录内的 plugin.yml 描述开关与启动方式。goqbot 启动时扫描插件目录，
-// 拉起开关已打开的插件，通过标准输入输出上的 goqbot-plugin/1 协议（按行分隔的 JSON-RPC 2.0，
-// 借鉴 MCP 的发现/调用方式，但不兼容 MCP）完成握手与能力调用。
-// 安装 = 放入目录并打开开关；停用 = 关闭开关或把目录移出插件目录；改动在重启 goqbot 后生效。
+// 插件是独立的可执行程序，不编译进 goqbot：放进插件目录（默认可执行文件同级的 plugins/）即可，
+// 可以是单个可执行文件，也可以是一个文件夹（里面可同时放多个平台的版本，goqbot 自动挑出本机能用的）。
+// goqbot 启动时扫描插件目录，拉起插件，通过标准输入输出上的 goqbot-plugin 协议（按行分隔的 JSON-RPC 2.0，
+// 借鉴 MCP 的「发现能力 → 调用能力」方式但不兼容 MCP）完成握手：
+//
+//   - 协议 2：双向对称。插件声明的能力注册进能力注册表，成为 OneBot 动作，下游框架和其他插件都能直接调用；
+//     插件也能调用注册表里的能力（全部 OneBot 动作、事件订阅、运行管理、其他插件的能力）。
+//   - 协议 1：只能由 goqbot 调用插件，下游通过 call_plugin 调用（与 1.12.0 一致）。
+//
+// 插件工作目录内可选的 plugin.yml 用于停用插件、收紧权限、调整超时；不写时全部使用默认值。
 package plugins
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 const (
-	// ManifestName 插件目录内的清单文件名
+	// ManifestName 插件工作目录内的可选配置文件名
 	ManifestName = "plugin.yml"
-	// ProtocolVersion goqbot-plugin 协议版本，握手时双方必须一致
-	ProtocolVersion = "1"
+	// ProtocolV1 协议 1：只能由 goqbot 调用插件
+	ProtocolV1 = "1"
+	// ProtocolV2 协议 2：双向对称
+	ProtocolV2 = "2"
 	// DefaultStartupTimeoutMS 握手超时默认值（毫秒）
 	DefaultStartupTimeoutMS = 10000
 	// DefaultCallTimeoutMS 单次能力调用超时默认值（毫秒）
@@ -39,47 +40,53 @@ const (
 )
 
 var (
-	// namePattern 插件实例名（= 插件目录名）规则
+	// namePattern 插件实例名（= 插件文件名去掉平台后缀，或文件夹名）规则
 	namePattern = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
-	// capabilityPattern 能力名规则，如 cookie.status
+	// capabilityPattern 协议 1 的能力名规则，如 cookie.status
 	capabilityPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+	// actionPattern 协议 2 的能力名规则：同时就是 OneBot 动作名，如 get_group_album_list
+	// （内置启动器 runner/goqbot-runner.mjs 里有同样的规则，修改时两边一起改）
+	actionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	// grantPattern requires / grants 中的一项：能力名，可带 * 通配
+	grantPattern = regexp.MustCompile(`^[a-z0-9_.*-]{1,128}$`)
+	// eventTypePattern events.subscribe 的事件类型，如 message.group、notice.*
+	eventTypePattern = regexp.MustCompile(`^[a-z0-9_.*]{1,64}$`)
 )
 
 // 插件错误码。Error() 文本是固定的英文错误码，会原样作为 OneBot 响应的 message 返回给下游，
 // 因此只能是这些固定值，绝不拼接插件输出、上游响应或凭证内容。
 var (
-	ErrInvalidConfig      = errors.New("invalid_config")          // plugin.yml 缺失字段、格式错误或取值越界
-	ErrAuthRequired       = errors.New("access_token_required")   // 开启了插件但未设置 onebot.access_token
-	ErrNotFound           = errors.New("plugin_not_found")        // 没有这个名字的插件，或插件未开启
-	ErrNotReady           = errors.New("plugin_not_ready")        // 插件正在启动、重启中或已出错
-	ErrBusy               = errors.New("plugin_busy")             // 插件正在处理另一个请求，可稍后重试
-	ErrClosed             = errors.New("plugin_closed")           // 插件宿主已关闭
-	ErrTimeout            = errors.New("plugin_timeout")          // 握手或调用超时（插件进程会被结束并自动重启）
-	ErrCanceled           = errors.New("plugin_canceled")         // 调用方取消了请求
-	ErrStartFailed        = errors.New("plugin_start_failed")     // 插件程序无法启动（找不到命令、无执行权限等）
-	ErrProcessExited      = errors.New("plugin_process_exited")   // 插件进程意外退出
-	ErrProtocol           = errors.New("plugin_protocol_error")   // 插件输出不符合 goqbot-plugin/1 协议
-	ErrOutputTooLarge     = errors.New("plugin_output_too_large") // 插件单帧输出超过 MaxFrameBytes
-	ErrInvalidArguments   = errors.New("invalid_arguments")       // 调用参数不是 JSON 对象或过大
-	ErrCapabilityNotFound = errors.New("capability_not_found")    // 插件没有声明该能力
-	ErrForbidden          = errors.New("capability_forbidden")    // 敏感能力，但当前连接未开启 allow-sensitive-plugins
-	ErrCallFailed         = errors.New("capability_call_failed")  // 插件返回了 JSON-RPC 错误（原文不透传）
+	ErrInvalidConfig      = errors.New("invalid_config")           // plugin.yml 格式错误、取值越界，或插件文件冲突
+	ErrNotFound           = errors.New("plugin_not_found")         // 没有这个名字的插件，或插件未开启
+	ErrNotReady           = errors.New("plugin_not_ready")         // 插件正在启动、重启中或已出错
+	ErrBusy               = errors.New("plugin_busy")              // 插件同时处理的请求已达上限，可稍后重试
+	ErrClosed             = errors.New("plugin_closed")            // 插件宿主已关闭
+	ErrTimeout            = errors.New("plugin_timeout")           // 握手或调用超时
+	ErrCanceled           = errors.New("plugin_canceled")          // 调用方取消了请求
+	ErrStartFailed        = errors.New("plugin_start_failed")      // 插件程序无法启动（找不到可执行文件、无执行权限等）
+	ErrProcessExited      = errors.New("plugin_process_exited")    // 插件进程意外退出
+	ErrProtocol           = errors.New("plugin_protocol_error")    // 插件输出不符合 goqbot-plugin 协议
+	ErrOutputTooLarge     = errors.New("plugin_output_too_large")  // 插件单帧输出超过 MaxFrameBytes
+	ErrRestartRequested   = errors.New("plugin_restart_requested") // 被 plugins.restart 要求重启
+	ErrInvalidArguments   = errors.New("invalid_arguments")        // 调用参数不是 JSON 对象、过大或格式不对
+	ErrCapabilityNotFound = errors.New("capability_not_found")     // 没有这个能力
+	ErrForbidden          = errors.New("capability_forbidden")     // 没有调用权限（敏感能力未授权、插件未声明需要等）
+	ErrCallFailed         = errors.New("capability_call_failed")   // 能力提供方返回了错误（原文不透传）
 )
 
 // knownErrors 全部固定错误码，Code / Describe 按此顺序匹配
 var knownErrors = []error{
-	ErrInvalidConfig, ErrAuthRequired, ErrNotFound, ErrNotReady, ErrBusy, ErrClosed,
+	ErrInvalidConfig, ErrNotFound, ErrNotReady, ErrBusy, ErrClosed,
 	ErrTimeout, ErrCanceled, ErrStartFailed, ErrProcessExited, ErrProtocol,
-	ErrOutputTooLarge, ErrInvalidArguments, ErrCapabilityNotFound, ErrForbidden, ErrCallFailed,
+	ErrOutputTooLarge, ErrRestartRequested, ErrInvalidArguments, ErrCapabilityNotFound, ErrForbidden, ErrCallFailed,
 }
 
 // errorWording 错误码对应的中文说明（用于日志与 OneBot 响应的 wording）
 var errorWording = map[error]string{
 	ErrInvalidConfig:      "插件配置无效",
-	ErrAuthRequired:       "未设置 onebot.access_token，插件未启动",
 	ErrNotFound:           "插件不存在或未开启",
 	ErrNotReady:           "插件未就绪（启动中、重启中或已出错）",
-	ErrBusy:               "插件正在处理其他请求，请稍后重试",
+	ErrBusy:               "插件正在处理的请求已达上限，请稍后重试",
 	ErrClosed:             "插件已关闭",
 	ErrTimeout:            "插件响应超时",
 	ErrCanceled:           "请求已取消",
@@ -87,10 +94,11 @@ var errorWording = map[error]string{
 	ErrProcessExited:      "插件进程已退出",
 	ErrProtocol:           "插件协议错误",
 	ErrOutputTooLarge:     "插件输出过大",
+	ErrRestartRequested:   "插件按要求重启",
 	ErrInvalidArguments:   "调用参数无效",
-	ErrCapabilityNotFound: "插件没有该能力",
-	ErrForbidden:          "当前连接无权调用该敏感能力",
-	ErrCallFailed:         "插件执行失败",
+	ErrCapabilityNotFound: "没有该能力",
+	ErrForbidden:          "无权调用该能力",
+	ErrCallFailed:         "能力执行失败",
 }
 
 // Code 返回 err 对应的固定错误码；不是插件错误时返回 plugin_error
@@ -128,25 +136,46 @@ func ValidName(s string) bool {
 	return namePattern.MatchString(s)
 }
 
-// ValidCapabilityName 是否为合法的能力名
+// ValidCapabilityName 是否为合法的能力名（协议 1 规则，包含协议 2 的全部能力名）
 func ValidCapabilityName(s string) bool {
 	return capabilityPattern.MatchString(s)
 }
 
-// Config 单个插件的配置。Name / Dir 由目录扫描得到，其余字段来自插件目录下的 plugin.yml。
+// ValidActionName 是否可能是插件注册的 OneBot 动作名（协议 2 能力名规则）
+func ValidActionName(s string) bool {
+	return actionPattern.MatchString(s)
+}
+
+// Config 单个插件的配置。Name / Dir / Kind / Command / DataDir 由目录扫描得到，其余字段来自可选的 plugin.yml。
 type Config struct {
-	Name string `yaml:"-"` // 实例名 = 插件目录名，OneBot 调用时用它指定插件
-	Dir  string `yaml:"-"` // 插件目录绝对路径：插件的工作目录，也是相对 command 的基准
+	Name    string // 实例名，下游和其他插件用它指定插件
+	Dir     string // 插件工作目录（绝对路径）
+	Kind    string // 插件种类：KindExecutable / KindJS
+	Command string // 启动程序（绝对路径，或开发调试时 plugin.yml 里写的 command；JS / TS 插件为 Node）
+	Entry   string // JS / TS 插件的入口文件（绝对路径）
+	DataDir string // 数据目录 plugin-data/<插件名>/（绝对路径），插件更新时不会被覆盖
 
-	Enabled          bool              `yaml:"enabled"`            // 插件开关：true=goqbot 启动时加载
-	Command          string            `yaml:"command"`            // 启动程序：裸命令名（如 python3）按 PATH 查找；带路径的相对路径以插件目录为基准
-	Args             []string          `yaml:"args"`               // 原样传给程序的参数，不做 shell 展开
-	Env              map[string]string `yaml:"env"`                // 额外环境变量；默认只继承 PATH、HOME、LANG 等少量变量
-	StartupTimeoutMS int               `yaml:"startup_timeout_ms"` // 握手超时毫秒，0=默认 10000
-	CallTimeoutMS    int               `yaml:"call_timeout_ms"`    // 单次调用超时毫秒，0=默认 20000
-	LogStderr        bool              `yaml:"log_stderr"`         // true=把插件 stderr 写入日志目录下 plugins/<插件名>.log
+	Enabled          bool              // 插件开关，默认 true
+	Args             []string          // 原样传给程序的参数，不做 shell 展开（仅开发调试时由 plugin.yml 指定）
+	Grants           []string          // 收紧权限：nil=不限制（按插件声明授权）
+	Env              map[string]string // 额外环境变量；默认只继承 PATH、HOME、LANG 等少量变量
+	StartupTimeoutMS int               // 握手超时毫秒，0=默认 10000
+	CallTimeoutMS    int               // 单次调用超时毫秒，0=默认 20000
+	LogStderr        bool              // true=把插件 stderr 写入日志目录下 plugins/<插件名>.log
 
-	loadErr error // 读取或解析 plugin.yml 失败的原因；非空时该插件只展示、不启动
+	loadErr error // 发现或解析失败的原因；非空时该插件只展示、不启动
+}
+
+// manifest plugin.yml 的内容，全部可选
+type manifest struct {
+	Enabled          *bool             `yaml:"enabled"`
+	Command          string            `yaml:"command"`
+	Args             []string          `yaml:"args"`
+	Grants           *[]string         `yaml:"grants"`
+	Env              map[string]string `yaml:"env"`
+	StartupTimeoutMS int               `yaml:"startup_timeout_ms"`
+	CallTimeoutMS    int               `yaml:"call_timeout_ms"`
+	LogStderr        bool              `yaml:"log_stderr"`
 }
 
 // Validate 校验插件配置。未开启的插件不校验（关掉开关即可绕过写错的配置）。
@@ -159,14 +188,19 @@ func (c Config) Validate() error {
 		return nil
 	}
 	if !namePattern.MatchString(c.Name) {
-		return fmt.Errorf("%w: 插件目录名 %q 只能由小写字母、数字、下划线组成（1～64 个字符）", ErrInvalidConfig, c.Name)
+		return fmt.Errorf("%w: 插件名 %q 只能由小写字母、数字、下划线组成（1～64 个字符）", ErrInvalidConfig, c.Name)
 	}
 	if strings.TrimSpace(c.Command) == "" {
-		return fmt.Errorf("%w: command 不能为空", ErrInvalidConfig)
+		return fmt.Errorf("%w: 没有找到可执行文件", ErrInvalidConfig)
 	}
 	for key := range c.Env {
 		if key == "" || strings.ContainsAny(key, "=\x00") {
 			return fmt.Errorf("%w: env 中的变量名 %q 无效", ErrInvalidConfig, key)
+		}
+	}
+	for _, g := range c.Grants {
+		if !grantPattern.MatchString(g) {
+			return fmt.Errorf("%w: grants 中的 %q 无效（只能由小写字母、数字、下划线、点、连字符和 * 组成）", ErrInvalidConfig, g)
 		}
 	}
 	for _, t := range []struct {
@@ -181,74 +215,40 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Discover 扫描插件目录：每个含 plugin.yml 的子目录是一个插件，按目录名排序返回。
-// 目录不存在时自动创建并返回空列表。以 . 开头的条目、普通文件与缺少 plugin.yml 的子目录会被跳过，
-// 跳过原因通过 skipped 返回供启动日志提示。plugin.yml 写错的插件仍会返回（带错误状态），
-// 以便在 get_plugin_list 中看到。
-func Discover(dir string) (configs []Config, skipped []string, err error) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := os.MkdirAll(abs, 0o755); err != nil {
-		return nil, nil, fmt.Errorf("创建插件目录失败: %w", err)
-	}
-	entries, err := os.ReadDir(abs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("读取插件目录失败: %w", err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") || !e.IsDir() {
-			continue
-		}
-		pluginDir := filepath.Join(abs, name)
-		manifest := filepath.Join(pluginDir, ManifestName)
-		if _, statErr := os.Stat(manifest); statErr != nil {
-			skipped = append(skipped, fmt.Sprintf("跳过 %s: 目录内没有 %s", name, ManifestName))
-			continue
-		}
-		cfg, loadErr := loadManifest(manifest)
-		cfg.Name, cfg.Dir = name, pluginDir
-		if loadErr != nil {
-			cfg.Enabled = false
-			cfg.loadErr = loadErr
-		}
-		configs = append(configs, cfg)
-	}
-	sort.Slice(configs, func(i, j int) bool { return configs[i].Name < configs[j].Name })
-	return configs, skipped, nil
-}
-
-// loadManifest 解析 plugin.yml；不认识的字段视为错误，避免把 enable 之类的笔误静默忽略
-func loadManifest(path string) (Config, error) {
-	var cfg Config
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, fmt.Errorf("%w: 读取 %s 失败: %v", ErrInvalidConfig, ManifestName, err)
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("%w: 解析 %s 失败: %v", ErrInvalidConfig, ManifestName, err)
-	}
-	return cfg, nil
-}
-
-// Capability 插件在握手时声明的一项能力
+// Capability 一项能力的声明（插件握手时声明，或 goqbot 提供给插件）
 type Capability struct {
-	Name        string          `json:"name"`         // 能力名，如 cookie.status
-	Description string          `json:"description"`  // 能力说明
-	InputSchema json.RawMessage `json:"input_schema"` // 参数的 JSON Schema（由插件自行校验）
-	Sensitive   bool            `json:"sensitive"`    // true=返回凭证等敏感数据，仅允许开启了 allow-sensitive-plugins 的连接调用
+	Name         string          `json:"name"`                    // 能力名
+	Description  string          `json:"description"`             // 能力说明
+	InputSchema  json.RawMessage `json:"input_schema"`            // 参数的 JSON Schema（由提供方自行校验）
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"` // 返回结果的 JSON Schema，只用于展示
+	Sensitive    bool            `json:"sensitive"`               // true=敏感能力（返回凭证或能改动 goqbot）
+}
+
+// CapabilityInfo get_plugin_list 中的一项能力：声明内容加上注册情况
+type CapabilityInfo struct {
+	Capability
+	Registered bool   `json:"registered"` // 是否已注册成 OneBot 动作
+	Reason     string `json:"reason"`     // 未注册的原因：conflict_builtin / conflict_plugin / protocol_v1
+}
+
+// EventDecl 插件声明可能发出的事件（只用于展示）
+type EventDecl struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // Info 插件状态快照（get_plugin_list 的返回项）
 type Info struct {
-	Name         string       `json:"name"`         // 实例名（插件目录名）
-	Version      string       `json:"version"`      // 插件握手时上报的版本
-	State        string       `json:"state"`        // 状态，见 State* 常量
-	Reason       string       `json:"reason"`       // 最近一次失败的固定错误码，正常时为空
-	Restarts     int          `json:"restarts"`     // 自动重启次数
-	Capabilities []Capability `json:"capabilities"` // 已声明的能力（就绪后才有）
+	Name            string           `json:"name"`             // 实例名
+	Kind            string           `json:"kind"`             // 插件种类：js / executable
+	Version         string           `json:"version"`          // 插件握手时上报的版本
+	ProtocolVersion string           `json:"protocol_version"` // 握手协商出的协议版本，未握手时为空
+	State           string           `json:"state"`            // 状态，见 State* 常量
+	Reason          string           `json:"reason"`           // 最近一次失败的固定错误码，正常时为空
+	Restarts        int              `json:"restarts"`         // 自动重启次数
+	Capabilities    []CapabilityInfo `json:"capabilities"`     // 已声明的能力（就绪后才有）
+	Events          []EventDecl      `json:"events"`           // 声明可能发出的事件
+	Requires        []string         `json:"requires"`         // 插件声明需要调用的能力
+	Grants          []string         `json:"grants"`           // plugin.yml 收紧后的权限；null=不限制
+	DroppedEvents   int64            `json:"dropped_events"`   // 来不及推送而丢弃的事件数
 }

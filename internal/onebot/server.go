@@ -110,7 +110,7 @@ func (c *wsConn) handleRequest(payload []byte) {
 	}()
 	resp := c.caller.handleScopedRequest(payload, c.scope)
 	// 插件结果可能包含 Cookie 等凭证，只属于本次连接，不放入重连重发缓存
-	if err := c.writeFrame(outboundFrame{payload: resp, replay: !isPluginRequest(payload)}); err != nil {
+	if err := c.writeFrame(outboundFrame{payload: resp, replay: !c.caller.isPluginRequest(payload)}); err != nil {
 		filelog.Errorf("[onebot] 写回动作响应失败: %v", err)
 	}
 }
@@ -326,4 +326,27 @@ func (s *WSServer) onEventPush(ev *Event) int {
 	}
 	s.eventCon = s.eventCon[:j]
 	return j
+}
+
+// isClosed 连接是否已关闭
+func (c *wsConn) isClosed() bool {
+	select {
+	case <-c.closeCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// Status 正向 WS 的连接状态（供插件的 host.info 查询）
+func (s *WSServer) Status() map[string]any {
+	s.mu.Lock()
+	n := 0
+	for _, conn := range s.eventCon {
+		if !conn.isClosed() {
+			n++
+		}
+	}
+	s.mu.Unlock()
+	return map[string]any{"type": "ws", "address": s.cfg.Address, "connected": n > 0, "clients": n}
 }

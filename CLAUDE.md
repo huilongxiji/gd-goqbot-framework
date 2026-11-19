@@ -30,7 +30,7 @@
 
 **不改版本号** —— 不影响 goqbot 程序本身的改动：
 - 只改 `README.md`、`docs/`、注释
-- 只改 `nb_plugins_demo/` 示例插件、`dist/build.sh`、`.gitignore`、IDE 配置
+- 只改 `nb_plugins_demo/`、`plugins_demo/` 示例插件、`dist/build.sh`、`dist/package.sh`、`.gitignore`、IDE 配置
 - 只改测试代码
 
 ### 执行规则
@@ -91,18 +91,18 @@ git commit -m "新增卡片消息 (1.11.0)"
 1. **检查**：
    - `git status` 显示代码已全部提交，没有未提交的改动（编译出的文件必须和 tag 对应的代码一致）。
    - `main.go` 的 `AppVersion` 与要打的 tag 一致，且这个 tag 还不存在。
-2. **编译全部平台的最新执行文件**：在项目根目录运行 `./dist/build.sh`（不带参数 = 编译全部 6 个平台）。产物在 `dist/` 下：
+2. **编译并打包全部平台**：在项目根目录运行 `./dist/package.sh`（不带参数 = 全部 6 个平台）。它会先调用 `./dist/build.sh` 编译 6 个平台的 goqbot，再下载各平台的 Node 26（自动取最新版本，校验官方 sha256），组装成 12 个压缩包，输出到 `dist/release/`：
 
-   | 平台 | 文件 |
-   | --- | --- |
-   | Linux x86_64 | `goqbot-linux-amd64` |
-   | Linux ARM64 | `goqbot-linux-arm64` |
-   | Windows x64 | `goqbot-windows-amd64.exe` |
-   | Windows ARM64 | `goqbot-windows-arm64.exe` |
-   | macOS Intel | `goqbot-darwin-amd64` |
-   | macOS Apple Silicon | `goqbot-darwin-arm64` |
+   | 平台 | 完整包（带 Node 26） | 精简包（只有 goqbot） |
+   | --- | --- | --- |
+   | Linux x86_64 | `goqbot-v<版本>-linux-amd64.zip` | `goqbot-v<版本>-linux-amd64-lite.zip` |
+   | Linux ARM64 | `goqbot-v<版本>-linux-arm64.zip` | `goqbot-v<版本>-linux-arm64-lite.zip` |
+   | Windows x64 | `goqbot-v<版本>-windows-amd64.zip` | `goqbot-v<版本>-windows-amd64-lite.zip` |
+   | Windows ARM64 | `goqbot-v<版本>-windows-arm64.zip` | `goqbot-v<版本>-windows-arm64-lite.zip` |
+   | macOS Intel | `goqbot-v<版本>-darwin-amd64.zip` | `goqbot-v<版本>-darwin-amd64-lite.zip` |
+   | macOS Apple Silicon | `goqbot-v<版本>-darwin-arm64.zip` | `goqbot-v<版本>-darwin-arm64-lite.zip` |
 
-   确认 6 个平台都显示 OK；有失败的要告诉用户，不要继续发布。`dist/` 已被 `.gitignore` 忽略，这些文件不会进仓库。
+   完整包里是 `goqbot[.exe]`、`runtime/node[.exe]`（及 Node 的 `LICENSE`）、`plugins/goqbot.d.ts`；精简包里只有 `goqbot[.exe]`。确认 6 个平台的编译和打包都显示 OK，并记下脚本最后输出的 Node 版本（写进 Release 文案）；有失败的要告诉用户，不要继续发布。下载 Node 慢时可以加 `NODE_MIRROR=https://npmmirror.com/mirrors/node`。`dist/` 已被 `.gitignore` 忽略，这些文件不会进仓库。
 3. **整理上传文案**：用 `git log <上一个tag>..HEAD --format="%s"` 列出这段时间的提交，按下面的模板整理成 Release 文案（只写用户看得懂的改动，去掉「文档」「其他」类提交里与使用无关的内容）。
 4. **把以下内容一次性交给用户**：
    - 打 tag 和上传的命令：
@@ -113,8 +113,8 @@ git commit -m "新增卡片消息 (1.11.0)"
      ```
 
    - Release 标题和文案（完整 Markdown，可直接粘贴）。
-   - 6 个执行文件的完整路径（`dist/` 下），以及文件大小。
-   - 在 GitHub 网页上发布的步骤：仓库页 → Releases → Draft a new release → 选择刚推送的 tag → 填标题、粘贴文案 → 把 6 个执行文件拖进附件区 → Publish release。
+   - 12 个压缩包的完整路径（`dist/release/` 下），以及文件大小。
+   - 在 GitHub 网页上发布的步骤：仓库页 → Releases → Draft a new release → 选择刚推送的 tag → 填标题、粘贴文案 → 把 12 个压缩包拖进附件区 → Publish release。
 
 ### Release 文案模板
 
@@ -136,14 +136,18 @@ git commit -m "新增卡片消息 (1.11.0)"
 - 不兼容改动：（没有就写「无」）
 
 ## 下载
-| 平台 | 文件 |
-|---|---|
-| Linux x86_64 | `goqbot-linux-amd64` |
-| Linux ARM64（树莓派等） | `goqbot-linux-arm64` |
-| Windows x64 / ARM64 | `goqbot-windows-amd64.exe` / `goqbot-windows-arm64.exe` |
-| macOS Intel / Apple Silicon | `goqbot-darwin-amd64` / `goqbot-darwin-arm64` |
+每个平台两种压缩包：**完整包**自带 Node（本版为 Node v26.x.y），能直接运行 JS / TS 插件，推荐下载；**精简包**（文件名带 `-lite`）只有 goqbot，体积小。
 
-Linux / macOS 下载后先执行 `chmod +x goqbot-*`。
+| 平台 | 完整包 | 精简包 |
+|---|---|---|
+| Linux x86_64 | `goqbot-v1.11.1-linux-amd64.zip` | `goqbot-v1.11.1-linux-amd64-lite.zip` |
+| Linux ARM64（树莓派等） | `goqbot-v1.11.1-linux-arm64.zip` | `goqbot-v1.11.1-linux-arm64-lite.zip` |
+| Windows x64 | `goqbot-v1.11.1-windows-amd64.zip` | `goqbot-v1.11.1-windows-amd64-lite.zip` |
+| Windows ARM64 | `goqbot-v1.11.1-windows-arm64.zip` | `goqbot-v1.11.1-windows-arm64-lite.zip` |
+| macOS Intel | `goqbot-v1.11.1-darwin-amd64.zip` | `goqbot-v1.11.1-darwin-amd64-lite.zip` |
+| macOS Apple Silicon | `goqbot-v1.11.1-darwin-arm64.zip` | `goqbot-v1.11.1-darwin-arm64-lite.zip` |
+
+解压后运行里面的 `goqbot`（Windows 双击 `goqbot.exe`）。
 
 完整文档：https://huilongxiji.github.io/gd-goqbot-docs/
 ```

@@ -352,6 +352,10 @@ func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope
 	case "call_plugin":
 		return c.callPlugin(params, scope)
 	default:
+		// 插件注册的动作：内置动作优先，插件能力不会覆盖上面的任何一个
+		if m := c.pluginManager(); m != nil && m.HasAction(action) {
+			return c.callPluginAction(action, params, scope)
+		}
 		return failed(1404, "unsupported action: "+action)
 	}
 }
@@ -1149,7 +1153,7 @@ func (c *Caller) logSend(action, sceneLabel string, sceneID int64, out *OutMessa
 	blk := prettylog.New(title, tone)
 	if c.debug {
 		blk.Row("接口", action)
-		if p := safeParamSummary(action, params); p != "" {
+		if p := c.safeParamSummary(action, params); p != "" {
 			blk.Row("参数", p)
 		}
 		if err != nil {
@@ -1256,10 +1260,10 @@ func (c *Caller) logStandaloneAction(action string, params gjson.Result, ret map
 		tone = prettylog.ToneErr
 	}
 	blk := prettylog.New("动作 · "+action, tone)
-	blk.Row("内容", actionContent(action, params, ret))
+	blk.Row("内容", c.actionContent(action, params, ret))
 	if c.debug {
 		blk.Row("接口", action)
-		if p := safeParamSummary(action, params); p != "" {
+		if p := c.safeParamSummary(action, params); p != "" {
 			blk.Row("参数", p)
 		}
 		if okRet {
@@ -1301,17 +1305,17 @@ func paramSummary(params gjson.Result) string {
 }
 
 // safeParamSummary 日志用参数摘要；插件动作的参数可能含凭证，只展示插件名与能力名
-func safeParamSummary(action string, params gjson.Result) string {
-	if isPluginAction(action) {
+func (c *Caller) safeParamSummary(action string, params gjson.Result) string {
+	if c.isPluginAction(action) {
 		return pluginParamSummary(params)
 	}
 	return paramSummary(params)
 }
 
 // actionContent 动作日志「内容」行：失败时为错误信息，成功时为该动作的结果摘要
-func actionContent(action string, params gjson.Result, ret map[string]any) string {
-	if isPluginAction(action) {
-		return pluginActionContent(params, ret)
+func (c *Caller) actionContent(action string, params gjson.Result, ret map[string]any) string {
+	if c.isPluginAction(action) {
+		return pluginActionContent(action, params, ret)
 	}
 	if ret["status"] != "ok" {
 		if m, ok := ret["message"].(string); ok && m != "" {
@@ -2077,7 +2081,7 @@ func (c *Caller) handleScopedRequest(payload []byte, scope requestScope) []byte 
 	j := gjson.ParseBytes(payload)
 	action := strings.TrimSuffix(j.Get("action").Str, "_async")
 	params := j.Get("params")
-	if filelog.Enabled() && !isPluginAction(action) {
+	if filelog.Enabled() && !c.isPluginAction(action) {
 		filelog.WriteFile([]byte(filelog.FormatInfo(fmt.Sprintf(
 			"[onebot] action=%s params=%s echo=%v",
 			action, params.Raw, j.Get("echo").Value(),

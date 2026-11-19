@@ -1,0 +1,20 @@
+{
+  // 只给编辑器和类型检查用：goqbot 运行插件时不读这个文件，也不编译 TypeScript。
+  // 先在本目录运行一次 npm install 装上 @types/node（Node 自带模块的类型说明）。
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    // 下面三项保证写出来的代码能被 Node 直接运行（只用能直接去掉的类型写法）
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

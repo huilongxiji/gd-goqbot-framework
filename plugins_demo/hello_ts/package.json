@@ -1,0 +1,7 @@
+{
+  "name": "hello_ts",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "description": "goqbot TypeScript 插件最小示例"
+}

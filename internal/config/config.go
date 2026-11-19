@@ -30,9 +30,10 @@ type Config struct {
 	Plugins PluginsConfig `yaml:"plugins"`
 }
 
-// PluginsConfig 插件配置。插件本身放在插件目录下，开关写在各插件目录的 plugin.yml 中。
+// PluginsConfig 插件配置。插件放进插件目录即可载入，开关等可选设置写在各插件文件夹的 plugin.yml 中。
 type PluginsConfig struct {
 	Path string `yaml:"path"` // 插件目录，默认 plugins；相对路径=可执行文件同级
+	Node string `yaml:"node"` // 运行 JS / TS 插件的 Node 程序路径；空=依次找同级 runtime/node、系统 PATH 里的 node
 }
 
 // LogConfig 本地文件日志配置

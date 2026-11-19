@@ -235,3 +235,18 @@ func (c *WSClient) StartHeartbeat() {
 		}
 	}()
 }
+
+// Status 反向 WS 的连接状态（供插件的 host.info 查询）。只配置了 api 端点时以事件端点为准，无法判断时为 false。
+func (c *WSClient) Status() map[string]any {
+	addr := c.cfg.Universal
+	if addr == "" {
+		addr = c.cfg.Event
+	}
+	if addr == "" {
+		addr = c.cfg.API
+	}
+	c.mu.Lock()
+	connected := (c.universal != nil && !c.universal.isClosed()) || (c.event != nil && !c.event.isClosed())
+	c.mu.Unlock()
+	return map[string]any{"type": "ws-reverse", "address": addr, "connected": connected}
+}
