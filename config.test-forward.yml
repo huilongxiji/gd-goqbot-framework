@@ -1,9 +1,0 @@
-qq:
-  disabled: true
-
-onebot:
-  access_token: testtoken
-  heartbeat_interval: 0
-  servers:
-    - ws:
-        address: 127.0.0.1:16700

@@ -1,98 +1,63 @@
+# goqbot 配置文件。每一项的详细说明见：
+# https://huilongxiji.github.io/gd-goqbot-docs/guide/config
+# 标 ★ 的是首次使用必须填写的项。
+
 qq:
-  app_id: "your_app_id"
-  uin: 0                        # 机器人 QQ 号，use_uin=true 时作 self_id
-  use_uin: false                # true=self_id 用 uin, false=用 app_id
-  token: "your_app_token"       # 机器人令牌，仅留存
-  client_secret: "your_secret"  # = botgo AppSecret，用于鉴权取 token
-  sandbox: false
-  shard_count: 1                # 分片总数，最小为 1
-  shard_id: 0                   # 本进程分片号，从 0 开始
-  # 用户发「@机器人 你好」时，上报怎么处理这段 @：
-  #   strip - 自动忽略，下游只看到「你好」（默认，与现在一致）
-  #   raw   - 保留 QQ 原始 <@openid> 文本，交给下游自己处理
-  #   at    - 转成 OneBot at（message 段数组 + raw_message CQ）
-  mention_mode: strip
-  # intents: 1073741824         # 可选：硬覆盖自动推导的 intent
-  # self_id: 0                  # 可选：覆盖上报用 self_id
-  # disabled: true              # 仅测试 OneBot 连接时可设为 true
-  # IP 白名单被拒(错误码 11298)后的处置策略：
-  #   stop  = 停止 QQ 上游连接与重连，进程不退出（默认）
-  #   retry = 等待 ip_reject_retry_interval 秒后重试，IP 恢复白名单可自动恢复
-  #   exit  = 打印提示后关闭整个框架，等加白名单后手动重启
-  ip_reject_action: "stop"
-  ip_reject_retry_interval: 60  # 仅 action=retry 生效；重试间隔秒，默认 60，最小 5
-  text_intent:                  # 按 handler 名订阅事件，intent 自动推导
-    - "ReadyHandler"
-    - "ErrorNotifyHandler"
-    - "GroupATMessageEventHandler"
-    - "GroupMessageEventHandler"   # 群全量消息（需群主在手机QQ群设置开启"获取群内全部消息"）
-    - "C2CMessageEventHandler"
-    # 可选项（按需开启）：
-    # - "C2CFriendEventHandler"        # 好友添加/删除 -> notice friend_add / friend_decrease
-    # - "GroupAddRobotEventHandler"    # 机器人入群 -> notice group_increase
-    # - "GroupDelRobotEventHandler"    # 机器人退群 -> notice group_decrease
-    # - "GroupMsgRejectEventHandler"   # 群关闭主动消息推送 -> notice group_msg_reject(自定义)
-    # - "GroupMsgReceiveEventHandler"  # 群开启主动消息推送 -> notice group_msg_receive(自定义)
-    # - "GroupJoinRequestEventHandler" # 用户申请加群 -> request/group（需机器人为群管理员）
-    # - "GroupMemberEventHandler"      # 群成员进退群 -> notice group_increase/decrease（intent 1<<24，需在开放平台开启群成员事件）
-    # - "C2CMsgRejectEventHandler"     # 用户关闭 C2C 推送 -> notice c2c_msg_reject(自定义)；同时落库供 get_c2c_msg_state 查询
-    # - "C2CMsgReceiveEventHandler"    # 用户开启 C2C 推送 -> notice c2c_msg_receive(自定义)；同时落库供 get_c2c_msg_state 查询
-    # - "InteractionHandler"           # 按钮交互：回传 notice(interaction)+message 事件；自动回执(PUT interactions)消除转圈；回复自动走被动 event_id；仍可用 put_interaction 覆盖回执码
-    # - "ATMessageEventHandler"        # 频道 @（本期不转换）
-    # - "DirectMessageEventHandler"    # 频道私信（本期不转换）
+  app_id: "your_app_id"            # ★ QQ 开放平台的 AppID
+  client_secret: "your_secret"     # ★ QQ 开放平台的 AppSecret
+  token: "your_app_token"          # 机器人令牌，可不填
+  uin: 0                           # 机器人的 QQ 号，use_uin 为 true 时作为 self_id
+  use_uin: false                   # self_id 用 QQ 号（true）还是 AppID（false）
+  sandbox: false                   # true=连接沙箱环境
+  shard_count: 1                   # 分片总数
+  shard_id: 0                      # 本进程的分片号，从 0 开始
+  mention_mode: strip              # 「@机器人」怎么上报：strip 去掉 / at 转成 at 段（多框架推荐）/ raw 保留原文
+  ip_reject_action: "stop"         # IP 不在白名单（错误码 11298）时：stop 停止连接 / retry 定时重试 / exit 退出
+  ip_reject_retry_interval: 60     # retry 的重试间隔（秒）
+  text_intent:                     # 要接收的事件，去掉行首的 # 即可打开
+    - "ReadyHandler"                 # 连接就绪（必须保留）
+    - "ErrorNotifyHandler"           # 连接错误（必须保留）
+    - "GroupATMessageEventHandler"   # 群里 @ 机器人的消息
+    - "GroupMessageEventHandler"     # 群里的全部消息（需要群主授权）
+    - "C2CMessageEventHandler"       # 单聊消息
+    # 可选：
+    # - "InteractionHandler"           # 按钮点击（用按钮时必须打开）
+    # - "C2CFriendEventHandler"        # 加好友、删好友
+    # - "GroupAddRobotEventHandler"    # 机器人被拉进群
+    # - "GroupDelRobotEventHandler"    # 机器人被移出群
+    # - "GroupMemberEventHandler"      # 群成员进群、退群（需在开放平台开启群成员事件）
+    # - "GroupJoinRequestEventHandler" # 用户申请加群（需机器人是群管理员）
+    # - "GroupMsgRejectEventHandler"   # 群关闭了机器人主动发言
+    # - "GroupMsgReceiveEventHandler"  # 群开启了机器人主动发言
+    # - "C2CMsgRejectEventHandler"     # 用户关闭了主动消息推送（get_c2c_msg_state 依赖它）
+    # - "C2CMsgReceiveEventHandler"    # 用户开启了主动消息推送（同上）
+    # - "ATMessageEventHandler"        # 频道里 @ 机器人（暂不转换）
+    # - "DirectMessageEventHandler"    # 频道私信（暂不转换）
 
 onebot:
-  access_token: ""
-  heartbeat_interval: 5000
-  message_format: "array"       # message 字段恒为消息段数组；设为 string 时额外输出 message_cq(CQ 字符串)，raw_message 始终包含 CQ
-  debug: false                  # true 时动作边框额外输出接口/参数/状态/耗时；同时显示 botgo 心跳
-  downtime_message: ""          # 全下游(正/反向 WS)都掉线时回发 QQ 的兜底文本，空=关闭
-  servers:
-    # 正向 WS：NoneBot 作为客户端连入
-    - ws:
+  access_token: ""                 # ★ 连接口令，框架那边填同一个值；建议设置
+  heartbeat_interval: 5000         # 心跳间隔（毫秒），负数=关闭
+  message_format: "array"          # 消息格式：array 消息段 / string 额外附带 CQ 码
+  debug: false                     # true=日志里显示更多调试信息
+  downtime_message: ""             # 所有框架都掉线时自动回复的文字，空=不回复
+  servers:                         # ★ 框架的连接方式，可以写多条
+    - ws:                          # 正向 WS：框架连进来
         address: 0.0.0.0:6700
-        # allow-sensitive-plugins: true  # 可选：允许经此连入的下游调用插件的敏感能力（如获取 Cookie），默认关闭
-    # 反向 WS：适配器主动连 NoneBot 官方 OneBot V11 适配器
-    - ws-reverse:
+        # allow-sensitive-plugins: true  # 允许这条连接调用插件的敏感能力
+    - ws-reverse:                  # 反向 WS：goqbot 主动连框架（这是 NoneBot2 的默认地址）
         universal: ws://127.0.0.1:8080/onebot/v11/ws
-        reconnect-interval: 3000
-        # allow-sensitive-plugins: true  # 可选：允许该下游调用插件的敏感能力，默认关闭
+        reconnect-interval: 3000   # 断线重连间隔（毫秒）
+        # allow-sensitive-plugins: true  # 允许这条连接调用插件的敏感能力
 
 idmap:
-  # disabled: true     # 设为 true 则纯内存、不持久化（重启后 message_id/反查丢失）
-  path: "idmap.db"     # 持久化文件；相对路径=可执行文件同级目录；不存在则创建，存在则直接加载
+  path: "idmap.db"                 # ID 对照表，重启后仍能撤回消息、查回用户
+  # disabled: true                 # 只存在内存里，重启后丢失
 
 log:
-  enabled: true        # false=仅终端输出，不写本地日志文件
-  path: "logs"           # 日志目录；相对路径=可执行文件同级；按天生成 goqbot-YYYY-MM-DD.log
+  enabled: true                    # 是否按天写日志文件
+  path: "logs"                     # 日志目录
 
-# 可选：插件。把插件文件夹（JS / TS 源代码，或编译好的可执行文件）放进插件目录，重启 goqbot 即可载入，
-# 不需要编译、不需要写配置；JS / TS 插件用发布包自带的 Node 运行。不用时把它移出插件目录。
-# 插件的敏感能力（如获取 Cookie）只对设置了 onebot.access_token、且开启了 allow-sensitive-plugins 的连接开放。
+# 插件一般不用配置，放进插件目录就能用
 # plugins:
-#   path: "plugins"    # 插件目录，默认 plugins；相对路径=可执行文件同级；不存在会自动创建
-#   node: ""           # 运行 JS / TS 插件的 Node 程序路径；留空=依次找同级的 runtime/node、系统里安装的 node（需要 22.18 及以上）
-
-# ─── QQ Bot API v2 能力/频控说明（无需配置，仅备忘）───
-# 主动推送：
-#   * 群聊主动推送需群主打开【机器人在群聊内发言】。官方频控：Bot 维度 60/qpm（未认证 30/qpm），
-#     单关系 20/qpm，每个群每天最多 1000 条。超额发送失败。
-#     （对应动作 send_group_active_msg / send_group_msg 未命中被动凭证时）
-#   * 单聊互动召回消息(is_wakeup)：用户主动对话后 30 天内分 4 个周期（当天 / 1-3天 / 3-7天 / 7-30天）
-#     每周期可下发 1 条，消息类型与机器人已有权限一致。
-#     用法：send_private_msg / send_msg 传 params.is_wakeup=true（与 reply/被动 event_id 互斥，自动走主动语义）。
-# 被动回复：群聊 5 分钟内每条最多回 5 次；单聊 60 分钟内每条最多回 4 次。群消息不支持流式参数。
-# 自定义 Markdown：2026/04/23 起单聊/群聊自定义 markdown(content 原生语法)全量开放，无需申请模版（频道仍需内邀）。
-# 新增上报字段：
-#   * sender.role      群成员身份 owner/admin/member（来自 author.member_role）
-#   * union_openid     跨 AppID 关联标识；仅在向平台申请配置后 QQ 才下发，存在时写入事件级与 sender.union_openid
-#   * msg_scene_ext    message_scene.ext（含 msg_idx/auth_token 等）
-# 注意：所有 user_id/group_id/openid 均为机器人场景内标识，与真实 QQ号/群号无关，跨业务打通只能靠 union_openid。
-# 群聊管理 API（官方 v2）：
-#   * get_group_info / get_group_bot_state / get_group_member_list / get_group_member_info（查他人）：白名单接口，非白名单机器人调用返回 11253。
-#   * get_group_join_requests / set_group_add_request / set_group_ban / get_group_ban：需机器人为群管理员。
-#   * GROUP_JOIN_REQUEST 事件：同样需机器人为群管理员才会下发；审批用 set_group_add_request(flag=join_request_id)。
-# C2C 推送状态查询（非官方接口，本地事件缓存）：
-#   * get_c2c_msg_state（别名 get_friend_msg_state）：查用户是否开启主动消息推送。
-#   * 依赖启用 C2CMsgRejectEventHandler / C2CMsgReceiveEventHandler；状态写入 idmap（可持久化）。
-#   * 仅用户手动操作过开关才有记录；从未操作过返回 known=false（真正能否送达仍以发送结果为准）。
+#   path: "plugins"                # 插件目录
+#   node: ""                       # 运行 JS / TS 插件的 Node，留空=自动查找
