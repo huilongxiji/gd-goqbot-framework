@@ -643,7 +643,7 @@ export function renderConfig(root) {
 
   // ---------- 改动检测 ----------
   const FIELDS = ["qq.app_id", "qq.client_secret", "qq.token", "qq.uin", "qq.use_uin", "qq.sandbox", "qq.shard_count", "qq.shard_id",
-    "qq.mention_mode", "qq.ip_reject_action", "qq.ip_reject_retry_interval", "qq.text_intent",
+    "qq.mention_mode", "qq.ip_reject_action", "qq.ip_reject_retry_interval", "qq.developer_openid", "qq.text_intent",
     "onebot.message_format", "onebot.debug", "onebot.downtime_message", "idmap.disabled", "idmap.path", "log.enabled", "log.path", "plugins.path", "plugins.node"];
   function goqbotChanges() {
     const out = {};
@@ -767,6 +767,7 @@ export function renderConfig(root) {
           field("@机器人的上报方式", select("qq.mention_mode", [["strip", "去掉 @（默认）"], ["at", "转成 at 段（多框架推荐）"], ["raw", "保留原文"]], "strip")),
           field("IP 不在白名单时", select("qq.ip_reject_action", [["stop", "停止连接"], ["retry", "定时重试"], ["exit", "退出程序"]], "stop")),
           field("重试间隔（秒）", num("qq.ip_reject_retry_interval", { min: 5 }), "选「定时重试」时生效"),
+          field("开发者的 OpenID（可不填）", text("qq.developer_openid"), "机器人开发者（机器人账号的管理员）自己的 OpenID，点自己的头像在用户资料里能看到。开发者是群主或管理员的群，被动回复为 60 分钟、每条 50 次"),
           h("details", { class: "full more" },
             h("summary", null, "分片（一般不用改）"),
             h("div", { class: "form-grid" },

@@ -366,8 +366,26 @@ function push(event: string, data: unknown): void {
 
 let settings: Settings;
 let store: ChatStore;
-/** 机器人在各个群里的身份，缓存 5 分钟 */
-const botRoles = new Map<string, { role: string; error: string; at: number }>();
+/** 机器人在各个群里的状态（身份、是否允许主动发言），缓存 5 分钟 */
+const botRoles = new Map<string, { role: string; allow: boolean | null; error: string; at: number }>();
+
+/** 查机器人在群里的状态；官方接口需要白名单，查不到时 role 为空、allow 为 null */
+async function botState(ctx: Context, chat: { key: string; id: unknown; openid?: string }) {
+  const cached = botRoles.get(chat.key);
+  if (cached && Date.now() - cached.at < 5 * 60_000) {
+    return cached;
+  }
+  const entry = { role: "", allow: null as boolean | null, error: "", at: Date.now() };
+  try {
+    const st = await call<Record<string, unknown>>(ctx, "get_group_bot_state", chat.openid ? { group_openid: chat.openid } : { group_id: idOf(chat.id) });
+    entry.role = String(st.member_role ?? "");
+    entry.allow = typeof st.allow_proactive_msg === "boolean" ? st.allow_proactive_msg : null;
+  } catch (e) {
+    entry.error = (e as Error).message;
+  }
+  botRoles.set(chat.key, entry);
+  return entry;
+}
 
 /** /api/* 接口 */
 async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -433,20 +451,22 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       if (!chat || chat.type !== "group") {
         throw new HttpError(404, "没有这个群");
       }
-      const cached = botRoles.get(chat.key);
-      if (cached && Date.now() - cached.at < 5 * 60_000) {
-        return send(res, 200, { role: cached.role, error: cached.error });
+      const st = await botState(ctx, chat);
+      return send(res, 200, { role: st.role, error: st.error });
+    }
+    case "GET /api/chats/quota": {
+      // 发消息额度：被动回复还剩多久、已回复几次，今天发了几条主动消息（数据来自 goqbot 的记录）
+      const chat = store.get(q.get("key") ?? "");
+      if (!chat) {
+        throw new HttpError(404, "没有这个会话");
       }
-      let role = "";
-      let error = "";
-      try {
-        const st = await call<Record<string, unknown>>(ctx, "get_group_bot_state", chat.openid ? { group_openid: chat.openid } : { group_id: idOf(chat.id) });
-        role = String(st.member_role ?? "");
-      } catch (e) {
-        error = (e as Error).message;
-      }
-      botRoles.set(chat.key, { role, error, at: Date.now() });
-      return send(res, 200, { role, error });
+      const target = chat.type === "group"
+        ? (chat.openid ? { group_openid: chat.openid } : { group_id: idOf(chat.id) })
+        : (chat.openid ? { user_openid: chat.openid } : { user_id: idOf(chat.id) });
+      const quota = await call<Record<string, unknown>>(ctx, "get_message_quota", target);
+      // 群主有没有打开「允许机器人主动发言」（查不到时为 null）
+      const allow = chat.type === "group" ? (await botState(ctx, chat)).allow : null;
+      return send(res, 200, { ...quota, allow_proactive_msg: allow, now: Math.floor(Date.now() / 1000) });
     }
     case "POST /api/chats/recall": {
       const body = await readJSON(req);
@@ -738,6 +758,7 @@ const plugin: Plugin = {
     "delete_msg",
     "set_group_ban",
     "get_group_bot_state",
+    "get_message_quota",
     "host.info",
     "host.logs",
     "host.config.get",

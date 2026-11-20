@@ -120,6 +120,8 @@ export function onMessage({ chat, message }) {
   if (isOpen) {
     view.messages.push(message);
     appendMessage(message, true);
+    // 新消息会刷新被动回复凭证、机器人发消息会用掉次数：稍后重新查一下额度
+    if (view.quota) refreshQuotaSoon();
   }
 }
 
@@ -253,7 +255,7 @@ export function renderChatPage(root, type, key) {
   renderList();
   if (key && chatState.chats.has(key)) openChat(key);
   else renderEmptyPanel();
-  return () => { view = null; };
+  return () => { clearInterval(view?.quotaTimer); view = null; };
 }
 
 function renderList() {
@@ -304,7 +306,10 @@ async function openChat(key) {
   view.botRole = chat.type === "group" ? null : "";
   view.composer = renderComposer(chat);
   if (chat.type === "group") loadBotRole(key);
-  fill(view.panel, view.head, view.scroller, view.composer.root);
+  clearInterval(view.quotaTimer);
+  view.quota = chat.type === "group" ? renderQuotaCard() : null;
+  fill(view.panel, view.head, h("div", { class: "msgs-wrap" }, view.scroller, view.quota?.root), view.composer.root);
+  if (view.quota) startQuota(key);
   renderHeader();
   renderList();
   view.scroller.addEventListener("scroll", () => {
@@ -637,6 +642,112 @@ function messageNode(m) {
       bubble(renderSegments(m.message, { ...messageCtx(), bot: !!m.bot, event: m.event }))));
 }
 
+// ---------- 消息额度（群聊右上角） ----------
+// 数据来自 goqbot 的 get_message_quota：被动回复凭证（最近一条消息）还剩多久、已回复几次，今天已发的主动消息条数
+
+const QUOTA_COLLAPSED = "webui.quota.collapsed";
+
+function renderQuotaCard() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(QUOTA_COLLAPSED) === "1"; } catch { /* 浏览器不让用本地存储时按展开处理 */ }
+  const body = h("div", { class: "quota-body" }, h("p", { class: "quota-note" }, "正在查询…"));
+  const mini = h("span", { class: "quota-mini" });
+  const toggle = h("button", { class: "quota-toggle", type: "button" });
+  const root = h("aside", { class: "quota-card", "aria-label": "消息额度" },
+    h("div", { class: "quota-head" }, h("b", null, "消息额度"), mini, toggle), body);
+  const apply = () => {
+    root.classList.toggle("collapsed", collapsed);
+    toggle.textContent = collapsed ? "展开" : "收起";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  };
+  toggle.addEventListener("click", () => {
+    collapsed = !collapsed;
+    try { localStorage.setItem(QUOTA_COLLAPSED, collapsed ? "1" : "0"); } catch { /* 忽略 */ }
+    apply();
+  });
+  apply();
+  return { root, body, mini, data: null, offset: 0 };
+}
+
+function startQuota(key) {
+  loadQuota(key);
+  let ticks = 0;
+  view.quotaTimer = setInterval(() => {
+    if (!view || view.current !== key || !view.quota) return;
+    if (++ticks % 30 === 0) loadQuota(key); // 每 30 秒重新查一次
+    paintQuota();
+  }, 1000);
+}
+
+let quotaSoon;
+function refreshQuotaSoon() {
+  clearTimeout(quotaSoon);
+  const key = view.current;
+  quotaSoon = setTimeout(() => { if (view?.current === key) loadQuota(key); }, 800);
+}
+
+async function loadQuota(key) {
+  try {
+    const d = await api("GET", `/api/chats/quota?key=${encodeURIComponent(key)}`);
+    if (view?.current !== key || !view.quota) return;
+    view.quota.data = d;
+    view.quota.offset = (Number(d.now) || Date.now() / 1000) - Date.now() / 1000;
+    view.quota.error = "";
+  } catch (e) {
+    if (view?.current !== key || !view.quota) return;
+    view.quota.error = /get_message_quota|未知|unknown/i.test(e.message) ? "当前 goqbot 版本查不到额度，请先更新 goqbot" : e.message;
+  }
+  paintQuota();
+}
+
+function mmss(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function paintQuota() {
+  const q = view.quota;
+  if (!q) return;
+  if (q.error && !q.data) {
+    fill(q.body, h("p", { class: "quota-note warn" }, q.error));
+    q.mini.textContent = "查不到";
+    return;
+  }
+  const d = q.data;
+  if (!d) return;
+  const now = Date.now() / 1000 + q.offset;
+  const p = d.passive ?? {};
+  const a = d.active ?? {};
+  const left = (Number(p.expires_at) || 0) - now;
+  const used = Number(p.replies_used) || 0;
+  const limit = Number(p.replies_limit) || 5;
+  const ttlMin = Math.round((Number(p.ttl) || 300) / 60);
+  let passiveMain, passiveCls = "";
+  if (!p.received_at) { passiveMain = "还没有可回复的消息"; passiveCls = "muted"; }
+  else if (left <= 0) { passiveMain = "已过期"; passiveCls = "muted"; }
+  else if (used >= limit) { passiveMain = "次数已用完"; passiveCls = "warn"; }
+  else { passiveMain = `还剩 ${mmss(left)}`; passiveCls = left < 60 ? "warn" : "ok"; }
+  const allow = d.allow_proactive_msg;
+  fill(q.body,
+    h("div", { class: "quota-row" },
+      h("span", { class: "quota-label" }, "被动回复"),
+      h("span", { class: "quota-value " + passiveCls }, passiveMain),
+      p.received_at ? h("span", { class: "quota-sub" }, `已回复 ${used} / ${limit} 次`) : null,
+      h("span", { class: "quota-rule" }, p.boosted
+        ? `开发者是群主或管理员：有效期 ${ttlMin} 分钟，每条最多 ${limit} 次`
+        : `有效期 ${ttlMin} 分钟，每条最多 ${limit} 次`)),
+    h("div", { class: "quota-row" },
+      h("span", { class: "quota-label" }, "主动消息"),
+      allow === false
+        ? h("span", { class: "quota-value warn" }, "群主没有开启机器人主动发言")
+        : h("span", { class: "quota-value" }, `剩余 ${a.remaining ?? "—"} 条`),
+      h("span", { class: "quota-sub" }, `今日已发 ${a.sent_today ?? 0} / ${a.daily_limit ?? 1000} 条`)),
+    q.error ? h("p", { class: "quota-note warn" }, q.error) : null);
+  // 收起时只显示一行：被动回复能用时显示剩余时间，否则显示主动消息剩余条数
+  const passiveOk = p.received_at && left > 0 && used < limit;
+  q.mini.textContent = passiveOk ? `被动回复还剩 ${mmss(left)}` : allow === false ? "主动发言未开启" : `主动消息剩余 ${a.remaining ?? "—"} 条`;
+}
+
 // ---------- 输入框 ----------
 
 /** 旧版 WebUI 存的会话编号丢了精度，不能发消息 */
@@ -766,6 +877,7 @@ async function sendDraft() {
 async function sendMessage(key, message) {
   try {
     await api("POST", "/api/chats/send", { key, message });
+    if (view?.current === key && view.quota) refreshQuotaSoon();
     return true;
   } catch (e) {
     toast(friendlyError(e.message), "error");
