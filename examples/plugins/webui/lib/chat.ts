@@ -7,6 +7,7 @@
 import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { OneBotEvent } from "../../goqbot.js";
+import type { MediaCache } from "./media.ts";
 
 export type ChatType = "private" | "group";
 
@@ -210,6 +211,12 @@ export class ChatStore {
   private writing = new Map<string, Promise<void>>(); // 每个会话的写入按顺序进行
   private listeners = new Set<(ev: { chat: Chat; message: ChatMessage }) => void>();
   private renameListeners = new Set<(from: string, to: string) => void>();
+  private media: MediaCache | undefined;
+
+  /** 设置图片缓存：收到的图片会下载到本地，地址过期后还能看 */
+  setMedia(media: MediaCache): void {
+    this.media = media;
+  }
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, "chat");
@@ -263,6 +270,8 @@ export class ChatStore {
     const sender = (ev.sender && typeof ev.sender === "object" ? ev.sender : {}) as Record<string, unknown>;
     const raw = typeof ev.raw_message === "string" ? ev.raw_message : "";
     const segs = toSegments(ev.message, raw);
+    // 图片地址会过期：先记下本地缓存地址（data.local），后台下载
+    this.media?.attach(segs as unknown as Record<string, unknown>[], ev as Record<string, unknown>);
     const nickname = String(sender.card || sender.nickname || "");
 
     let chat = this.chats.get(key);

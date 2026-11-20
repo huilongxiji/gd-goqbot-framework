@@ -1,6 +1,6 @@
 // 私聊 / 群聊页面：左边会话列表，右边消息窗口。当前阶段只接收消息
 import { h, fill, icon, api, toast, promptDialog, confirmDialog, openDialog, shortTime, dayLabel, hue } from "./core.js";
-import { renderSegments, renderMarkdown, summaryOf, setImageViewer, setForwardViewer, forwardLine, stripFaces, onlyImages } from "./msg.js";
+import { renderSegments, renderMarkdown, markdownSourceOf, summaryOf, setImageViewer, setForwardViewer, forwardLine, stripFaces, onlyImages } from "./msg.js";
 
 const PAGE_SIZE = 50;
 
@@ -1168,17 +1168,57 @@ function openMessageMenu(m, x, y) {
   const name = senderName(m);
   const oldHint = "这条是旧版 WebUI 保存的记录，编号不完整，不能操作";
   const manage = group && !m.self ? canManage(m) : { ok: true, hint: "" };
+  const mdSource = markdownSourceOf(m.message, !!m.bot);
+  const copyable = mdSource || messageText(m).text;
+  // 机器人自己的消息只能在发出后 2 分钟内撤回
+  const sentAt = Number(m.recv_ms) || m.time * 1000;
+  const tooOld = m.self && Date.now() - sentAt > 2 * 60_000;
   openMenu("消息操作", [
     group && !m.self ? { label: `艾特 ${name}`, run: () => mentionUser(m), disabled: !userId || legacy, hint: !userId ? oldHint : "" } : null,
     { label: "回复", run: () => replyTo(m), disabled: !msgId || legacy, hint: !msgId ? oldHint : "" },
     { label: "复读", run: () => repeatMessage(m, repeat), disabled: !repeat || legacy, hint: !repeat ? "这类消息不能复读" : "" },
+    { label: mdSource ? "复制到 Markdown 编辑框" : "复制到输入框", run: () => copyToComposer(m, mdSource), disabled: !copyable || legacy, hint: !copyable ? "这条消息没有可以复制的文字" : "" },
+    mdSource ? { label: "复制 Markdown 源码", run: () => copyText(mdSource) } : null,
     { sep: true },
     group && !m.self ? { label: `禁言 ${name}…`, run: () => banUser(c, m, userId), disabled: !userId || legacy || !manage.ok, hint: !userId ? oldHint : manage.hint } : null,
-    { label: "撤回消息", danger: true, run: () => recallMessage(m, msgId), disabled: !msgId || (!group && !m.self) || !manage.ok,
-      hint: !msgId ? oldHint : !group && !m.self ? "私聊里只能撤回机器人自己发的消息" : manage.hint },
+    { label: "撤回消息", danger: true, run: () => recallMessage(m, msgId), disabled: !msgId || (!group && !m.self) || !manage.ok || tooOld,
+      hint: !msgId ? oldHint : tooOld ? "发出超过 2 分钟，不能撤回了" : !group && !m.self ? "私聊里只能撤回机器人自己发的消息" : manage.hint },
     { sep: true },
     { label: "查看原始数据", run: () => showRaw(m) },
   ], x, y, view.scroller);
+}
+
+/** 消息里的文字（表情标记换成说明文字）和其中 @ 的人 */
+function messageText(m) {
+  let text = "";
+  const mentions = [];
+  for (const s of m.message) {
+    const d = s.data ?? {};
+    if (s.type === "text") text += stripFaces(d.text);
+    else if (s.type === "at" && d.qq !== "all") {
+      const name = String(d.name || messageCtx().nameOf(d.qq) || d.qq);
+      text += "@" + name;
+      if (typeof d.qq === "string" && /^\d+$/.test(d.qq)) mentions.push({ name, userId: d.qq });
+    }
+  }
+  return { text: text.replace(/^\s+/, ""), mentions };
+}
+
+/** 把消息内容放进输入框（Markdown 消息放进 Markdown 编辑框），可以改了再发 */
+function copyToComposer(m, mdSource) {
+  if (mdSource) {
+    const prev = mdDrafts.get(view.current) ?? "";
+    mdDrafts.set(view.current, prev ? prev + "\n\n" + mdSource : mdSource);
+    openMarkdownBuilder();
+    return;
+  }
+  const { text, mentions } = messageText(m);
+  const { input, grow } = view.composer;
+  for (const x of mentions) if (!view.draft.mentions.some((y) => y.name === x.name)) view.draft.mentions.push(x);
+  const s = input.selectionStart ?? input.value.length;
+  input.setRangeText(text, s, input.selectionEnd ?? s, "end");
+  input.focus();
+  grow();
 }
 
 async function repeatMessage(m, segs) {

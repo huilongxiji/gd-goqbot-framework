@@ -13,6 +13,7 @@ import { extname, join, resolve, sep } from "node:path";
 import type { Context, GoqbotError, OneBotEvent, Plugin } from "../goqbot.js";
 import { ChatStore, idOf, type ChatType } from "./lib/chat.ts";
 import { checkRelease, download, stage } from "./lib/update.ts";
+import { MediaCache } from "./lib/media.ts";
 
 /** WebUI 自己的设置，保存在 plugin-data/webui/config.json */
 interface Settings {
@@ -374,6 +375,7 @@ function push(event: string, data: unknown): void {
 
 let settings: Settings;
 let store: ChatStore;
+let media: MediaCache;
 /** 机器人在各个群里的状态（身份、是否允许主动发言），缓存 5 分钟 */
 const botRoles = new Map<string, { role: string; allow: boolean | null; error: string; at: number }>();
 
@@ -760,6 +762,21 @@ async function install(ctx: Context, data: Buffer): Promise<Record<string, unkno
   return await call(ctx, "host.update", staged);
 }
 
+/** 缓存的图片 /media/<文件名>?s=<签名> */
+async function serveMedia(res: ServerResponse, url: URL): Promise<void> {
+  const name = url.pathname.slice("/media/".length);
+  if (!media || !media.verify(name, url.searchParams.get("s") ?? "")) {
+    throw new HttpError(404, "没有这张图片");
+  }
+  const file = await media.read(name);
+  if (!file) {
+    throw new HttpError(404, "图片还没下载好或已被清理");
+  }
+  // 文件名就是内容的 md5，内容不会变，可以让浏览器长期缓存
+  res.writeHead(200, { ...SECURITY_HEADERS, "content-type": file.type, "cache-control": "private, max-age=31536000, immutable" });
+  res.end(file.data);
+}
+
 /** public/ 下的静态文件 */
 async function serveStatic(res: ServerResponse, pathname: string): Promise<void> {
   let rel: string;
@@ -815,6 +832,9 @@ const plugin: Plugin = {
       ({ settings, created } = await loadSettings(ctx));
       store = new ChatStore(ctx.dataDir);
       await store.load();
+      media = new MediaCache(ctx.dataDir);
+      await media.init();
+      store.setMedia(media);
     } catch (e) {
       ctx.log.error("WebUI 没有启动：", (e as Error).message);
       return;
@@ -863,6 +883,10 @@ const plugin: Plugin = {
       const url = new URL(req.url ?? "/", "http://localhost");
       const ip = req.socket.remoteAddress ?? "";
       try {
+        if (url.pathname.startsWith("/media/")) {
+          // 缓存的图片：<img> 带不了登录口令，用地址里的签名校验
+          return await serveMedia(res, url);
+        }
         if (!url.pathname.startsWith("/api/")) {
           return await serveStatic(res, url.pathname);
         }

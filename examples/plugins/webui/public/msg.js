@@ -182,9 +182,15 @@ function fitSize(w, hgt) {
   return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(hgt * scale))];
 }
 
-function mediaImage(url, w = 0, hgt = 0) {
-  const img = h("img", { src: url, loading: "lazy", alt: "图片", referrerpolicy: "no-referrer" });
-  const btn = h("button", { class: "seg-image", type: "button", title: "查看大图", onclick: () => openViewer(url) }, img);
+/** 本地缓存地址（WebUI 下载的图片），只认 /media/ 开头的 */
+function localUrl(v) {
+  return typeof v === "string" && v.startsWith("/media/") ? v : "";
+}
+
+function mediaImage(url, w = 0, hgt = 0, local = "") {
+  // 优先显示 WebUI 缓存的那份（QQ 的图片地址过一段时间会失效），打不开再用原地址
+  const img = h("img", { src: local || url, loading: "lazy", alt: "图片", referrerpolicy: "no-referrer" });
+  const btn = h("button", { class: "seg-image", type: "button", title: "查看大图", onclick: () => openViewer(img.currentSrc || img.src) }, img);
   const apply = (nw, nh) => {
     [img.width, img.height] = fitSize(nw, nh);
     btn.classList.toggle("long", nh / nw > 2.5); // 长图：标一下，点开看全图
@@ -192,11 +198,16 @@ function mediaImage(url, w = 0, hgt = 0) {
   // 消息里带了尺寸时先按它占位，加载完再按图片的真实尺寸校正（消息里的尺寸可能不准）
   if (w > 0 && hgt > 0) apply(w, hgt);
   img.addEventListener("load", () => { if (img.naturalWidth && img.naturalHeight) apply(img.naturalWidth, img.naturalHeight); }, { once: true });
-  img.addEventListener("error", () => {
+  img.addEventListener("error", function onError() {
+    if (local && url && img.getAttribute("src") === local) {
+      img.src = url; // 缓存还没下载好或已被清理，试试原地址
+      return;
+    }
+    img.removeEventListener("error", onError);
     // 图片打不开时换成文字，并恢复气泡（只有图片的消息原本不带气泡）
     btn.closest(".bubble")?.classList.remove("bare");
     btn.replaceWith(h("span", { class: "seg-tag" }, "[图片已过期]"));
-  }, { once: true });
+  });
   return btn;
 }
 
@@ -247,7 +258,8 @@ export function renderSegments(segs, ctx) {
       }
       case "image": {
         const url = safeUrl(d.url) || safeUrl(d.file);
-        parts.push(url ? mediaImage(url, Number(d.width) || 0, Number(d.height) || 0) : h("span", { class: "seg-tag" }, "[图片]"));
+        const local = localUrl(d.local);
+        parts.push(url || local ? mediaImage(url, Number(d.width) || 0, Number(d.height) || 0, local) : h("span", { class: "seg-tag" }, "[图片]"));
         break;
       }
       case "record": case "voice": case "audio": {
@@ -320,8 +332,9 @@ function httpsUrl(u) {
 function attachmentImages(atts) {
   return (Array.isArray(atts) ? atts : [])
     .filter((a) => a && (/^image\//i.test(a.content_type ?? "") || IMAGE_FILE_RE.test(a.filename ?? "")))
-    .map((a) => httpsUrl(a.url))
-    .filter(Boolean);
+    // 有本地缓存时先用缓存，原地址留作备用
+    .map((a) => ({ src: localUrl(a.local) || httpsUrl(a.url), fallback: localUrl(a.local) ? httpsUrl(a.url) : "" }))
+    .filter((x) => x.src);
 }
 
 /** 解析「=== 消息 1 ===」摘要里的第一条：发送者、正文、图片附件 */
@@ -390,10 +403,19 @@ function renderQuote(q, ctx) {
   const sender = q.sender || (orig ? (orig.self ? "机器人" : orig.nickname || "") : "");
   let text = mentionText(stripFaces(q.text), ctx).trim();
   if (!text && !q.images.length) text = /<faceType=6\b/.test(q.text) ? "[表情]" : orig ? summaryOf(orig.message) : "[消息]";
-  const imgs = q.images.length ? h("span", { class: "quote-imgs" }, q.images.slice(0, 4).map((url) => {
-    const img = h("img", { src: url, alt: "图片", loading: "lazy", referrerpolicy: "no-referrer" });
-    const btn = h("button", { class: "quote-img", type: "button", title: "查看大图", onclick: (e) => { e.stopPropagation(); openViewer(url); } }, img);
-    img.addEventListener("error", () => btn.replaceWith(h("span", { class: "seg-tag" }, "[图片已过期]")), { once: true });
+  const imgs = q.images.length ? h("span", { class: "quote-imgs" }, q.images.slice(0, 4).map((it) => {
+    const src = typeof it === "string" ? it : it.src;
+    let fallback = typeof it === "string" ? "" : it.fallback;
+    const img = h("img", { src, alt: "图片", loading: "lazy", referrerpolicy: "no-referrer" });
+    const btn = h("button", { class: "quote-img", type: "button", title: "查看大图", onclick: (e) => { e.stopPropagation(); openViewer(img.currentSrc || img.src); } }, img);
+    img.addEventListener("error", () => {
+      if (fallback) {
+        img.src = fallback; // 缓存打不开时试试原地址
+        fallback = "";
+        return;
+      }
+      btn.replaceWith(h("span", { class: "seg-tag" }, "[图片已过期]"));
+    });
     return btn;
   })) : null;
   const box = h(orig ? "button" : "div", {
@@ -428,6 +450,23 @@ function renderForward(d, ctx) {
       return h("span", null, name ? `${name}：${content}` : content);
     }),
     h("small", null, `查看 ${nodes.length} 条消息`));
+}
+
+/**
+ * 这条消息的 Markdown 源码：markdown 段取原文；其他机器人发的 Markdown（以文字收到）取文字。
+ * 不是 Markdown 消息时返回空字符串
+ */
+export function markdownSourceOf(segs, bot = false) {
+  const mds = segs.filter((s) => s.type === "markdown").map((s) => markdownOf(s.data ?? {}).content).filter(Boolean);
+  if (mds.length) return mds.join("\n\n");
+  if (!segs.some((s) => s.type === "text")) return "";
+  let src = "";
+  for (const s of segs) {
+    const d = s.data ?? {};
+    if (s.type === "text") src += String(d.text ?? "");
+    else if (s.type === "at") src += "@" + (d.qq === "all" ? "全体成员" : d.name || d.qq);
+  }
+  return src.trim() && (bot || looksLikeMarkdown(src)) ? src : "";
 }
 
 /** 看起来是 Markdown：有链接、引用、标题、粗体、代码块或图片写法 */
