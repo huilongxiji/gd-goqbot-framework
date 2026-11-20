@@ -14,18 +14,24 @@ export interface CapabilityInfo {
   sensitive: boolean;
 }
 
+/**
+ * 编号（group_id、user_id、message_id 等）超过 JS 安全整数范围（2^53）时是字符串，否则是数字。
+ * 调用 goqbot 能力时原样传回即可（字符串也能识别）；比较时先统一成字符串：String(ev.group_id)。
+ */
+export type ID = number | string;
+
 /** OneBot V11 事件（字段随事件类型不同，常用字段列在这里） */
 export interface OneBotEvent {
   time: number;
-  self_id: number;
+  self_id: ID;
   post_type: "message" | "notice" | "request" | string;
   message_type?: "group" | "private" | string;
   notice_type?: string;
   request_type?: string;
   sub_type?: string;
-  group_id?: number;
-  user_id?: number;
-  message_id?: number;
+  group_id?: ID;
+  user_id?: ID;
+  message_id?: ID;
   raw_message?: string;
   message?: unknown;
   /** 插件发出的自定义事件（notice_type 为 plugin_event）：发出它的插件名 */
