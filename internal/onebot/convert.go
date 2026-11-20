@@ -131,6 +131,27 @@ func nick(data *dto.Message) string {
 	return ""
 }
 
+// memberNick 群内昵称（author.member_nickname），作为 OneBot 的群名片 card
+func memberNick(data *dto.Message) string {
+	if data.Author != nil {
+		return data.Author.MemberNickname
+	}
+	return ""
+}
+
+// avatarOf 发送者头像地址（author.avatar），没有时为空
+func avatarOf(data *dto.Message) string {
+	if data.Author != nil {
+		return data.Author.Avatar
+	}
+	return ""
+}
+
+// isBotAuthor 发送者是不是机器人（author.bot）
+func isBotAuthor(data *dto.Message) bool {
+	return data.Author != nil && data.Author.Bot
+}
+
 // cqEscape 转义 CQ 码文本
 func cqEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "[", "&#91;", "]", "&#93;")
@@ -781,13 +802,15 @@ func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID 
 		"sender": map[string]any{
 			"user_id":  userID,
 			"nickname": nick(data),
-			"card":     "",
+			"card":     memberNick(data),
 			"sex":      "unknown",
 			"age":      0,
 			"area":     "",
 			"level":    "",
 			"title":    "",
 			"role":     roleOf(data),
+			"avatar":   avatarOf(data),
+			"bot":      isBotAuthor(data),
 		},
 	}
 	addUnionOpenID(ev, unionOpenIDOf(data))
@@ -899,6 +922,8 @@ func (c *Converter) C2C(data *dto.Message) {
 			"nickname": nick(data),
 			"sex":      "unknown",
 			"age":      0,
+			"avatar":   avatarOf(data),
+			"bot":      isBotAuthor(data),
 		},
 	}
 	addUnionOpenID(ev, unionOpenIDOf(data))

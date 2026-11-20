@@ -89,6 +89,8 @@ type MessageSender interface {
 
 	// GetGroupInfo 获取群基本信息（白名单）
 	GetGroupInfo(ctx context.Context, groupOpenID string) (*GroupInfo, error)
+	// GetUserInfo 获取用户信息（/v2/users/{user_openid}/info），返回官方响应的全部字段
+	GetUserInfo(ctx context.Context, userOpenID string) (map[string]any, error)
 	// GetGroupBotState 获取机器人群内状态（白名单）
 	GetGroupBotState(ctx context.Context, groupOpenID string) (*GroupBotState, error)
 	// GetGroupMembers 获取群成员列表（白名单；每次最多 30 条，cursor 分页）

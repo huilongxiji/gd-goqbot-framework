@@ -306,6 +306,8 @@ func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope
 		return c.getGateway()
 	case "get_group_info":
 		return c.getGroupInfo(params)
+	case "get_user_info", "get_stranger_info":
+		return c.getUserInfo(params)
 	case "get_group_bot_state":
 		return c.getGroupBotState(params)
 	case "get_group_member_info":
@@ -414,9 +416,13 @@ func (c *Caller) getForwardMsg(params gjson.Result) map[string]any {
 
 // resolveGroupOpenID 从 group_id 反查群 openid
 func (c *Caller) resolveGroupOpenID(params gjson.Result) (string, map[string]any) {
+	// 也接受 group_openid：JS 等语言的数字精度只有 53 位，大的 group_id 传过来会变
+	if oid := params.Get("group_openid").String(); oid != "" {
+		return oid, nil
+	}
 	gid := params.Get("group_id").Int()
 	if gid == 0 {
-		return "", failed(1400, "缺少 group_id")
+		return "", failed(1400, "缺少 group_id 或 group_openid")
 	}
 	oid, ok := c.ids.OpenID(gid)
 	if !ok || oid == "" {
@@ -442,6 +448,9 @@ func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
 		return failed(1500, err.Error())
 	}
 	gid := params.Get("group_id").Int()
+	if gid == 0 {
+		gid = c.ids.ID(groupOpenID)
+	}
 	return ok(map[string]any{
 		"group_id":          gid,
 		"group_openid":      info.GroupOpenID,
@@ -453,6 +462,57 @@ func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
 		"member_count":      info.GroupMemberNum,
 		"max_member_count":  0,
 	})
+}
+
+// getUserInfo 获取用户信息：调用 /v2/users/{user_openid}/info，返回官方响应的全部字段，
+// 并补上 user_id、user_openid，以及 OneBot get_stranger_info 约定的 nickname / sex / age。
+// 入参优先 user_openid，其次 user_id（需收到过这个用户的消息）。
+func (c *Caller) getUserInfo(params gjson.Result) map[string]any {
+	openid := params.Get("user_openid").String()
+	uid := params.Get("user_id").Int()
+	if openid == "" {
+		if uid == 0 {
+			return failed(1400, "缺少 user_id 或 user_openid")
+		}
+		oid, found := c.ids.OpenID(uid)
+		if !found || oid == "" {
+			return failed(1404, "未知 user_id 或未收到过该用户消息")
+		}
+		openid = oid
+	}
+	if uid == 0 {
+		uid = c.ids.ID(openid)
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	info, err := sender.GetUserInfo(ctx, openid)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	data := make(map[string]any, len(info)+5)
+	for k, v := range info {
+		data[k] = v
+	}
+	data["user_id"] = uid
+	data["user_openid"] = openid
+	if _, has := data["nickname"]; !has {
+		if name, ok := info["username"].(string); ok {
+			data["nickname"] = name
+		} else {
+			data["nickname"] = ""
+		}
+	}
+	if _, has := data["sex"]; !has {
+		data["sex"] = "unknown"
+	}
+	if _, has := data["age"]; !has {
+		data["age"] = 0
+	}
+	return ok(data)
 }
 
 // getC2CMsgState 查询用户 C2C 主动消息推送开关（基于本地事件缓存，非官方接口）
