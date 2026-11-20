@@ -419,9 +419,15 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .bubble > .seg-image, .bubble > .seg-audio, .bubble > .seg-video, .bubble > .seg-file, .bubble > .seg-card,
 .bubble > .md, .bubble > .kb, .bubble > .seg-reply { display: block; margin: 4px 0; }
 .bubble > :first-child { margin-top: 0; }
+/* 只有图片的消息：不要气泡，图片直接放在名字下面 */
+.bubble.bare, .msg.self .bubble.bare { padding: 0; background: none; border: 0; border-radius: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.msg.self .bubble.bare { align-items: flex-end; }
+.bubble.bare > .seg-image { margin: 0; }
+.bubble.bare .seg-image img { border: 1px solid var(--line); border-radius: 10px; }
 .bubble > :last-child { margin-bottom: 0; }
 .seg-at { color: var(--accent); font-weight: 500; }
 .seg-tag { color: var(--muted); }
+.seg-face { color: var(--wait); }
 .seg-image { padding: 0; border: 0; background: none; cursor: zoom-in; line-height: 0; }
 .seg-image img { max-width: min(320px, 100%); max-height: 320px; height: auto; border-radius: 8px; display: block; }
 .seg-audio { width: 260px; max-width: 100%; height: 36px; }
@@ -466,8 +472,18 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .dialog-body { padding: 18px; }
 .confirm { display: grid; gap: 18px; }
 .confirm .actions { display: flex; justify-content: flex-end; gap: 8px; }
-.viewer { display: grid; gap: 12px; justify-items: center; }
-.viewer img { max-width: 100%; max-height: 70vh; border-radius: 8px; }
+/* 查看大图 */
+.lightbox { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: none; overflow: auto; color: #fff; }
+.lightbox::backdrop { background: rgba(4, 12, 15, .88); }
+.lightbox-stage { min-width: 100%; min-height: 100%; width: max-content; display: grid; place-items: center; padding: 60px 24px 24px; box-sizing: border-box; }
+.lightbox img { display: block; max-width: calc(100vw - 48px); max-height: calc(100vh - 84px); border-radius: 6px; box-shadow: 0 12px 48px rgba(0, 0, 0, .45); }
+.lightbox.can-zoom img { cursor: zoom-in; }
+.lightbox.zoomed img { max-width: none; max-height: none; cursor: zoom-out; }
+.lightbox-bar { position: fixed; top: 14px; right: 16px; display: flex; gap: 8px; }
+.lightbox-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .1); color: #fff; font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
+.lightbox-btn:hover { background: rgba(255, 255, 255, .2); }
+.lightbox-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.lightbox-error { color: rgba(255, 255, 255, .8); }
 
 .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(8, 20, 26, .55); z-index: 20; }
 .overlay-box { display: grid; justify-items: center; gap: 14px; padding: 28px 36px; border-radius: 14px; background: var(--surface); max-width: 360px; text-align: center; }

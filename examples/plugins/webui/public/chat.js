@@ -1,6 +1,6 @@
 // 私聊 / 群聊页面：左边会话列表，右边消息窗口。当前阶段只接收消息
-import { h, fill, icon, api, toast, promptDialog, openDialog, shortTime, clock, dayLabel, hue } from "./core.js";
-import { renderSegments, summaryOf, setImageViewer } from "./msg.js";
+import { h, fill, icon, api, toast, promptDialog, shortTime, clock, dayLabel, hue } from "./core.js";
+import { renderSegments, summaryOf, setImageViewer, stripFaces, onlyImages } from "./msg.js";
 
 const PAGE_SIZE = 50;
 
@@ -14,10 +14,28 @@ export const chatState = {
 
 let view = null; // 当前打开的聊天页 { type, root, current, messages, ... }
 
+// ---------- 查看大图：全屏遮罩，点图片在「适应窗口」和「原始大小」之间切换，点空白处或按 Esc 关闭 ----------
+
 setImageViewer((url) => {
-  openDialog("查看图片", h("div", { class: "viewer" },
-    h("img", { src: url, alt: "图片", referrerpolicy: "no-referrer" }),
-    h("a", { class: "btn small", href: url, target: "_blank", rel: "noopener noreferrer" }, "在新标签页打开")), { wide: true });
+  const img = h("img", { src: url, alt: "图片", referrerpolicy: "no-referrer" });
+  const dlg = h("dialog", { class: "lightbox", "aria-label": "查看大图" },
+    h("div", { class: "lightbox-stage" }, img),
+    h("div", { class: "lightbox-bar" },
+      h("a", { class: "lightbox-btn", href: url, target: "_blank", rel: "noopener noreferrer" }, "新标签页打开"),
+      h("button", { class: "lightbox-btn", type: "button", onclick: () => dlg.close() }, "关闭")));
+  // 图片比窗口小时不需要放大
+  const canZoom = () => img.naturalWidth > img.clientWidth + 1 || img.naturalHeight > img.clientHeight + 1;
+  img.addEventListener("load", () => dlg.classList.toggle("can-zoom", canZoom()));
+  img.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (dlg.classList.contains("zoomed")) dlg.classList.remove("zoomed");
+    else if (canZoom()) dlg.classList.add("zoomed");
+  });
+  img.addEventListener("error", () => img.replaceWith(h("p", { class: "lightbox-error" }, "图片已过期或无法加载")), { once: true });
+  dlg.addEventListener("click", (e) => { if (e.target === dlg || e.target.classList?.contains("lightbox-stage")) dlg.close(); });
+  dlg.addEventListener("close", () => dlg.remove(), { once: true });
+  document.body.append(dlg);
+  dlg.showModal();
 });
 
 // ---------- 名称与头像 ----------
@@ -141,7 +159,7 @@ function renderList() {
       h("span", { class: "chat-item-main" },
         h("span", { class: "chat-item-top" }, h("b", null, chatTitle(c)), h("time", null, shortTime(c.last_time))),
         h("span", { class: "chat-item-bottom" },
-          h("span", { class: "chat-item-text" }, c.type === "group" && c.last_sender ? `${c.last_sender}：${c.last_text}` : c.last_sender === "我" ? `我：${c.last_text}` : c.last_text),
+          h("span", { class: "chat-item-text" }, c.type === "group" && c.last_sender ? `${c.last_sender}：${stripFaces(c.last_text)}` : c.last_sender === "我" ? `我：${stripFaces(c.last_text)}` : stripFaces(c.last_text)),
           c.unread ? h("span", { class: "badge" }, c.unread > 99 ? "99+" : c.unread) : null)))));
 }
 
@@ -278,6 +296,11 @@ function appendMessage(m, live) {
   if (nearBottom || m.self) view.scroller.scrollTop = view.scroller.scrollHeight;
 }
 
+/** 消息气泡：只有图片（含表情图）时不加气泡，直接显示图片 */
+function bubble(parts) {
+  return h("div", { class: onlyImages(parts) ? "bubble bare" : "bubble" }, parts);
+}
+
 function messageNode(m, cont) {
   const c = chatState.chats.get(view.current);
   const name = m.self ? chatState.botName : m.nickname || `用户 ${m.user_id}`;
@@ -292,7 +315,7 @@ function messageNode(m, cont) {
         h("b", null, name),
         role ? h("span", { class: "role" }, role) : null,
         c?.type === "group" && !m.self ? h("span", { class: "uid" }, String(m.user_id)) : null),
-      h("div", { class: "bubble" }, renderSegments(m.message, messageCtx())),
+      bubble(renderSegments(m.message, messageCtx())),
       h("time", { class: "msg-time", title: new Date(m.time * 1000).toLocaleString("zh-CN") }, clock(m.time))));
 }
 

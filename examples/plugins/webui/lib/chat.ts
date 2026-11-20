@@ -102,6 +102,22 @@ export function markdownOf(data: Record<string, unknown>): { content: string; ro
   return { content, rows: Array.isArray(rows) ? rows : [] };
 }
 
+// QQ 表情标记：<faceType=6,faceId="0",ext="base64(JSON)">，ext 里的 text 是表情的说明（大表情为空）
+const FACE_RE = /<faceType=([^,>]*)(?:,faceId="([^"]*)")?(?:,ext="([^"]*)")?[^>]*>/g;
+
+/** 去掉表情标记，换成表情的说明文字 */
+function stripFaces(text: string): string {
+  return text.replace(FACE_RE, (_m, _t, _id, ext?: string) => {
+    if (!ext) return "";
+    try {
+      const o = JSON.parse(Buffer.from(ext, "base64").toString("utf8"));
+      return typeof o?.text === "string" ? o.text : "";
+    } catch {
+      return "";
+    }
+  });
+}
+
 /** 会话列表里显示的一行摘要 */
 export function summary(segs: Segment[]): string {
   const names: Record<string, string> = {
@@ -109,11 +125,22 @@ export function summary(segs: Segment[]): string {
     markdown: "[Markdown]", keyboard: "[按钮]", forward: "[聊天记录]", share: "[分享]", ark: "[卡片]", json: "[卡片]",
   };
   let text = "";
+  let sticker = false; // 刚出现过大表情标记：紧跟的图片就是这个表情
   for (const s of segs) {
+    if (s.type === "image" && sticker) {
+      text += "[表情]";
+      sticker = false;
+      continue;
+    }
+    sticker = false;
     if (s.type === "text") {
-      text += String(s.data.text ?? "");
+      const raw = String(s.data.text ?? "");
+      text += stripFaces(raw);
+      sticker = /<faceType=6\b/.test(raw);
     } else if (s.type === "at") {
       text += "@" + String(s.data.name ?? s.data.qq ?? "");
+    } else if (s.type === "face" && s.data.text) {
+      text += String(s.data.text);
     } else if (s.type === "reply") {
       continue;
     } else if (s.type === "markdown") {

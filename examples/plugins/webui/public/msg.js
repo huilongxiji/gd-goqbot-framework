@@ -7,6 +7,38 @@ function safeUrl(u) {
   return /^https?:\/\//i.test(s) ? s : "";
 }
 
+// ---------- QQ 表情标记 ----------
+// 官方接口把表情写在文本里：<faceType=6,faceId="0",ext="base64(JSON)">。
+// ext 解出来是 {"text":"[呲牙]"} 这样的说明；大表情（faceType=6）的 text 为空，图片另在 image 段里
+const FACE_RE = /<faceType=([^,>]*)(?:,faceId="([^"]*)")?(?:,ext="([^"]*)")?[^>]*>/g;
+
+function faceText(ext) {
+  if (!ext) return "";
+  try {
+    const bin = atob(ext);
+    const o = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0))));
+    return typeof o?.text === "string" ? o.text : "";
+  } catch { return ""; }
+}
+
+/** 把文本拆成普通文字和表情：返回 [字符串 | { face: 说明文字 }] */
+function splitFaces(text) {
+  const out = [];
+  let last = 0;
+  for (const m of text.matchAll(FACE_RE)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push({ face: faceText(m[3]) });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+/** 去掉表情标记，换成表情的说明文字（没有说明的大表情直接去掉） */
+export function stripFaces(text) {
+  return String(text ?? "").replace(FACE_RE, (_, _t, _id, ext) => faceText(ext));
+}
+
 /** 取出 markdown 段的正文和按钮。data.data 可以是对象、JSON 字符串或 base64://JSON */
 export function markdownOf(data) {
   let inner = data.data;
@@ -137,9 +169,22 @@ export function renderSegments(segs, ctx) {
   for (const s of segs) {
     const d = s.data ?? {};
     switch (s.type) {
-      case "text":
-        if (String(d.text ?? "") !== "") parts.push(h("span", { class: "seg-text" }, String(d.text)));
+      case "text": {
+        const text = String(d.text ?? "");
+        if (!text.includes("<faceType=")) {
+          if (text !== "") parts.push(h("span", { class: "seg-text" }, text));
+          break;
+        }
+        // 带表情标记：普通文字照常显示，表情显示说明文字，只剩空白的部分不显示
+        for (const p of splitFaces(text)) {
+          if (typeof p === "string") {
+            if (p.trim()) parts.push(h("span", { class: "seg-text" }, p));
+          } else if (p.face) {
+            parts.push(h("span", { class: "seg-face", title: "QQ 表情" }, p.face));
+          }
+        }
         break;
+      }
       case "at":
         parts.push(h("span", { class: "seg-at" }, "@" + (d.qq === "all" ? "全体成员" : d.name || ctx.nameOf(d.qq) || d.qq)));
         break;
@@ -195,7 +240,7 @@ export function renderSegments(segs, ctx) {
         parts.push(h("span", { class: "seg-tag" }, "[聊天记录]"));
         break;
       case "face":
-        parts.push(h("span", { class: "seg-tag" }, "[表情]"));
+        parts.push(h("span", { class: "seg-face", title: "QQ 表情" }, d.text ? String(d.text) : "[表情]"));
         break;
       case "stream":
         if (d.content) parts.push(h("span", { class: "seg-text" }, String(d.content)));
@@ -207,14 +252,23 @@ export function renderSegments(segs, ctx) {
   return parts.length ? parts : [h("span", { class: "seg-tag" }, "[空消息]")];
 }
 
+/** 渲染结果是否只有图片（只有图片时不套气泡） */
+export function onlyImages(parts) {
+  return parts.length > 0 && parts.every((el) => el.classList?.contains("seg-image"));
+}
+
 /** 一行摘要（回复引用里用） */
 export function summaryOf(segs) {
   let t = "";
+  let sticker = false; // 大表情标记后面紧跟的图片就是这个表情
   for (const s of segs) {
     const d = s.data ?? {};
-    if (s.type === "text") t += d.text ?? "";
+    const wasSticker = sticker;
+    sticker = s.type === "text" && /<faceType=6\b/.test(String(d.text ?? ""));
+    if (s.type === "text") t += stripFaces(d.text);
     else if (s.type === "at") t += "@" + (d.name || d.qq);
-    else if (s.type === "image") t += "[图片]";
+    else if (s.type === "image") t += wasSticker ? "[表情]" : "[图片]";
+    else if (s.type === "face") t += d.text || "[表情]";
     else if (s.type === "markdown") t += markdownOf(d).content.slice(0, 40) || "[Markdown]";
     else if (s.type !== "reply") t += `[${s.type}]`;
   }
