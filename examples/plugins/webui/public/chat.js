@@ -245,7 +245,7 @@ export function renderChatPage(root, type, key) {
     type: "search", placeholder: type === "group" ? "搜索群备注或编号" : "搜索昵称、备注或编号", "aria-label": "搜索会话",
     oninput: (e) => { view.filter = e.target.value.trim(); renderList(); },
   });
-  fill(root, h("div", { class: "chat" + (key ? " has-current" : "") },
+  fill(root, h("div", { class: `chat chat-${type}` + (key ? " has-current" : "") },
     h("aside", { class: "chat-side" },
       h("header", { class: "chat-side-head" },
         h("h1", null, type === "group" ? "群聊" : "私聊"),
