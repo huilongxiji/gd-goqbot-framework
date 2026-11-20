@@ -1,5 +1,5 @@
 // 私聊 / 群聊页面：左边会话列表，右边消息窗口。当前阶段只接收消息
-import { h, fill, icon, api, toast, promptDialog, openDialog, shortTime, dayLabel, hue } from "./core.js";
+import { h, fill, icon, api, toast, promptDialog, confirmDialog, openDialog, shortTime, dayLabel, hue } from "./core.js";
 import { renderSegments, summaryOf, setImageViewer, setForwardViewer, forwardLine, stripFaces, onlyImages } from "./msg.js";
 
 const PAGE_SIZE = 50;
@@ -132,6 +132,84 @@ export function onChat(chat) {
   }
 }
 
+/** 实时推送：会话被删除（这个页面或别的页面删的） */
+export function onChatRemoved({ key }) {
+  if (!chatState.chats.delete(key)) return;
+  chatState.onUnreadChange();
+  if (!view) return;
+  if (view.current === key) location.hash = `#/${view.type}`;
+  renderList();
+}
+
+// ---------- 会话列表的右键菜单 ----------
+
+let closeMenu = () => {};
+
+function openChatMenu(c, x, y) {
+  closeMenu();
+  const items = [
+    { label: c.remark ? "修改备注" : "设置备注", run: () => editRemark(c) },
+    c.unread ? { label: "标记为已读", run: () => markRead(c) } : null,
+    { sep: true },
+    { label: "删除聊天记录", danger: true, run: () => deleteChat(c) },
+  ].filter(Boolean);
+  const menu = h("div", { class: "ctx-menu", role: "menu", "aria-label": chatTitle(c) },
+    items.map((it) => it.sep ? h("div", { class: "ctx-sep", role: "separator" }) : h("button", {
+      class: "ctx-item" + (it.danger ? " danger" : ""), type: "button", role: "menuitem",
+      onclick: () => { closeMenu(); it.run(); },
+    }, it.label)));
+  document.body.append(menu);
+  // 放在鼠标位置，超出窗口时往回收
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
+  const buttons = [...menu.querySelectorAll("button")];
+  buttons[0]?.focus();
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeMenu(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const i = buttons.indexOf(document.activeElement);
+      buttons[(i + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length].focus();
+    }
+  };
+  const onDown = (e) => { if (!menu.contains(e.target)) closeMenu(); };
+  const onAway = () => closeMenu();
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("pointerdown", onDown, true);
+  addEventListener("resize", onAway);
+  addEventListener("blur", onAway);
+  view?.list.addEventListener("scroll", onAway, { once: true });
+  closeMenu = () => {
+    closeMenu = () => {};
+    menu.remove();
+    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("pointerdown", onDown, true);
+    removeEventListener("resize", onAway);
+    removeEventListener("blur", onAway);
+  };
+}
+
+function markRead(c) {
+  c.unread = 0;
+  chatState.onUnreadChange();
+  renderList();
+  api("POST", "/api/chats/read", { key: c.key }).catch(() => {});
+}
+
+async function deleteChat(c) {
+  const who = c.type === "group" ? "这个群再有新消息时" : "这个用户再发消息时";
+  const ok = await confirmDialog("删除聊天记录", `删除「${chatTitle(c)}」的全部聊天记录？删除后无法恢复，${who}会重新出现在列表里。`, "删除", true);
+  if (!ok) return;
+  try {
+    await api("POST", "/api/chats/delete", { key: c.key });
+    onChatRemoved({ key: c.key });
+    toast("聊天记录已删除");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
 // ---------- 页面 ----------
 
 export function renderChatPage(root, type, key) {
@@ -173,7 +251,11 @@ function renderList() {
     return;
   }
   fill(view.list, ...items.map((c) =>
-    h("a", { class: "chat-item" + (c.key === view.current ? " active" : ""), href: `#/${c.type}/${encodeURIComponent(c.key)}`, role: "listitem" },
+    h("a", {
+      class: "chat-item" + (c.key === view.current ? " active" : ""), href: `#/${c.type}/${encodeURIComponent(c.key)}`, role: "listitem",
+      title: "右键可以设置备注或删除聊天记录",
+      oncontextmenu: (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); openChatMenu(c, e.clientX || r.left + 24, e.clientY || r.bottom - 8); },
+    },
       chatAvatar(c, "md"),
       h("span", { class: "chat-item-main" },
         h("span", { class: "chat-item-top" }, h("b", null, chatTitle(c)), h("time", null, shortTime(c.last_time))),

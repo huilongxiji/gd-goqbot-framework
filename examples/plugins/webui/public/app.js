@@ -1,6 +1,6 @@
 // 入口：登录、侧栏导航、路由、实时推送、重启等待
 import { h, $, icon, api, auth, toast, openStream, setUnauthorizedHandler } from "./core.js";
-import { chatState, loadChats, onMessage, onChat, renderChatPage, selectChat, unreadOf } from "./chat.js";
+import { chatState, loadChats, onMessage, onChat, onChatRemoved, renderChatPage, selectChat, unreadOf } from "./chat.js";
 import { renderOverview, renderConnections, renderPlugins, renderLogs, renderConfig, renderUpdate, setRestartFlow } from "./admin.js";
 
 const NAV = [
@@ -166,7 +166,7 @@ async function start() {
     toast(e.message, "error");
   }
   stopStream();
-  stopStream = openStream({ message: onMessage, chat: onChat }, setLive);
+  stopStream = openStream({ message: onMessage, chat: onChat, chat_removed: onChatRemoved }, setLive);
   currentRoute = "";
   route();
 }

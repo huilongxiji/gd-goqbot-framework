@@ -389,6 +389,15 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       push("chat", chat);
       return send(res, 200, { chat });
     }
+    case "POST /api/chats/delete": {
+      const body = await readJSON(req);
+      const key = String(body.key ?? "");
+      if (!(await store.remove(key))) {
+        throw new HttpError(404, "没有这个会话");
+      }
+      push("chat_removed", { key });
+      return send(res, 200, {});
+    }
     case "GET /api/chats/group-info": {
       // 群基本信息（官方接口需要白名单），查到的群名记进会话列表
       const chat = store.get(q.get("key") ?? "");

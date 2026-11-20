@@ -4,7 +4,7 @@
 // 文件都在 plugin-data/webui/chat/ 下：
 //   chats.json          会话列表（名称、备注、最后一条消息、未读数）
 //   <会话>.jsonl         这个会话的消息，一行一条，只追加；超过上限时裁掉最早的一半
-import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { OneBotEvent } from "../../goqbot.js";
 
@@ -357,6 +357,19 @@ export class ChatStore {
       chat.unread = 0;
       this.scheduleSave();
     }
+  }
+
+  /** 删除一个会话和它的全部聊天记录；之后再有新消息时会重新出现 */
+  async remove(key: string): Promise<boolean> {
+    if (!this.chats.has(key)) {
+      return false;
+    }
+    this.chats.delete(key);
+    this.scheduleSave();
+    await this.writing.get(key);
+    this.writing.delete(key);
+    await rm(this.fileOf(key), { force: true });
+    return true;
   }
 
   /** 记下群基本信息接口查到的群名 */
