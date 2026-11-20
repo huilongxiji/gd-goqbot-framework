@@ -56,8 +56,15 @@ type Message struct {
 }
 
 // MsgElement 引用消息元素（QQ message_type=103 的 msg_elements 项）
+// 103 引用消息时：被引用的是普通消息，这里是它的 msg_idx（REFIDX_...）、正文和附件；
+// 被引用的消息本身也引用了别的消息时，content 是「=== 消息 1 ===」格式的摘要。
 type MsgElement struct {
-	Content string `json:"content,omitempty"`
+	MsgIdx      string               `json:"msg_idx,omitempty"`      // 被引用消息的引用索引（REFIDX_...）
+	MessageType int                  `json:"message_type,omitempty"` // 0 文本 / 3 卡片 / 101 平行消息 / 102 聊天记录 / 103 引用消息
+	Content     string               `json:"content,omitempty"`
+	Attachments []*MessageAttachment `json:"attachments,omitempty"`
+	ArkData     any                  `json:"ark_data,omitempty"`
+	MsgElements []*MsgElement        `json:"msg_elements,omitempty"` // 嵌套的元素
 }
 
 // Embed 结构
