@@ -388,8 +388,10 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .ctx-menu { position: fixed; z-index: 30; min-width: 156px; padding: 4px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 12px 32px rgba(10, 30, 40, .18); }
 .ctx-item { display: block; width: 100%; padding: 7px 12px; border: 0; border-radius: 6px; background: none; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
 .ctx-item:hover, .ctx-item:focus-visible { background: var(--surface-2); outline: none; }
+.ctx-item:disabled { color: var(--muted); opacity: .55; cursor: not-allowed; background: none; }
 .ctx-item.danger { color: var(--bad); }
 .ctx-item.danger:hover, .ctx-item.danger:focus-visible { background: var(--bad-soft); }
+.ctx-item.danger:disabled { color: var(--muted); background: none; }
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 
 /* 群资料、用户资料 */
@@ -533,7 +535,24 @@ a.seg-ark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .kb { min-width: 220px; }
 .kb-btn { flex: 1 0 auto; text-align: center; padding: 5px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); color: var(--accent); font-size: 13px; background: var(--surface); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.composer-off { padding: 14px 24px; text-align: center; color: var(--muted); font-size: 13px; background: var(--surface); border-top: 1px solid var(--line); }
+/* 输入框 */
+.composer { display: grid; gap: 8px; padding: 10px 24px 12px; background: var(--surface); border-top: 1px solid var(--line); }
+.composer-row { display: flex; gap: 10px; align-items: flex-end; }
+.composer textarea { flex: 1; min-width: 0; resize: none; min-height: 38px; max-height: 150px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); color: var(--ink); font: inherit; font-size: 14px; line-height: 1.5; }
+.composer textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 0; border-color: var(--accent); }
+.composer textarea:disabled { opacity: .7; cursor: not-allowed; }
+.composer .btn { height: 38px; }
+.composer-reply { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-left: 3px solid var(--accent); border-radius: 4px; background: var(--surface-2); font-size: 12.5px; color: var(--muted); }
+.composer-reply[hidden] { display: none; }
+.composer-reply > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-reply b { color: var(--ink); font-weight: 600; }
+.composer-reply-x { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.composer-reply-x:hover { background: var(--line); color: var(--ink); }
+.msg.recalled .bubble { opacity: .55; }
+.recalled-tag { color: var(--bad); font-size: 11px; }
+.ban-pick { display: grid; gap: 14px; justify-items: start; }
+.ban-pick p { margin: 0; color: var(--muted); font-size: 13px; }
+.ban-choices { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---------- 弹窗、遮罩、提示 ---------- */
 
@@ -609,5 +628,6 @@ a.seg-ark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   .panel-head { padding: 10px 12px; }
   .panel-head .back { display: inline-flex; }
   .msgs { --msgs-pad: 12px; padding: 8px var(--msgs-pad) 16px; }
+  .composer { padding: 8px 12px 10px; }
   .msg-main { max-width: 86%; }
 }

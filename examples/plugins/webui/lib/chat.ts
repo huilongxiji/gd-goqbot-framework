@@ -10,6 +10,26 @@ import type { OneBotEvent } from "../../goqbot.js";
 
 export type ChatType = "private" | "group";
 
+/**
+ * 编号：goqbot 的 group_id、user_id、message_id 有 19 位，超过 JS 数字的精度，统一存成字符串。
+ * 旧版 WebUI 存的是数字（最后几位不准），读到时原样保留。
+ */
+export type ID = string | number;
+
+/** 转成编号字符串；没有时为空字符串 */
+export function idOf(v: unknown): string {
+  if (typeof v === "string") {
+    return v.trim();
+  }
+  if (typeof v === "number" && Number.isFinite(v) && v !== 0) {
+    return String(v);
+  }
+  if (typeof v === "bigint") {
+    return v.toString();
+  }
+  return "";
+}
+
 /** 消息段，和 OneBot v11 的数组格式一致 */
 export interface Segment {
   type: string;
@@ -19,11 +39,11 @@ export interface Segment {
 /** 保存下来的一条消息 */
 export interface ChatMessage {
   seq: number; // 会话内的序号，从 1 开始递增
-  id: number; // OneBot message_id
+  id: ID; // OneBot message_id（新记录是精确的字符串；旧记录是数字，19 位时最后几位不准）
   time: number; // 秒
   recv_ms?: number; // WebUI 收到这条消息的时间（毫秒），旧记录没有
   self: boolean; // 机器人自己发的
-  user_id: number;
+  user_id: ID;
   user_openid?: string;
   nickname: string; // 群里优先用群昵称（sender.card），没有时用 QQ 昵称
   role?: string;
@@ -38,7 +58,7 @@ export interface ChatMessage {
 export interface Chat {
   key: string; // private:<id> / group:<id>
   type: ChatType;
-  id: number;
+  id: ID; // 群编号 / 用户编号（新会话是精确的字符串）
   name: string; // 私聊为对方昵称；群聊为群基本信息接口查到的群名（查不到时为空）
   remark: string; // 自己设置的备注
   avatar?: string; // 私聊对方的头像地址
@@ -189,6 +209,7 @@ export class ChatStore {
   private saveTimer: NodeJS.Timeout | undefined;
   private writing = new Map<string, Promise<void>>(); // 每个会话的写入按顺序进行
   private listeners = new Set<(ev: { chat: Chat; message: ChatMessage }) => void>();
+  private renameListeners = new Set<(from: string, to: string) => void>();
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, "chat");
@@ -233,11 +254,12 @@ export class ChatStore {
       return;
     }
     const num = (v: unknown) => (typeof v === "number" ? v : Number(v) || 0);
-    const peer = type === "group" ? num(ev.group_id) : sent ? num(ev.target_id) : num(ev.user_id);
-    if (!peer) {
+    const peer = idOf(type === "group" ? ev.group_id : sent ? ev.target_id : ev.user_id);
+    if (!peer || peer === "0") {
       return;
     }
     const key = `${type}:${peer}`;
+    await this.migrateLegacy(type, peer);
     const sender = (ev.sender && typeof ev.sender === "object" ? ev.sender : {}) as Record<string, unknown>;
     const raw = typeof ev.raw_message === "string" ? ev.raw_message : "";
     const segs = toSegments(ev.message, raw);
@@ -261,11 +283,11 @@ export class ChatStore {
     }
     const msg: ChatMessage = {
       seq: ++chat.seq,
-      id: num(ev.message_id),
+      id: idOf(ev.message_id),
       time: num(ev.time) || Math.floor(Date.now() / 1000),
       recv_ms: Date.now(),
       self: sent,
-      user_id: num(ev.user_id),
+      user_id: idOf(ev.user_id),
       nickname,
       message: segs,
       raw,
@@ -298,6 +320,42 @@ export class ChatStore {
         // 页面连接出错不影响保存
       }
     }
+  }
+
+  /**
+   * 旧版 WebUI 按丢了精度的数字存会话（如 group:6943781100563829000）。
+   * 收到这个会话的新消息、拿到精确编号后，把旧会话和聊天记录合并到新的 key 下
+   */
+  private async migrateLegacy(type: ChatType, peer: string): Promise<void> {
+    const key = `${type}:${peer}`;
+    if (this.chats.has(key) || !/^\d{17,}$/.test(peer)) {
+      return;
+    }
+    const legacyKey = `${type}:${String(Number(peer))}`;
+    const legacy = this.chats.get(legacyKey);
+    if (legacyKey === key || !legacy) {
+      return;
+    }
+    await this.writing.get(legacyKey);
+    this.writing.delete(legacyKey);
+    this.chats.delete(legacyKey);
+    legacy.key = key;
+    legacy.id = peer;
+    this.chats.set(key, legacy);
+    try {
+      await rename(this.fileOf(legacyKey), this.fileOf(key));
+    } catch {
+      // 旧会话没有聊天记录文件
+    }
+    this.scheduleSave();
+    for (const fn of this.renameListeners) {
+      fn(legacyKey, key);
+    }
+  }
+
+  /** 会话换了 key 时通知（旧版数据合并） */
+  onRename(fn: (from: string, to: string) => void): void {
+    this.renameListeners.add(fn);
   }
 
   private fileOf(key: string): string {

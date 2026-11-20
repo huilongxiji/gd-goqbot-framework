@@ -227,7 +227,7 @@ export function renderSegments(segs, ctx) {
         parts.push(h("span", { class: "seg-at" }, "@" + (d.qq === "all" ? "全体成员" : d.name || ctx.nameOf(d.qq) || d.qq)));
         break;
       case "reply": {
-        const r = ctx.findReply(Number(d.id));
+        const r = ctx.findReply(d.id);
         parts.unshift(h("div", { class: "seg-reply" },
           r ? [h("b", null, r.self ? "机器人" : r.nickname || "用户 " + r.user_id), "：", r.summary] : "回复了一条更早的消息"));
         break;

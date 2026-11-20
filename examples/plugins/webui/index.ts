@@ -11,7 +11,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { extname, join, resolve, sep } from "node:path";
 import type { Context, GoqbotError, OneBotEvent, Plugin } from "../goqbot.js";
-import { ChatStore, type ChatType } from "./lib/chat.ts";
+import { ChatStore, idOf, type ChatType } from "./lib/chat.ts";
 import { checkRelease, download, stage } from "./lib/update.ts";
 
 /** WebUI 自己的设置，保存在 plugin-data/webui/config.json */
@@ -173,6 +173,14 @@ async function call<T extends Record<string, unknown>>(ctx: Context, name: strin
     const err = e as GoqbotError;
     const message = err.data?.detail ?? err.data?.wording ?? err.message ?? "调用失败";
     throw new HttpError(err.code === -32602 ? 400 : 502, String(message));
+  }
+}
+
+/** 旧版 WebUI 存的会话编号丢了精度，不能用来发消息 */
+function assertExactId(chat: { type: string; id: unknown }): void {
+  if (typeof chat.id === "number" && !Number.isSafeInteger(chat.id)) {
+    const who = chat.type === "group" ? "这个群" : "这个用户";
+    throw new HttpError(409, `这个会话是旧版 WebUI 保存的，编号不完整。等${who}发来新消息后就能操作了`);
   }
 }
 
@@ -398,6 +406,49 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       push("chat_removed", { key });
       return send(res, 200, {});
     }
+    case "POST /api/chats/send": {
+      // 发消息：message 是 OneBot 消息段数组；发出去的消息会以 message_sent 事件回到聊天记录
+      const body = await readJSON(req);
+      const chat = store.get(String(body.key ?? ""));
+      if (!chat) {
+        throw new HttpError(404, "没有这个会话");
+      }
+      const message = Array.isArray(body.message) ? body.message : [];
+      if (!message.length) {
+        throw new HttpError(400, "消息是空的");
+      }
+      assertExactId(chat);
+      const target = idOf(chat.id);
+      const result = chat.type === "group"
+        ? await call(ctx, "send_group_msg", { group_id: target, message })
+        : await call(ctx, "send_private_msg", { user_id: target, message });
+      return send(res, 200, { message_id: idOf(result.message_id) });
+    }
+    case "POST /api/chats/recall": {
+      const body = await readJSON(req);
+      const id = idOf(body.message_id);
+      if (!id) {
+        throw new HttpError(400, "缺少消息编号");
+      }
+      await call(ctx, "delete_msg", { message_id: id });
+      return send(res, 200, {});
+    }
+    case "POST /api/chats/ban": {
+      // 禁言群成员：duration 为秒，0 表示解除
+      const body = await readJSON(req);
+      const chat = store.get(String(body.key ?? ""));
+      if (!chat || chat.type !== "group") {
+        throw new HttpError(404, "没有这个群");
+      }
+      const userId = idOf(body.user_id);
+      const duration = Math.max(0, Math.min(Math.floor(Number(body.duration) || 0), 30 * 24 * 3600));
+      if (!userId) {
+        throw new HttpError(400, "缺少用户编号");
+      }
+      assertExactId(chat);
+      await call(ctx, "set_group_ban", { group_id: idOf(chat.id), user_id: userId, duration });
+      return send(res, 200, {});
+    }
     case "GET /api/chats/group-info": {
       // 群基本信息（官方接口需要白名单），查到的群名记进会话列表
       const chat = store.get(q.get("key") ?? "");
@@ -415,7 +466,7 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
     case "GET /api/chats/user-info": {
       // 用户信息：/v2/users/{user_openid}/info
       const openid = q.get("openid") ?? "";
-      const userId = Number(q.get("user_id")) || 0;
+      const userId = q.get("user_id") ?? "";
       if (!openid && !userId) {
         throw new HttpError(400, "缺少用户");
       }
@@ -660,6 +711,8 @@ const plugin: Plugin = {
     "send_private_msg",
     "get_group_info",
     "get_user_info",
+    "delete_msg",
+    "set_group_ban",
     "host.info",
     "host.logs",
     "host.config.get",
@@ -686,6 +739,8 @@ const plugin: Plugin = {
 
     // 收到的消息和机器人发出的消息都存下来，并推给打开着的页面
     store.subscribe(({ chat, message }) => push("message", { chat, message }));
+    // 旧版数据合并到精确编号的会话时，通知页面换 key
+    store.onRename((from, to) => push("chat_renamed", { from, chat: store.get(to) }));
     // 新出现的群自动查一次群名（官方接口需要白名单；没有权限时不再查）
     const askedGroups = new Set<string>();
     let groupInfoDenied = false;

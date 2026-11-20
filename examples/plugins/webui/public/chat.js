@@ -132,6 +132,16 @@ export function onChat(chat) {
   }
 }
 
+/** 实时推送：旧版数据合并到了精确编号的会话，key 变了 */
+export function onChatRenamed({ from, chat }) {
+  if (!chat) return;
+  chatState.chats.delete(from);
+  chatState.chats.set(chat.key, chat);
+  if (!view || view.type !== chat.type) return;
+  if (view.current === from) location.replace(`#/${chat.type}/${encodeURIComponent(chat.key)}`);
+  renderList();
+}
+
 /** 实时推送：会话被删除（这个页面或别的页面删的） */
 export function onChatRemoved({ key }) {
   if (!chatState.chats.delete(key)) return;
@@ -146,16 +156,25 @@ export function onChatRemoved({ key }) {
 let closeMenu = () => {};
 
 function openChatMenu(c, x, y) {
-  closeMenu();
-  const items = [
+  openMenu(chatTitle(c), [
     { label: c.remark ? "修改备注" : "设置备注", run: () => editRemark(c) },
     c.unread ? { label: "标记为已读", run: () => markRead(c) } : null,
     { sep: true },
     { label: "删除聊天记录", danger: true, run: () => deleteChat(c) },
-  ].filter(Boolean);
-  const menu = h("div", { class: "ctx-menu", role: "menu", "aria-label": chatTitle(c) },
+  ], x, y, view?.list);
+}
+
+/**
+ * 右键菜单。items 每项 { label, run, danger?, disabled?, hint? } 或 { sep: true }；
+ * disabled 的项显示成灰色，hint 是鼠标停留时的说明
+ */
+function openMenu(label, list, x, y, scroller) {
+  closeMenu();
+  const items = list.filter(Boolean);
+  const menu = h("div", { class: "ctx-menu", role: "menu", "aria-label": label },
     items.map((it) => it.sep ? h("div", { class: "ctx-sep", role: "separator" }) : h("button", {
       class: "ctx-item" + (it.danger ? " danger" : ""), type: "button", role: "menuitem",
+      disabled: !!it.disabled, title: it.hint || undefined,
       onclick: () => { closeMenu(); it.run(); },
     }, it.label)));
   document.body.append(menu);
@@ -163,7 +182,7 @@ function openChatMenu(c, x, y) {
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
   menu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
-  const buttons = [...menu.querySelectorAll("button")];
+  const buttons = [...menu.querySelectorAll("button:not(:disabled)")];
   buttons[0]?.focus();
   const onKey = (e) => {
     if (e.key === "Escape") { e.preventDefault(); closeMenu(); return; }
@@ -179,7 +198,9 @@ function openChatMenu(c, x, y) {
   document.addEventListener("pointerdown", onDown, true);
   addEventListener("resize", onAway);
   addEventListener("blur", onAway);
-  view?.list.addEventListener("scroll", onAway, { once: true });
+  // 用户自己滚动列表时关掉（不用 scroll 事件：新消息自动滚到底时也会触发）
+  scroller?.addEventListener("wheel", onAway, { once: true, passive: true });
+  scroller?.addEventListener("touchmove", onAway, { once: true, passive: true });
   closeMenu = () => {
     closeMenu = () => {};
     menu.remove();
@@ -279,8 +300,9 @@ async function openChat(key) {
   view.root.querySelector(".chat")?.classList.add("has-current");
   view.head = h("header", { class: "panel-head" });
   view.scroller = h("div", { class: "msgs", role: "log", "aria-live": "polite" });
-  fill(view.panel, view.head, view.scroller,
-    h("footer", { class: "composer-off" }, "目前只接收消息，发送功能还在开发中"));
+  view.draft = { reply: null, mentions: [] };
+  view.composer = renderComposer(chat);
+  fill(view.panel, view.head, view.scroller, view.composer.root);
   renderHeader();
   renderList();
   view.scroller.addEventListener("scroll", () => {
@@ -452,7 +474,7 @@ async function loadOlder() {
 function messageCtx() {
   return {
     findReply(id) {
-      const m = view.messages.find((x) => x.id === id);
+      const m = view.messages.find((x) => String(x.id) === String(id));
       return m && { ...m, summary: summaryOf(m.message) };
     },
     nameOf(qq) {
@@ -596,7 +618,14 @@ function messageNode(m) {
       onclick: () => showUserInfo({ openid, userId: m.user_id, name: m.event?.sender?.nickname || m.nickname, card: m.event?.sender?.card || "", avatar: m.avatar, role: m.role, bot: m.bot }),
     }, avatar(openid, name, "p" + m.user_id, "sm", m.avatar));
   const open = () => showRaw(m);
-  return h("div", { class: "msg" + (m.self ? " self" : ""), dataset: { seq: m.seq } },
+  return h("div", {
+    class: "msg" + (m.self ? " self" : ""), dataset: { seq: m.seq },
+    oncontextmenu: (e) => {
+      if (e.target.closest("a[href]")) return; // 链接保留浏览器自己的菜单
+      e.preventDefault();
+      openMessageMenu(m, e.clientX, e.clientY);
+    },
+  },
     av,
     h("div", { class: "msg-main" },
       h("div", { class: "msg-meta" },
@@ -604,6 +633,229 @@ function messageNode(m) {
         role ? h("span", { class: "role" }, role) : null,
         h("button", { class: "msg-stamp", type: "button", title: "查看这条消息的原始数据", onclick: open }, fullTime(m))),
       bubble(renderSegments(m.message, { ...messageCtx(), bot: !!m.bot, event: m.event }))));
+}
+
+// ---------- 输入框 ----------
+
+/** 旧版 WebUI 存的会话编号丢了精度，不能发消息 */
+function legacyChat(c) {
+  return typeof c.id === "number" && !Number.isSafeInteger(c.id);
+}
+
+/** 这条消息发送者的精确编号；旧记录里不准时，用同一个人较新的消息补上 */
+function exactUserId(m) {
+  if (typeof m.user_id === "string" && m.user_id) return m.user_id;
+  if (Number.isSafeInteger(m.user_id) && m.user_id) return String(m.user_id);
+  if (m.user_openid) {
+    const n = view.messages.findLast((x) => x.user_openid === m.user_openid && typeof x.user_id === "string" && x.user_id);
+    if (n) return n.user_id;
+  }
+  return "";
+}
+
+/** 这条消息的精确编号；旧记录不准时为空 */
+function exactMsgId(m) {
+  if (typeof m.id === "string" && m.id) return m.id;
+  return Number.isSafeInteger(m.id) && m.id ? String(m.id) : "";
+}
+
+function senderName(m) {
+  return m.self ? chatState.botName : m.nickname || `用户 ${m.user_id}`;
+}
+
+function renderComposer(c) {
+  const input = h("textarea", {
+    rows: 1, maxlength: 2000, "aria-label": "输入消息",
+    placeholder: c.type === "group" ? "输入消息，Enter 发送，Shift+Enter 换行" : "输入消息，Enter 发送，Shift+Enter 换行",
+  });
+  const sendBtn = h("button", { class: "btn primary", type: "button", onclick: () => sendDraft() }, "发送");
+  const replyBar = h("div", { class: "composer-reply", hidden: true });
+  const root = h("footer", { class: "composer" }, replyBar, h("div", { class: "composer-row" }, input, sendBtn));
+  const grow = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 150) + "px"; };
+  input.addEventListener("input", grow);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      sendDraft();
+    }
+  });
+  if (legacyChat(c)) {
+    input.disabled = true;
+    sendBtn.disabled = true;
+    input.placeholder = `这个会话是旧版 WebUI 保存的，编号不完整，等${c.type === "group" ? "这个群" : "对方"}发来新消息后就能发送了`;
+  }
+  return { root, input, sendBtn, replyBar, grow };
+}
+
+function renderReplyBar() {
+  const { replyBar } = view.composer;
+  const r = view.draft.reply;
+  replyBar.hidden = !r;
+  if (!r) return replyBar.replaceChildren();
+  fill(replyBar,
+    h("span", null, "回复 ", h("b", null, senderName(r)), "：", summaryOf(r.message) || "[消息]"),
+    h("button", { class: "composer-reply-x", type: "button", "aria-label": "取消回复", title: "取消回复", onclick: () => { view.draft.reply = null; renderReplyBar(); view.composer.input.focus(); } }, "×"));
+}
+
+/** 在输入框光标处插入 @名字 */
+function mentionUser(m) {
+  const userId = exactUserId(m);
+  const name = senderName(m).replace(/\s+/g, " ").trim();
+  if (!userId || !name) return;
+  const { input, grow } = view.composer;
+  if (!view.draft.mentions.some((x) => x.name === name)) view.draft.mentions.push({ name, userId });
+  const at = `@${name} `;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  input.value = input.value.slice(0, start) + at + input.value.slice(end);
+  input.focus();
+  input.selectionStart = input.selectionEnd = start + at.length;
+  grow();
+}
+
+function replyTo(m) {
+  view.draft.reply = m;
+  renderReplyBar();
+  view.composer.input.focus();
+}
+
+/** 把输入框里的文字和 @ 拼成消息段 */
+function buildDraft(text) {
+  const segs = [];
+  const r = view.draft.reply;
+  if (r) segs.push({ type: "reply", data: { id: exactMsgId(r) } });
+  const mentions = view.draft.mentions.filter((x) => text.includes("@" + x.name)).sort((a, b) => b.name.length - a.name.length);
+  if (!mentions.length) {
+    if (text) segs.push({ type: "text", data: { text } });
+    return segs;
+  }
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`@(${mentions.map((x) => esc(x.name)).join("|")})`, "g");
+  let last = 0;
+  for (const mt of text.matchAll(re)) {
+    if (mt.index > last) segs.push({ type: "text", data: { text: text.slice(last, mt.index) } });
+    const who = mentions.find((x) => x.name === mt[1]);
+    segs.push({ type: "at", data: { qq: who.userId, name: who.name } });
+    last = mt.index + mt[0].length;
+  }
+  if (last < text.length) segs.push({ type: "text", data: { text: text.slice(last) } });
+  return segs;
+}
+
+async function sendDraft() {
+  const { input, sendBtn, grow } = view.composer;
+  const text = input.value.replace(/\s+$/, "");
+  if (!text.trim() || sendBtn.disabled) return;
+  const key = view.current;
+  sendBtn.disabled = true;
+  try {
+    await sendMessage(key, buildDraft(text));
+    if (view?.current !== key) return;
+    input.value = "";
+    grow();
+    view.draft = { reply: null, mentions: [] };
+    renderReplyBar();
+  } finally {
+    if (view?.current === key) { sendBtn.disabled = false; input.focus(); }
+  }
+}
+
+/** 发出一条消息；成功后它会以 message_sent 事件回到聊天记录里 */
+async function sendMessage(key, message) {
+  try {
+    await api("POST", "/api/chats/send", { key, message });
+    return true;
+  } catch (e) {
+    toast(friendlyError(e.message), "error");
+    return false;
+  }
+}
+
+// ---------- 消息的右键菜单 ----------
+
+/** 复读：把这条消息转成能再发一次的消息段；不能复读时返回 null */
+function repeatSegments(m) {
+  if (m.message.some((s) => ["forward", "file", "share", "card", "json", "xml", "ark", "keyboard"].includes(s.type))) return null;
+  if (m.message.length === 1 && m.message[0].type === "text" && /^\[卡片消息\]/.test(m.message[0].data?.text ?? "")) return null;
+  const out = [];
+  for (const s of m.message) {
+    const d = s.data ?? {};
+    if (s.type === "text") {
+      const t = stripFaces(d.text);
+      if (t.trim()) out.push({ type: "text", data: { text: t } });
+    } else if (s.type === "at") {
+      if (typeof d.qq === "string" && /^\d+$/.test(d.qq) || d.qq === "all") out.push({ type: "at", data: { qq: d.qq } });
+    } else if (s.type === "image" || s.type === "record" || s.type === "video") {
+      const url = /^https?:\/\//i.test(d.url ?? "") ? d.url : /^https?:\/\//i.test(d.file ?? "") ? d.file : "";
+      if (url) out.push({ type: s.type, data: { file: url } });
+    } else if (s.type === "markdown" || s.type === "face") {
+      out.push({ type: s.type, data: d });
+    }
+  }
+  return out.length ? out : null;
+}
+
+function openMessageMenu(m, x, y) {
+  const c = chatState.chats.get(view.current);
+  if (!c) return;
+  const group = c.type === "group";
+  const legacy = legacyChat(c);
+  const userId = m.self ? "" : exactUserId(m);
+  const msgId = exactMsgId(m);
+  const repeat = repeatSegments(m);
+  const name = senderName(m);
+  const oldHint = "这条是旧版 WebUI 保存的记录，编号不完整，不能操作";
+  openMenu("消息操作", [
+    group && !m.self ? { label: `艾特 ${name}`, run: () => mentionUser(m), disabled: !userId || legacy, hint: !userId ? oldHint : "" } : null,
+    { label: "回复", run: () => replyTo(m), disabled: !msgId || legacy, hint: !msgId ? oldHint : "" },
+    { label: "复读", run: () => repeatMessage(m, repeat), disabled: !repeat || legacy, hint: !repeat ? "这类消息不能复读" : "" },
+    { sep: true },
+    group && !m.self ? { label: `禁言 ${name}…`, run: () => banUser(c, m, userId), disabled: !userId || legacy, hint: !userId ? oldHint : "需要机器人是群管理员" } : null,
+    { label: "撤回消息", danger: true, run: () => recallMessage(m, msgId), disabled: !msgId || (!group && !m.self),
+      hint: !msgId ? oldHint : !group && !m.self ? "私聊里只能撤回机器人自己发的消息" : m.self ? "" : "撤回别人的消息需要机器人是群管理员" },
+    { sep: true },
+    { label: "查看原始数据", run: () => showRaw(m) },
+  ], x, y, view.scroller);
+}
+
+async function repeatMessage(m, segs) {
+  if (await sendMessage(view.current, segs)) toast("已复读");
+}
+
+async function recallMessage(m, msgId) {
+  const ok = await confirmDialog("撤回消息", `撤回 ${senderName(m)} 的这条消息？`, "撤回", true);
+  if (!ok) return;
+  try {
+    await api("POST", "/api/chats/recall", { message_id: msgId });
+    toast("已撤回");
+    // 在这条消息的名字旁标上「已撤回」（只在当前页面，刷新后不保留）
+    const row = view?.scroller.querySelector(`.msg[data-seq="${m.seq}"]`);
+    if (row && !row.classList.contains("recalled")) {
+      row.classList.add("recalled");
+      row.querySelector(".msg-meta")?.append(h("span", { class: "recalled-tag" }, "已撤回"));
+    }
+  } catch (e) {
+    toast(friendlyError(e.message), "error");
+  }
+}
+
+function banUser(c, m, userId) {
+  const name = senderName(m);
+  const choices = [["10 分钟", 600], ["1 小时", 3600], ["12 小时", 43200], ["1 天", 86400], ["7 天", 604800]];
+  let close;
+  const run = async (sec, label) => {
+    close();
+    try {
+      await api("POST", "/api/chats/ban", { key: c.key, user_id: userId, duration: sec });
+      toast(sec ? `已禁言 ${name} ${label}` : `已解除 ${name} 的禁言`);
+    } catch (e) {
+      toast(friendlyError(e.message), "error");
+    }
+  };
+  close = openDialog(`禁言 ${name}`, h("div", { class: "ban-pick" },
+    h("p", null, "选择禁言时长。需要机器人是这个群的管理员。"),
+    h("div", { class: "ban-choices" }, choices.map(([label, sec]) => h("button", { class: "btn", type: "button", onclick: () => run(sec, label) }, label))),
+    h("button", { class: "btn ghost small", type: "button", onclick: () => run(0, "") }, "解除禁言")));
 }
 
 /** 路由：同一页里切换会话（不重建页面，保留搜索内容） */
