@@ -1,6 +1,6 @@
 // 私聊 / 群聊页面：左边会话列表，右边消息窗口。当前阶段只接收消息
 import { h, fill, icon, api, toast, promptDialog, confirmDialog, openDialog, shortTime, dayLabel, hue } from "./core.js";
-import { renderSegments, summaryOf, setImageViewer, setForwardViewer, forwardLine, stripFaces, onlyImages } from "./msg.js";
+import { renderSegments, renderMarkdown, summaryOf, setImageViewer, setForwardViewer, forwardLine, stripFaces, onlyImages } from "./msg.js";
 
 const PAGE_SIZE = 50;
 
@@ -783,7 +783,13 @@ function renderComposer(c) {
   });
   const sendBtn = h("button", { class: "btn primary", type: "button", onclick: () => sendDraft() }, "发送");
   const replyBar = h("div", { class: "composer-reply", hidden: true });
-  const root = h("footer", { class: "composer" }, replyBar, h("div", { class: "composer-row" }, input, sendBtn));
+  // 输入框上方的快捷按钮：Markdown 消息、发本地图片
+  const imgInput = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/bmp", hidden: true,
+    onchange: () => { const f = imgInput.files?.[0]; imgInput.value = ""; if (f) sendLocalImage(f, imgBtn); } });
+  const mdBtn = h("button", { class: "tool-chip", type: "button", title: "用 Markdown 写一条消息", onclick: () => openMarkdownBuilder() }, icon("markdown"), "Markdown");
+  const imgBtn = h("button", { class: "tool-chip", type: "button", title: "选一张本地图片发送", onclick: () => imgInput.click() }, icon("image"), h("span", null, "图片"));
+  const tools = h("div", { class: "composer-tools" }, mdBtn, imgBtn, imgInput);
+  const root = h("footer", { class: "composer" }, tools, replyBar, h("div", { class: "composer-row" }, input, sendBtn));
   const grow = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 150) + "px"; };
   input.addEventListener("input", grow);
   input.addEventListener("keydown", (e) => {
@@ -795,9 +801,225 @@ function renderComposer(c) {
   if (legacyChat(c)) {
     input.disabled = true;
     sendBtn.disabled = true;
+    mdBtn.disabled = true;
+    imgBtn.disabled = true;
     input.placeholder = `这个会话是旧版 WebUI 保存的，编号不完整，等${c.type === "group" ? "这个群" : "对方"}发来新消息后就能发送了`;
   }
   return { root, input, sendBtn, replyBar, grow };
+}
+
+// ---------- 发本地图片 ----------
+
+const IMAGE_LIMIT = 20 * 1024 * 1024;
+
+async function sendLocalImage(file, btn) {
+  if (file.size > IMAGE_LIMIT) return toast("图片不能超过 20 MB", "error");
+  const key = view.current;
+  const label = btn.querySelector("span");
+  btn.disabled = true;
+  label.textContent = "发送中…";
+  try {
+    await api("POST", `/api/chats/send-image?key=${encodeURIComponent(key)}`, file);
+    if (view?.current === key && view.quota) refreshQuotaSoon();
+  } catch (e) {
+    toast(friendlyError(e.message), "error");
+  } finally {
+    btn.disabled = false;
+    label.textContent = "图片";
+  }
+}
+
+// ---------- Markdown 消息 ----------
+// 弹窗只能用底部的「取消」「发送」关闭：点四周、按 Esc 都不会关，避免写了一半丢掉
+
+const mdDrafts = new Map(); // 会话 key -> 没发出去的 Markdown 草稿
+const mediaPreview = new Map(); // qqbot-media:// 链接 -> 预览图地址（只用于弹窗里的预览）
+
+/** 预览用：把 @ 标记换成 @名字，把素材链接换成能显示的预览图 */
+function previewSource(src) {
+  return src
+    .replace(/<qqbot-at-user\s+id="([^"]+)"\s*\/?>/g, (_, id) => "@" + (messageCtx().nameOfOpenid(id) || "某人"))
+    .replace(/<qqbot-at-everyone\s*\/?>/g, "@全体成员")
+    .replace(/\]\((qqbot-media:\/\/[^)\s]+)\)/g, (m, url) => mediaPreview.has(url) ? `](${mediaPreview.get(url)})` : m);
+}
+
+/** 读出图片尺寸，按最长边 400 等比缩小，作为 Markdown 图片的显示尺寸；src 是网址或本地文件 */
+async function imageSize(src) {
+  try {
+    let w, hgt;
+    if (typeof src === "string") {
+      const img = new Image();
+      img.referrerPolicy = "no-referrer";
+      img.src = src;
+      await img.decode();
+      [w, hgt] = [img.naturalWidth, img.naturalHeight];
+    } else {
+      const bmp = await createImageBitmap(src); // 本地文件直接解码（页面的安全策略不允许 blob: 图片）
+      [w, hgt] = [bmp.width, bmp.height];
+      bmp.close();
+    }
+    const scale = Math.min(1, 400 / Math.max(w, hgt));
+    return [Math.round(w * scale), Math.round(hgt * scale)];
+  } catch {
+    return [0, 0];
+  }
+}
+
+function openMarkdownBuilder() {
+  const key = view.current;
+  const c = chatState.chats.get(key);
+  if (!c) return;
+  const input = h("textarea", { class: "md-input", spellcheck: "false", "aria-label": "Markdown 内容", placeholder: "在这里写 Markdown，右边会实时预览" });
+  input.value = mdDrafts.get(key) ?? "";
+  const preview = h("div", { class: "md-preview" });
+  const ask = h("div", { class: "md-ask", hidden: true });
+  const sendBtn = h("button", { class: "btn primary", type: "button" }, "发送");
+  const cancelBtn = h("button", { class: "btn", type: "button" }, "取消");
+  const update = () => {
+    mdDrafts.set(key, input.value);
+    const src = input.value.trim();
+    fill(preview, src ? renderMarkdown(previewSource(input.value)) : h("p", { class: "md-empty" }, "预览会显示在这里"));
+    sendBtn.disabled = !src;
+  };
+  input.addEventListener("input", update);
+
+  // ---- 插入内容 ----
+  const insert = (text, selectFrom = text.length, selectTo = selectFrom) => {
+    const s = input.selectionStart, e = input.selectionEnd;
+    input.setRangeText(text, s, e, "end");
+    input.selectionStart = s + selectFrom;
+    input.selectionEnd = s + selectTo;
+    input.focus();
+    update();
+  };
+  const lineStart = () => input.value.lastIndexOf("\n", input.selectionStart - 1) + 1;
+  const heading = () => {
+    const ls = lineStart();
+    const line = input.value.slice(ls).split("\n")[0];
+    const m = /^(#{1,5}) /.exec(line);
+    // 已经是标题时再点一次变成下一级（# → ## → …），否则加 #
+    input.setRangeText(m ? "#".repeat(m[1].length + 1) + " " : "# ", ls, ls + (m ? m[0].length : 0), "end");
+    input.focus();
+    update();
+  };
+  const quote = () => {
+    const ls = lineStart();
+    const end = input.selectionEnd;
+    const block = input.value.slice(ls, end) || "";
+    const quoted = (block || "").split("\n").map((l) => "> " + l).join("\n");
+    input.setRangeText(quoted || "> ", ls, end, "end");
+    input.focus();
+    update();
+  };
+  const code = () => {
+    const sel = input.value.slice(input.selectionStart, input.selectionEnd);
+    const before = input.selectionStart > 0 && input.value[input.selectionStart - 1] !== "\n" ? "\n" : "";
+    const text = `${before}\`\`\`\n${sel}\n\`\`\`\n`;
+    insert(text, before.length + 4, before.length + 4 + sel.length);
+  };
+
+  /** 在编辑框上方弹出一行输入，返回填写的内容（取消时为 null） */
+  const askInline = (label, placeholder, chips = []) => new Promise((resolve) => {
+    const field = h("input", { type: "text", placeholder, spellcheck: "false" });
+    const done = (v) => { ask.hidden = true; ask.replaceChildren(); input.focus(); resolve(v); };
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); done(field.value.trim() || null); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+    });
+    fill(ask,
+      h("label", null, h("span", null, label), field),
+      chips.length ? h("div", { class: "md-chips" }, chips.map(([text, value]) => h("button", { class: "md-chip", type: "button", title: value, onclick: () => done(value) }, text))) : null,
+      h("div", { class: "md-ask-actions" },
+        h("button", { class: "btn small", type: "button", onclick: () => done(null) }, "取消"),
+        h("button", { class: "btn small primary", type: "button", onclick: () => done(field.value.trim() || null) }, "插入")));
+    ask.hidden = false;
+    field.focus();
+  });
+
+  const mention = async () => {
+    // 最近在这个会话里说过话的人，点一下就能填上 TA 的 OpenID
+    const seen = new Map();
+    for (const m of [...view.messages].reverse()) {
+      if (!m.self && m.user_openid && !seen.has(m.user_openid)) seen.set(m.user_openid, m.nickname || "用户");
+      if (seen.size >= 12) break;
+    }
+    const id = await askInline("艾特用户：填写 TA 的 OpenID", "例如 0123456789ABCDEF0123456789ABCDEF", [...seen].map(([oid, name]) => [name, oid]));
+    if (!id) return;
+    if (!/^[0-9A-Za-z_-]{8,64}$/.test(id)) return toast("OpenID 格式不对", "error");
+    insert(`<qqbot-at-user id="${id}" /> `);
+  };
+
+  const fileInput = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/bmp", hidden: true });
+  const localImage = () => fileInput.click();
+  fileInput.addEventListener("change", async () => {
+    const f = fileInput.files?.[0];
+    fileInput.value = "";
+    if (!f) return;
+    if (f.size > IMAGE_LIMIT) return toast("图片不能超过 20 MB", "error");
+    const placeholder = `![上传中…](uploading)`;
+    insert(placeholder);
+    const at = input.value.lastIndexOf(placeholder);
+    try {
+      const [w, hgt] = await imageSize(f);
+      const r = await api("POST", `/api/media/upload?name=${encodeURIComponent(f.name)}`, f);
+      if (r.preview_url) mediaPreview.set(r.url, r.preview_url);
+      const md = `![图片${w ? ` #${w}px #${hgt}px` : ""}](${r.url})`;
+      const i = input.value.indexOf(placeholder, Math.max(0, at - 50));
+      if (i >= 0) input.setRangeText(md, i, i + placeholder.length, "end");
+      update();
+    } catch (e) {
+      const i = input.value.indexOf(placeholder);
+      if (i >= 0) input.setRangeText("", i, i + placeholder.length, "end");
+      update();
+      toast("上传图片失败：" + friendlyError(e.message), "error");
+    }
+  });
+  const imageLink = async () => {
+    const url = await askInline("图片链接", "https://example.com/a.png");
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) return toast("请填写 http:// 或 https:// 开头的图片地址", "error");
+    const [w, hgt] = await imageSize(url);
+    insert(`![图片${w ? ` #${w}px #${hgt}px` : ""}](${url})`);
+  };
+
+  const tool = (name, label, hint, run) => h("button", { class: "md-tool", type: "button", title: hint, onclick: run }, icon(name), h("span", null, label));
+  const dlg = h("dialog", { class: "md-modal", "aria-label": "Markdown 消息" },
+    h("header", { class: "md-head" }, h("h2", null, "Markdown 消息"), h("span", null, `发到「${chatTitle(c)}」`)),
+    h("div", { class: "md-main" },
+      h("nav", { class: "md-tools", "aria-label": "快速插入" },
+        tool("heading", "标题", "在这一行前面加 #，再点一次变成下一级标题", heading),
+        tool("quote", "引用", "在这一行前面加 >", quote),
+        tool("code", "代码块", "插入 ``` 代码块（选中文字时包起来）", code),
+        tool("at", "艾特", "艾特一个用户（需要填写 TA 的 OpenID）", mention),
+        tool("image", "本地图片", "上传一张本地图片并插入", localImage),
+        tool("imglink", "图片链接", "用网址插入一张图片", imageLink),
+        fileInput),
+      h("div", { class: "md-edit" }, ask, input),
+      h("div", { class: "md-preview-wrap" }, h("span", { class: "md-preview-label" }, "预览"), preview)),
+    h("footer", { class: "md-foot" }, h("small", null, "只能点「取消」或「发送」关闭；没发出去的内容会留着，下次打开还在"), cancelBtn, sendBtn));
+  // 按 Esc 不关闭；点四周也不会关闭（dialog 默认就不会）
+  dlg.addEventListener("cancel", (e) => e.preventDefault());
+  const close = () => { dlg.close(); dlg.remove(); view?.composer.input.focus(); };
+  cancelBtn.addEventListener("click", close);
+  sendBtn.addEventListener("click", async () => {
+    const content = input.value.trim();
+    if (!content) return;
+    if (/\]\(uploading\)/.test(content)) return toast("图片还在上传，请稍等", "error");
+    sendBtn.disabled = true;
+    sendBtn.textContent = "发送中…";
+    const ok = await sendMessage(key, [{ type: "markdown", data: { data: { markdown: { content } } } }]);
+    sendBtn.textContent = "发送";
+    sendBtn.disabled = false;
+    if (ok) {
+      mdDrafts.delete(key);
+      close();
+      toast("Markdown 消息已发送");
+    }
+  });
+  document.body.append(dlg);
+  dlg.showModal();
+  update();
+  input.focus();
 }
 
 function renderReplyBar() {

@@ -48,6 +48,13 @@ const ICONS = {
   back: "M15 5l-7 7 7 7",
   plus: "M12 5v14M5 12h14",
   trash: "M5 7h14M10 11v6M14 11v6M7 7l1 13h8l1-13M9 7V4h6v3",
+  image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z",
+  markdown: "M3 6h18v12H3zM6.5 15V9l2.5 3 2.5-3v6M17 9v6M14.5 12.5 17 15l2.5-2.5",
+  heading: "M6 4v16M18 4v16M6 12h12",
+  quote: "M5 8h4v4H6.5L6 17M14 8h4v4h-2.5l-.5 5",
+  code: "M9 7l-5 5 5 5M15 7l5 5-5 5",
+  at: "M16 12a4 4 0 1 1-1.2-2.8M16 8.5V13a2.5 2.5 0 0 0 5 0v-1a9 9 0 1 0-3.5 7.1",
+  imglink: "M4 5h16v9M4 5v14h9M4 16l5-5 4 4M14 19a3 3 0 0 0 3 3h1a3 3 0 0 0 0-6h-1M21 19a3 3 0 0 0-3-3",
 };
 export function icon(name, cls = "icon") {
   const ns = "http://www.w3.org/2000/svg";

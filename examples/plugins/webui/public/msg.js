@@ -268,7 +268,8 @@ export function renderSegments(segs, ctx) {
       }
       case "markdown": {
         const md = markdownOf(d);
-        if (md.content) parts.push(renderMarkdown(md.content));
+        // <@openid> / <qqbot-at-user id="…" /> 显示成 @名字
+        if (md.content) parts.push(renderMarkdown(mentionText(md.content, ctx)));
         else parts.push(h("span", { class: "seg-tag" }, md.template ? "[模板 Markdown]" : "[Markdown]"));
         const kb = renderKeyboard(md.rows);
         if (kb) parts.push(kb);

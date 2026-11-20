@@ -190,7 +190,7 @@ export function summary(segs: Segment[], quote = false): string {
       continue;
     } else if (s.type === "markdown") {
       const c = markdownOf(s.data).content;
-      text += c ? c.replace(/!\[[^\]]*\]\([^)]*\)/g, "[图片]").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[#*_`>]/g, "").slice(0, 60) : names.markdown;
+      text += c ? c.replace(/<qqbot-at-user[^>]*>|<@!?[^>]+>/g, "@").replace(/<qqbot-at-everyone\s*\/?>|<@all>/g, "@全体成员").replace(/!\[[^\]]*\]\([^)]*\)/g, "[图片]").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[#*_`>]/g, "").slice(0, 60) : names.markdown;
     } else {
       text += names[s.type] ?? `[${s.type}]`;
     }

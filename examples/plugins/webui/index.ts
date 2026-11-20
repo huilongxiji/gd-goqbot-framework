@@ -43,6 +43,14 @@ function readCommands(v: unknown): Commands {
 const PUBLIC_DIR = resolve(import.meta.dirname, "public");
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_UPLOAD = 200 * 1024 * 1024;
+const MAX_IMAGE = 20 * 1024 * 1024; // 网页发图片、上传素材的大小上限
+
+/** 按文件头判断是不是图片（png / jpg / gif / webp / bmp） */
+function isImage(b: Buffer): boolean {
+  const hex = b.subarray(0, 12).toString("hex");
+  return hex.startsWith("89504e47") || hex.startsWith("ffd8ff") || hex.startsWith("47494638") || hex.startsWith("424d")
+    || (hex.startsWith("52494646") && b.subarray(8, 12).toString("ascii") === "WEBP");
+}
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -468,6 +476,34 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       const allow = chat.type === "group" ? (await botState(ctx, chat)).allow : null;
       return send(res, 200, { ...quota, allow_proactive_msg: allow, now: Math.floor(Date.now() / 1000) });
     }
+    case "POST /api/chats/send-image": {
+      // 发本地图片：请求体是图片文件本身
+      const chat = store.get(q.get("key") ?? "");
+      if (!chat) {
+        throw new HttpError(404, "没有这个会话");
+      }
+      assertExactId(chat);
+      const img = await readBody(req, MAX_IMAGE);
+      if (!isImage(img)) {
+        throw new HttpError(400, "不是图片文件（支持 PNG、JPG、GIF、WebP、BMP）");
+      }
+      const message = [{ type: "image", data: { file: "base64://" + img.toString("base64") } }];
+      const target = idOf(chat.id);
+      const result = chat.type === "group"
+        ? await call(ctx, "send_group_msg", { group_id: target, message })
+        : await call(ctx, "send_private_msg", { user_id: target, message });
+      return send(res, 200, { message_id: idOf(result.message_id) });
+    }
+    case "POST /api/media/upload": {
+      // 上传素材图片，返回 qqbot-media:// 链接，给 Markdown 消息引用
+      const img = await readBody(req, MAX_IMAGE);
+      if (!isImage(img)) {
+        throw new HttpError(400, "不是图片文件（支持 PNG、JPG、GIF、WebP、BMP）");
+      }
+      const name = (q.get("name") ?? "").slice(0, 100);
+      const info = await call<Record<string, unknown>>(ctx, "upload_media_image", { file: "base64://" + img.toString("base64"), name });
+      return send(res, 200, { url: String(info.url ?? ""), preview_url: String(info.preview_url ?? ""), cached: !!info.cached });
+    }
     case "POST /api/chats/recall": {
       const body = await readJSON(req);
       const id = idOf(body.message_id);
@@ -759,6 +795,7 @@ const plugin: Plugin = {
     "set_group_ban",
     "get_group_bot_state",
     "get_message_quota",
+    "upload_media_image",
     "host.info",
     "host.logs",
     "host.config.get",
