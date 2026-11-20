@@ -308,6 +308,8 @@ func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope
 		return c.getGroupInfo(params)
 	case "get_user_info", "get_stranger_info":
 		return c.getUserInfo(params)
+	case "get_message_quota":
+		return c.getMessageQuota(params)
 	case "get_group_bot_state":
 		return c.getGroupBotState(params)
 	case "get_group_member_info":
@@ -461,6 +463,63 @@ func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
 		"group_tags":        info.GroupTags,
 		"member_count":      info.GroupMemberNum,
 		"max_member_count":  0,
+	})
+}
+
+// 主动消息每天的上限（官方规则：每个群 / 每个用户每天 1000 条）
+const activeDailyLimit = 1000
+
+// getMessageQuota 查询某个群或用户当前的发消息额度：
+// 被动回复（最近一条消息的凭证还剩多久、已回复几次、上限几次）和今天已发的主动消息条数。
+// 群传 group_openid 或 group_id；单聊传 user_openid 或 user_id。数据来自 goqbot 自己的记录，重启后主动计数从 0 开始。
+func (c *Caller) getMessageQuota(params gjson.Result) map[string]any {
+	var scene idmap.Scene
+	var openid string
+	var st idmap.PassiveState
+	if params.Get("group_openid").String() != "" || params.Get("group_id").Exists() {
+		oid, fail := c.resolveGroupOpenID(params)
+		if fail != nil {
+			return fail
+		}
+		scene, openid, st = idmap.SceneGroup, oid, c.ids.GroupPassiveState(oid)
+	} else {
+		oid := params.Get("user_openid").String()
+		if oid == "" {
+			uid := params.Get("user_id").Int()
+			if uid == 0 {
+				return failed(1400, "缺少 group_id / group_openid 或 user_id / user_openid")
+			}
+			found := false
+			if oid, found = c.ids.OpenID(uid); !found || oid == "" {
+				return failed(1404, "未知 user_id 或未收到过该用户消息")
+			}
+		}
+		scene, openid, st = idmap.SceneC2C, oid, c.ids.C2CPassiveState(oid)
+	}
+	unix := func(t time.Time) int64 {
+		if t.IsZero() {
+			return 0
+		}
+		return t.Unix()
+	}
+	sent := c.ids.ActiveToday(scene, openid)
+	return ok(map[string]any{
+		"scene": string(scene),
+		"passive": map[string]any{
+			"available":     st.Available,
+			"kind":          st.Kind,
+			"received_at":   unix(st.ReceivedAt),
+			"expires_at":    unix(st.ExpiresAt),
+			"ttl":           int(st.TTL.Seconds()),
+			"replies_used":  st.RepliesUsed,
+			"replies_limit": st.RepliesMax,
+			"boosted":       st.Boosted,
+		},
+		"active": map[string]any{
+			"sent_today":  sent,
+			"daily_limit": activeDailyLimit,
+			"remaining":   max(activeDailyLimit-sent, 0),
+		},
 	})
 }
 
@@ -1537,6 +1596,9 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
+	if out.MsgID == "" && out.EventID == "" {
+		c.ids.AddActive(idmap.SceneGroup, groupOpenID)
+	}
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(), Outbound: true,
 	})
@@ -1633,6 +1695,9 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
+	if out.MsgID == "" && out.EventID == "" && !out.IsWakeup {
+		c.ids.AddActive(idmap.SceneC2C, userOpenID)
+	}
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(), Outbound: true,
 	})

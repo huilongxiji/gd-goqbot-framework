@@ -28,12 +28,21 @@ const (
 	SceneC2C Scene = "c2c"
 )
 
-// 被动回复有效期（保守取值，留出网络余量）
+// 被动回复有效期与每条消息可回复次数（官方规则）
 const (
 	// GroupPassiveTTL 群被动回复有效期
 	GroupPassiveTTL = 5 * time.Minute
+	// GroupPassiveTTLBoost 机器人开发者是群主或管理员时，群被动回复有效期延长到 60 分钟
+	GroupPassiveTTLBoost = 60 * time.Minute
 	// C2CPassiveTTL 单聊被动回复有效期
 	C2CPassiveTTL = 60 * time.Minute
+
+	// GroupPassiveReplies 群消息每条可被动回复次数
+	GroupPassiveReplies = 5
+	// GroupPassiveRepliesBoost 机器人开发者是群主或管理员时，群消息每条可被动回复次数提升到 50
+	GroupPassiveRepliesBoost = 50
+	// C2CPassiveReplies 单聊消息每条可被动回复次数
+	C2CPassiveReplies = 4
 )
 
 // 后台清理（janitor）参数：控制长期运行时内存内几个只增不减的 sync.Map。
@@ -140,6 +149,9 @@ type Store struct {
 
 	lazy       sync.Map // string(key) -> *lazyEntry
 	seqCounter sync.Map // string(msgID) -> *seqEntry
+
+	groupBoost  sync.Map // string(group_openid) -> bool：机器人开发者在这个群是群主或管理员
+	activeCount sync.Map // string("g:"/"c:" + openid) -> *activeEntry：今天已发的主动消息条数（仅内存）
 
 	db *bolt.DB // nil = 纯内存模式
 
@@ -355,12 +367,125 @@ func (s *Store) loadLazy(key string, ttl time.Duration) (string, string, bool) {
 
 // LazyGroup 取群被动回复目标凭证，优先 group+user 维度；返回 (id, kind)
 func (s *Store) LazyGroup(groupOpenID, userOpenID string) (string, string, bool) {
+	ttl := s.GroupPassiveTTLOf(groupOpenID)
 	if userOpenID != "" {
-		if id, kind, ok := s.loadLazy("gu:"+groupOpenID+":"+userOpenID, GroupPassiveTTL); ok {
+		if id, kind, ok := s.loadLazy("gu:"+groupOpenID+":"+userOpenID, ttl); ok {
 			return id, kind, true
 		}
 	}
-	return s.loadLazy("g:"+groupOpenID, GroupPassiveTTL)
+	return s.loadLazy("g:"+groupOpenID, ttl)
+}
+
+// SetGroupBoost 记下机器人开发者在这个群是不是群主或管理员（影响被动回复有效期和次数）
+func (s *Store) SetGroupBoost(groupOpenID string, boosted bool) {
+	if groupOpenID == "" {
+		return
+	}
+	if boosted {
+		s.groupBoost.Store(groupOpenID, true)
+	} else {
+		s.groupBoost.Delete(groupOpenID)
+	}
+}
+
+// GroupBoosted 机器人开发者在这个群是不是群主或管理员
+func (s *Store) GroupBoosted(groupOpenID string) bool {
+	_, ok := s.groupBoost.Load(groupOpenID)
+	return ok
+}
+
+// GroupPassiveTTLOf 这个群的被动回复有效期
+func (s *Store) GroupPassiveTTLOf(groupOpenID string) time.Duration {
+	if s.GroupBoosted(groupOpenID) {
+		return GroupPassiveTTLBoost
+	}
+	return GroupPassiveTTL
+}
+
+// PassiveState 被动回复凭证的状态
+type PassiveState struct {
+	Available   bool      // 凭证还在有效期内
+	Kind        string    // msg / event
+	ReceivedAt  time.Time // 凭证对应的消息（事件）收到的时间
+	ExpiresAt   time.Time // 过期时间
+	TTL         time.Duration
+	RepliesUsed int // 这条凭证已经被动回复的次数
+	RepliesMax  int // 每条凭证最多可回复次数
+	Boosted     bool
+}
+
+// GroupPassiveState 群最近一条被动凭证（群维度）的状态；没有收到过消息时 ReceivedAt 为零值
+func (s *Store) GroupPassiveState(groupOpenID string) PassiveState {
+	st := PassiveState{TTL: s.GroupPassiveTTLOf(groupOpenID), RepliesMax: GroupPassiveReplies, Boosted: s.GroupBoosted(groupOpenID)}
+	if st.Boosted {
+		st.RepliesMax = GroupPassiveRepliesBoost
+	}
+	s.fillPassive(&st, "g:"+groupOpenID)
+	return st
+}
+
+// C2CPassiveState 单聊最近一条被动凭证的状态
+func (s *Store) C2CPassiveState(userOpenID string) PassiveState {
+	st := PassiveState{TTL: C2CPassiveTTL, RepliesMax: C2CPassiveReplies}
+	s.fillPassive(&st, "c:"+userOpenID)
+	return st
+}
+
+func (s *Store) fillPassive(st *PassiveState, key string) {
+	v, ok := s.lazy.Load(key)
+	if !ok {
+		return
+	}
+	e := v.(*lazyEntry)
+	st.Kind = e.kind
+	st.ReceivedAt = e.at
+	st.ExpiresAt = e.at.Add(st.TTL)
+	st.RepliesUsed = s.SeqCount(e.msgID)
+	st.Available = time.Now().Before(st.ExpiresAt) && st.RepliesUsed < st.RepliesMax
+}
+
+// SeqCount 某个 msg_id / event_id 已经分配过的 msg_seq 个数（即已被动回复的次数）
+func (s *Store) SeqCount(msgID string) int {
+	v, ok := s.seqCounter.Load(msgID)
+	if !ok {
+		return 0
+	}
+	return int(atomic.LoadInt32(&v.(*seqEntry).n))
+}
+
+// activeEntry 某个会话今天的主动消息计数
+type activeEntry struct {
+	mu  sync.Mutex
+	day string
+	n   int
+}
+
+// AddActive 记一条成功发出的主动消息；scene 为 group / c2c
+func (s *Store) AddActive(scene Scene, openid string) {
+	e := s.activeEntry(scene, openid)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	today := time.Now().Format("2006-01-02")
+	if e.day != today {
+		e.day, e.n = today, 0
+	}
+	e.n++
+}
+
+// ActiveToday 今天已经发出的主动消息条数（goqbot 重启后从 0 重新计数）
+func (s *Store) ActiveToday(scene Scene, openid string) int {
+	e := s.activeEntry(scene, openid)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.day != time.Now().Format("2006-01-02") {
+		return 0
+	}
+	return e.n
+}
+
+func (s *Store) activeEntry(scene Scene, openid string) *activeEntry {
+	v, _ := s.activeCount.LoadOrStore(string(scene)+":"+openid, &activeEntry{})
+	return v.(*activeEntry)
 }
 
 // LazyC2C 取单聊被动回复目标凭证；返回 (id, kind)
@@ -588,7 +713,8 @@ func (s *Store) sweepLazy(now time.Time) {
 	s.lazy.Range(func(k, v any) bool {
 		key := k.(string)
 		e := v.(*lazyEntry)
-		ttl := GroupPassiveTTL
+		// 群凭证可能因开发者是群主/管理员而延长到 60 分钟，这里按最长的有效期回收；是否过期由 loadLazy 按群判断
+		ttl := GroupPassiveTTLBoost
 		if strings.HasPrefix(key, "c:") {
 			ttl = C2CPassiveTTL
 		}

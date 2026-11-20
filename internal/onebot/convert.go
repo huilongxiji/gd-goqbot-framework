@@ -49,6 +49,14 @@ type Converter struct {
 	seenMu    sync.Mutex
 	seen      map[string]struct{}
 	seenOrder []string
+
+	developerOpenID string // 机器人开发者的 OpenID，用来判断开发者在群里是不是群主/管理员
+}
+
+// SetDeveloperOpenID 设置机器人开发者（机器人账号的管理员）的 OpenID。
+// 开发者在某个群里发言时，按 TA 的群身份决定这个群的被动回复规则：群主/管理员为 60 分钟、每条 50 次，否则 5 分钟、5 次
+func (c *Converter) SetDeveloperOpenID(openid string) {
+	c.developerOpenID = strings.TrimSpace(openid)
 }
 
 // NewConverter 创建转换器。mentionMode 为 strip / raw / at（其它值按 strip）。
@@ -744,6 +752,10 @@ func roleOf(data *dto.Message) string {
 
 // pushGroupMessage 组装群消息事件（含合并转发、引用、发送者信息等）并推送给下游，同时登记被动回复凭证与 get_msg 缓存
 func (c *Converter) pushGroupMessage(data *dto.Message, groupOpenID, userOpenID string, groupID, userID, msgID int64, segs Message, raw string) {
+	if c.developerOpenID != "" && userOpenID == c.developerOpenID {
+		role := roleOf(data)
+		c.ids.SetGroupBoost(groupOpenID, role == "owner" || role == "admin")
+	}
 	// 102 聊天记录 / 103 最近十条：统一解析为 OneBot forward 段
 	var fwdTitle string
 	var fwdNodes []map[string]any

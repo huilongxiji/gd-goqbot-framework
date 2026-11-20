@@ -21,7 +21,7 @@ var builtinActionNames = []string{
 	"send_group_msg", "send_private_msg", "send_msg", "send_group_active_msg", "send_private_active_msg",
 	"put_interaction", "send_interaction_ack", "delete_msg", "get_msg", "get_forward_msg", "get_openid",
 	"get_gateway", "get_gateway_bot", "_get_gateway", "get_session_limit",
-	"get_group_info", "get_user_info", "get_stranger_info", "get_group_bot_state", "get_group_member_info", "get_group_member_list",
+	"get_group_info", "get_user_info", "get_stranger_info", "get_message_quota", "get_group_bot_state", "get_group_member_info", "get_group_member_list",
 	"get_group_join_requests", "get_group_system_msg", "set_group_add_request", "set_group_ban",
 	"get_group_ban", "get_group_mute", "set_group_whole_ban", "get_c2c_msg_state", "get_friend_msg_state",
 	"get_menu", "set_menu", "get_command_panels", "get_command_panel", "create_command_panel",

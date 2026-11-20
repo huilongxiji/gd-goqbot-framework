@@ -14,6 +14,7 @@ qq:
   mention_mode: strip              # 「@机器人」怎么上报：strip 去掉 / at 转成 at 段（多框架推荐）/ raw 保留原文
   ip_reject_action: "stop"         # IP 不在白名单（错误码 11298）时：stop 停止连接 / retry 定时重试 / exit 退出
   ip_reject_retry_interval: 60     # retry 的重试间隔（秒）
+  developer_openid: ""             # 机器人开发者（机器人账号的管理员）的 OpenID，可不填。开发者是群主或管理员的群，被动回复为 60 分钟、每条 50 次
   text_intent:                     # 要接收的事件，去掉行首的 # 即可打开
     - "ReadyHandler"                 # 连接就绪（必须保留）
     - "ErrorNotifyHandler"           # 连接错误（必须保留）

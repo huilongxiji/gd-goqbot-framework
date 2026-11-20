@@ -147,7 +147,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 
 | 分类 | 动作 |
 |---|---|
-| 基础信息 | `get_login_info` · `get_status` · `get_version_info` · `get_gateway` · `get_openid` · `get_user_info` · `get_c2c_msg_state` |
+| 基础信息 | `get_login_info` · `get_status` · `get_version_info` · `get_gateway` · `get_openid` · `get_user_info` · `get_message_quota` · `get_c2c_msg_state` |
 | 发送消息 | `send_msg` · `send_group_msg` · `send_private_msg` · `send_group_active_msg` · `send_private_active_msg` |
 | 消息管理 | `delete_msg` · `get_msg` · `get_forward_msg` · `put_interaction` |
 | 群聊管理 | `get_group_info` · `get_group_bot_state` · `get_group_member_list` · `get_group_member_info` · `get_group_join_requests` · `set_group_add_request` · `set_group_ban` · `get_group_ban` |
