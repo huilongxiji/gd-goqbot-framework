@@ -446,9 +446,9 @@ function textMarkdown(segs, ctx) {
   return ctx.bot || looksLikeMarkdown(src) ? { src, tokens } : null;
 }
 
-/** 渲染结果是否只有图片（只有图片时不套气泡） */
+/** 渲染结果是否只有图片或聊天记录卡片（这时不套气泡，它们自己就是一块） */
 export function onlyImages(parts) {
-  return parts.length > 0 && parts.every((el) => el.classList?.contains("seg-image"));
+  return parts.length > 0 && parts.every((el) => el.classList?.contains("seg-image") || el.classList?.contains("seg-forward"));
 }
 
 /** 一行摘要（回复引用里用） */

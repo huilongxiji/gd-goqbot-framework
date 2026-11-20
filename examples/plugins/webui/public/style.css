@@ -440,7 +440,8 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 /* 只有图片的消息：不要气泡，图片直接放在名字下面 */
 .bubble.bare, .msg.self .bubble.bare { padding: 0; background: none; border: 0; border-radius: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .msg.self .bubble.bare { align-items: flex-end; }
-.bubble.bare > .seg-image { margin: 0; }
+.bubble.bare > .seg-image, .bubble.bare > .seg-forward { margin: 0; }
+.bubble.bare > .seg-forward { background: var(--surface); }
 .bubble.bare .seg-image img { border: 1px solid var(--line); border-radius: 10px; }
 .bubble > :last-child { margin-bottom: 0; }
 .seg-at { color: var(--accent); font-weight: 500; }

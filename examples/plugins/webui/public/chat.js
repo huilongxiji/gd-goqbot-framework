@@ -438,7 +438,7 @@ function preview(text) {
   return stripFaces(text).replace(/\[([^\]\n]*)\]\((?:https?|mqqapi):\/\/[^)\s]*\)/gi, "$1");
 }
 
-/** 消息气泡：只有图片（含表情图）时不加气泡，直接显示图片 */
+/** 消息气泡：只有图片（含表情图）或聊天记录卡片时不加气泡，直接显示 */
 function bubble(parts) {
   return h("div", { class: onlyImages(parts) ? "bubble bare" : "bubble" }, parts);
 }
