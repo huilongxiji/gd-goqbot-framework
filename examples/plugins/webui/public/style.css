@@ -472,7 +472,11 @@ a.seg-ark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .seg-tag { color: var(--muted); }
 .seg-face { color: var(--wait); }
 .seg-image { padding: 0; border: 0; background: none; cursor: zoom-in; line-height: 0; }
-.seg-image img { max-width: min(320px, 100%); max-height: 320px; height: auto; border-radius: 8px; display: block; }
+/* 图片按长宽比缩放（显示尺寸由脚本按真实尺寸算好），窄屏时整体等比缩小 */
+.seg-image { position: relative; }
+.seg-image img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.seg-image img:not([width]) { width: auto; max-width: min(320px, 100%); max-height: 360px; }
+.seg-image.long::after { content: "长图"; position: absolute; right: 6px; bottom: 6px; padding: 1px 6px; border-radius: 4px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 11px; line-height: 18px; }
 .seg-audio { width: 260px; max-width: 100%; height: 36px; }
 .seg-video { max-width: min(360px, 100%); max-height: 320px; border-radius: 8px; background: #000; }
 .seg-file { display: grid !important; gap: 2px; padding: 8px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); color: inherit; white-space: normal; }
@@ -529,7 +533,7 @@ a.seg-ark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .md pre { padding: 8px 10px; background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 6px; overflow-x: auto; white-space: pre; }
 .md pre code { background: none; padding: 0; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 2px 0; width: 100%; }
-.md img { max-width: 100%; }
+.md img { max-width: 100%; height: auto; }
 .md .md-cmd { color: var(--accent); }
 
 .kb { display: grid !important; gap: 6px; }

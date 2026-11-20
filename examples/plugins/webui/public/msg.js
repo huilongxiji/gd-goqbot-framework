@@ -172,13 +172,26 @@ let openForward = () => {};
 /** 由页面注入：点聊天记录卡片时展开全部消息 */
 export function setForwardViewer(fn) { openForward = fn; }
 
+// 聊天里图片的最大显示尺寸：按长宽比缩放到这个框里，不裁剪、不拉伸
+const IMG_MAX_W = 320;
+const IMG_MAX_H = 360;
+
+/** 按长宽比缩放到最大框内，返回显示尺寸 */
+function fitSize(w, hgt) {
+  const scale = Math.min(IMG_MAX_W / w, IMG_MAX_H / hgt, 1);
+  return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(hgt * scale))];
+}
+
 function mediaImage(url, w = 0, hgt = 0) {
   const img = h("img", { src: url, loading: "lazy", alt: "图片", referrerpolicy: "no-referrer" });
-  if (w && hgt) {
-    img.width = Math.min(w, 320);
-    img.height = Math.round((img.width / w) * hgt);
-  }
-  const btn = h("button", { class: "seg-image", type: "button", onclick: () => openViewer(url) }, img);
+  const btn = h("button", { class: "seg-image", type: "button", title: "查看大图", onclick: () => openViewer(url) }, img);
+  const apply = (nw, nh) => {
+    [img.width, img.height] = fitSize(nw, nh);
+    btn.classList.toggle("long", nh / nw > 2.5); // 长图：标一下，点开看全图
+  };
+  // 消息里带了尺寸时先按它占位，加载完再按图片的真实尺寸校正（消息里的尺寸可能不准）
+  if (w > 0 && hgt > 0) apply(w, hgt);
+  img.addEventListener("load", () => { if (img.naturalWidth && img.naturalHeight) apply(img.naturalWidth, img.naturalHeight); }, { once: true });
   img.addEventListener("error", () => {
     // 图片打不开时换成文字，并恢复气泡（只有图片的消息原本不带气泡）
     btn.closest(".bubble")?.classList.remove("bare");
