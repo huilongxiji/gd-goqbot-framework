@@ -397,9 +397,12 @@ function messageCtx() {
       const el = view.scroller.querySelector(`.msg[data-seq="${seq}"]`);
       if (!el) return toast("被引用的消息不在已加载的记录里", "error");
       el.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      // 整行底色闪一下，1.8 秒后去掉
+      clearTimeout(el._flashTimer);
       el.classList.remove("flash");
       void el.offsetWidth;
       el.classList.add("flash");
+      el._flashTimer = setTimeout(() => el.classList.remove("flash"), 1800);
     },
   };
 }
