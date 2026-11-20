@@ -474,9 +474,30 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
         ? (chat.openid ? { group_openid: chat.openid } : { group_id: idOf(chat.id) })
         : (chat.openid ? { user_openid: chat.openid } : { user_id: idOf(chat.id) });
       const quota = await call<Record<string, unknown>>(ctx, "get_message_quota", target);
-      // 群主有没有打开「允许机器人主动发言」（查不到时为 null）
-      const allow = chat.type === "group" ? (await botState(ctx, chat)).allow : null;
+      // 群聊：群主有没有打开「允许机器人主动发言」；私聊：对方有没有打开机器人的主动消息开关（查不到时为 null）
+      const allow = chat.type === "group" ? (await botState(ctx, chat)).allow : await c2cAllow(ctx, target);
       return send(res, 200, { ...quota, allow_proactive_msg: allow, now: Math.floor(Date.now() / 1000) });
+    }
+    case "POST /api/chats/private-reply": {
+      // 群消息私聊回复：用群消息的 msg_id 私聊回复这条消息的发送者（对方要是机器人好友）。
+      // 群消息发出后 60 分钟内有效，次数按群消息规则算、和群内回复共用；没有可用的被动凭证时不改发主动消息
+      const body = await readJSON(req);
+      const chat = store.get(String(body.key ?? ""));
+      if (!chat || chat.type !== "group") {
+        throw new HttpError(404, "没有这个群");
+      }
+      const userId = idOf(body.user_id);
+      const msgId = idOf(body.message_id);
+      const text = String(body.text ?? "").trim();
+      if (!userId || !msgId) {
+        throw new HttpError(400, "缺少用户编号或消息编号");
+      }
+      if (!text) {
+        throw new HttpError(400, "消息是空的");
+      }
+      const message = [{ type: "reply", data: { id: msgId } }, { type: "text", data: { text } }];
+      const result = await call(ctx, "send_private_msg", { user_id: userId, message, passive_only: true });
+      return send(res, 200, { message_id: idOf(result.message_id) });
     }
     case "POST /api/chats/send-image": {
       // 发本地图片：请求体是图片文件本身
@@ -777,6 +798,16 @@ async function serveMedia(res: ServerResponse, url: URL): Promise<void> {
   res.end(file.data);
 }
 
+/** 私聊对象有没有打开机器人的主动消息开关；没收到过开关事件或查不到时为 null */
+async function c2cAllow(ctx: Context, target: Record<string, unknown>): Promise<boolean | null> {
+  try {
+    const st = await call<Record<string, unknown>>(ctx, "get_c2c_msg_state", target);
+    return typeof st.allow_proactive_msg === "boolean" ? st.allow_proactive_msg : null;
+  } catch {
+    return null;
+  }
+}
+
 /** public/ 下的静态文件 */
 async function serveStatic(res: ServerResponse, pathname: string): Promise<void> {
   let rel: string;
@@ -812,6 +843,7 @@ const plugin: Plugin = {
     "set_group_ban",
     "get_group_bot_state",
     "get_message_quota",
+    "get_c2c_msg_state",
     "upload_media_image",
     "host.info",
     "host.logs",

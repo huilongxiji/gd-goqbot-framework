@@ -307,7 +307,7 @@ async function openChat(key) {
   view.composer = renderComposer(chat);
   if (chat.type === "group") loadBotRole(key);
   clearInterval(view.quotaTimer);
-  view.quota = chat.type === "group" ? renderQuotaCard() : null;
+  view.quota = renderQuotaCard();
   fill(view.panel, view.head, h("div", { class: "msgs-wrap" }, view.scroller, view.quota?.root), view.composer.root);
   if (view.quota) startQuota(key);
   renderHeader();
@@ -718,34 +718,48 @@ function paintQuota() {
   const now = Date.now() / 1000 + q.offset;
   const p = d.passive ?? {};
   const a = d.active ?? {};
+  const c2c = d.scene === "c2c";
   const left = (Number(p.expires_at) || 0) - now;
   const used = Number(p.replies_used) || 0;
-  const limit = Number(p.replies_limit) || 5;
-  const ttlMin = Math.round((Number(p.ttl) || 300) / 60);
+  const limit = Number(p.replies_limit) || (c2c ? 4 : 5);
+  const ttlMin = Math.round((Number(p.ttl) || (c2c ? 3600 : 300)) / 60);
   let passiveMain, passiveCls = "";
   if (!p.received_at) { passiveMain = "还没有可回复的消息"; passiveCls = "muted"; }
   else if (left <= 0) { passiveMain = "已过期"; passiveCls = "muted"; }
   else if (used >= limit) { passiveMain = "次数已用完"; passiveCls = "warn"; }
   else { passiveMain = `还剩 ${mmss(left)}`; passiveCls = left < 60 ? "warn" : "ok"; }
   const allow = d.allow_proactive_msg;
+  const sent = a.sent_today ?? 0;
+  const daily = a.daily_limit ?? 1000;
+  // 私聊：没有主动消息额度，要对方打开机器人的主动消息开关才能发；每个好友每天最多收 1000 条
+  const activeRow = c2c
+    ? h("div", { class: "quota-row" },
+      h("span", { class: "quota-label" }, "主动消息"),
+      allow === true ? h("span", { class: "quota-value ok" }, "对方已开启主动消息")
+        : allow === false ? h("span", { class: "quota-value warn" }, "对方关闭了主动消息")
+          : h("span", { class: "quota-value muted" }, "不确定对方是否开启主动消息"),
+      h("span", { class: "quota-sub" }, `今日已发 ${sent} 条，每个好友每天最多收 ${daily} 条`),
+      h("span", { class: "quota-rule" }, "对方在机器人资料卡里打开主动消息开关后才能主动发"))
+    : h("div", { class: "quota-row" },
+      h("span", { class: "quota-label" }, "主动消息"),
+      allow === false
+        ? h("span", { class: "quota-value warn" }, "群主没有开启机器人主动发言")
+        : h("span", { class: "quota-value" }, `剩余 ${a.remaining ?? "—"} 条`),
+      h("span", { class: "quota-sub" }, `今日已发 ${sent} / ${daily} 条`));
+  const rule = `有效期 ${ttlMin} 分钟，每条最多 ${limit} 次`;
   fill(q.body,
     h("div", { class: "quota-row" },
       h("span", { class: "quota-label" }, "被动回复"),
       h("span", { class: "quota-value " + passiveCls }, passiveMain),
       p.received_at ? h("span", { class: "quota-sub" }, `已回复 ${used} / ${limit} 次`) : null,
-      h("span", { class: "quota-rule" }, p.boosted
-        ? `开发者是群主或管理员：有效期 ${ttlMin} 分钟，每条最多 ${limit} 次`
-        : `有效期 ${ttlMin} 分钟，每条最多 ${limit} 次`)),
-    h("div", { class: "quota-row" },
-      h("span", { class: "quota-label" }, "主动消息"),
-      allow === false
-        ? h("span", { class: "quota-value warn" }, "群主没有开启机器人主动发言")
-        : h("span", { class: "quota-value" }, `剩余 ${a.remaining ?? "—"} 条`),
-      h("span", { class: "quota-sub" }, `今日已发 ${a.sent_today ?? 0} / ${a.daily_limit ?? 1000} 条`)),
+      h("span", { class: "quota-rule" }, c2c ? rule : `${p.boosted ? "开发者是群主或管理员：" : ""}${rule}，私聊回复发送者也算次数`)),
+    activeRow,
     q.error ? h("p", { class: "quota-note warn" }, q.error) : null);
-  // 收起时只显示一行：被动回复能用时显示剩余时间，否则显示主动消息剩余条数
+  // 收起时只显示一行：被动回复能用时显示剩余时间，否则显示主动消息的情况
   const passiveOk = p.received_at && left > 0 && used < limit;
-  q.mini.textContent = passiveOk ? `被动回复还剩 ${mmss(left)}` : allow === false ? "主动发言未开启" : `主动消息剩余 ${a.remaining ?? "—"} 条`;
+  q.mini.textContent = passiveOk ? `被动回复还剩 ${mmss(left)}`
+    : c2c ? (allow === false ? "对方关闭了主动消息" : `今日主动已发 ${sent} 条`)
+      : allow === false ? "主动发言未开启" : `主动消息剩余 ${a.remaining ?? "—"} 条`;
 }
 
 // ---------- 输入框 ----------
@@ -990,7 +1004,7 @@ function openMarkdownBuilder() {
         tool("heading", "标题", "在这一行前面加 #，再点一次变成下一级标题", heading),
         tool("quote", "引用", "在这一行前面加 >", quote),
         tool("code", "代码块", "插入 ``` 代码块（选中文字时包起来）", code),
-        tool("at", "艾特", "艾特一个用户（需要填写 TA 的 OpenID）", mention),
+        c.type === "group" ? tool("at", "艾特", "艾特一个用户（需要填写 TA 的 OpenID）", mention) : null,
         tool("image", "本地图片", "上传一张本地图片并插入", localImage),
         tool("imglink", "图片链接", "用网址插入一张图片", imageLink),
         fileInput),
@@ -1176,6 +1190,8 @@ function openMessageMenu(m, x, y) {
   openMenu("消息操作", [
     group && !m.self ? { label: `艾特 ${name}`, run: () => mentionUser(m), disabled: !userId || legacy, hint: !userId ? oldHint : "" } : null,
     { label: "回复", run: () => replyTo(m), disabled: !msgId || legacy, hint: !msgId ? oldHint : "" },
+    group && !m.self && !m.bot ? { label: `私聊回复 ${name}…`, run: () => privateReply(c, m, userId, msgId), disabled: !msgId || !userId || legacy,
+      hint: !msgId || !userId ? oldHint : "群消息发出后 60 分钟内可以私聊回复 TA，对方要加了机器人好友" } : null,
     { label: "复读", run: () => repeatMessage(m, repeat), disabled: !repeat || legacy, hint: !repeat ? "这类消息不能复读" : "" },
     { label: mdSource ? "复制到 Markdown 编辑框" : "复制到输入框", run: () => copyToComposer(m, mdSource), disabled: !copyable || legacy, hint: !copyable ? "这条消息没有可以复制的文字" : "" },
     mdSource ? { label: "复制 Markdown 源码", run: () => copyText(mdSource) } : null,
@@ -1259,6 +1275,50 @@ function banUser(c, m, userId) {
     h("p", null, "选择禁言时长。"),
     h("div", { class: "ban-choices" }, choices.map(([label, sec]) => h("button", { class: "btn", type: "button", onclick: () => run(sec, label) }, label))),
     h("button", { class: "btn ghost small", type: "button", onclick: () => run(0, "") }, "解除禁言")));
+}
+
+/** 群消息私聊回复：用这条群消息的 msg_id 私聊回复发送者（60 分钟内有效，次数按群消息规则，和群内回复共用） */
+function privateReply(c, m, userId, msgId) {
+  const name = senderName(m);
+  const input = h("textarea", { rows: 4, maxlength: 2000, placeholder: "要私聊发给 TA 的内容" });
+  const sendBtn = h("button", { class: "btn primary", type: "submit" }, "发送");
+  let close;
+  const form = h("form", {
+    class: "confirm private-reply",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return input.focus();
+      sendBtn.disabled = true;
+      try {
+        await api("POST", "/api/chats/private-reply", { key: c.key, user_id: userId, message_id: msgId, text });
+        close();
+        toast(`已私聊回复 ${name}`);
+        if (view?.current === c.key && view.quota) refreshQuotaSoon();
+      } catch (err) {
+        sendBtn.disabled = false;
+        toast(privateReplyError(err.message), "error");
+      }
+    },
+  },
+  h("p", { class: "private-reply-quote" }, h("b", null, name), "：", summaryOf(m.message) || "[消息]"),
+  h("label", { class: "field" }, h("span", null, "私聊内容"), input),
+  h("small", { class: "muted" }, "对方要加了机器人好友才能收到。群消息发出后 60 分钟内可以私聊回复，回复次数和群里的回复共用。"),
+  h("div", { class: "actions" },
+    h("button", { class: "btn", type: "button", onclick: () => close() }, "取消"),
+    sendBtn));
+  close = openDialog(`私聊回复 ${name}`, form);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) form.requestSubmit();
+  });
+  input.focus();
+}
+
+function privateReplyError(msg) {
+  const s = String(msg ?? "");
+  if (/1460|被动凭证|passive/i.test(s)) return "这条群消息已经超过 60 分钟或回复次数用完了，不能再私聊回复";
+  if (/好友|friend/i.test(s)) return "对方还不是机器人的好友，不能私聊回复";
+  return friendlyError(s);
 }
 
 /** 路由：同一页里切换会话（不重建页面，保留搜索内容） */

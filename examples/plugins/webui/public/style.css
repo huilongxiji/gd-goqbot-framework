@@ -719,3 +719,9 @@ a.seg-ark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   .quota-card { right: 10px; top: 8px; width: 220px; }
   .msg-main { max-width: 86%; }
 }
+
+/* 群消息私聊回复弹窗 */
+.private-reply { gap: 12px; }
+.private-reply textarea { width: 100%; min-height: 96px; resize: vertical; font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ink); }
+.private-reply-quote { margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 6px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.private-reply-quote b { color: var(--ink); }
