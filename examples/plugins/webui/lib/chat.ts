@@ -124,7 +124,26 @@ function stripFaces(text: string): string {
 }
 
 /** 会话列表里显示的一行摘要 */
+/** 卡片消息（官方把卡片写成「[卡片消息] 卡片名\n摘要: …\ntitle: …」的文字）的一行说明 */
+function arkSummary(text: string): string | undefined {
+  const head = /^\[卡片消息\][ \t]*(.*)/.exec(text);
+  if (!head) {
+    return undefined;
+  }
+  const field = (k: string) => new RegExp(`^${k}:[ \\t]?(.*)$`, "m").exec(text)?.[1]?.trim() ?? "";
+  const prompt = field("摘要");
+  const title = field("title") || prompt.replace(/^\[[^\]]*\]/, "").trim();
+  const miniapp = head[1].trim() === "小程序" || prompt.startsWith("[QQ小程序]");
+  return miniapp ? `[QQ小程序] ${title}`.trim() : `[卡片] ${title || head[1].trim()}`.trim();
+}
+
 export function summary(segs: Segment[], quote = false): string {
+  if (segs.length === 1 && segs[0].type === "text") {
+    const ark = arkSummary(String(segs[0].data.text ?? ""));
+    if (ark) {
+      return ark.slice(0, 80);
+    }
+  }
   const names: Record<string, string> = {
     image: "[图片]", face: "[表情]", record: "[语音]", video: "[视频]", file: "[文件]",
     markdown: "[Markdown]", keyboard: "[按钮]", forward: "[聊天记录]", share: "[分享]", ark: "[卡片]", json: "[卡片]",

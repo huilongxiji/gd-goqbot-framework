@@ -192,6 +192,8 @@ function mediaImage(url, w = 0, hgt = 0) {
  * ctx.findReply(id) 返回被回复的消息（找不到时为空）；ctx.nameOf(qq) 返回 @ 的显示名
  */
 export function renderSegments(segs, ctx) {
+  const ark = arkOf(segs, ctx.event);
+  if (ark) return [renderArk(ark)];
   const parts = [];
   const quote = quoteOf(segs, ctx.event);
   if (quote) parts.push(renderQuote(quote, ctx));
@@ -448,11 +450,75 @@ function textMarkdown(segs, ctx) {
 
 /** 渲染结果是否只有图片或聊天记录卡片（这时不套气泡，它们自己就是一块） */
 export function onlyImages(parts) {
-  return parts.length > 0 && parts.every((el) => el.classList?.contains("seg-image") || el.classList?.contains("seg-forward"));
+  return parts.length > 0 && parts.every((el) => ["seg-image", "seg-forward", "seg-ark"].some((c) => el.classList?.contains(c)));
+}
+
+// ---------- 卡片消息（QQ 类型 3，ark） ----------
+// 官方接口把卡片写成文字推过来：第一行「[卡片消息] 卡片名」，然后「摘要: …」和「字段名: 值」。
+// QQ 小程序卡片只简单说明是什么；机器人能发的卡片（图文H5 等）照常显示成卡片。
+
+/** 解析卡片：优先用事件里的 ark_data，没有时解析文字；不是卡片消息时返回 null */
+export function arkOf(segs, ev) {
+  if (ev?.ark_data && typeof ev.ark_data === "object") {
+    const a = ev.ark_data;
+    return { name: String(a.ark_name ?? ""), type: String(a.ark_type ?? ""), prompt: String(a.prompt ?? ""), fields: a.fields && typeof a.fields === "object" ? a.fields : {} };
+  }
+  if (segs.length !== 1 || segs[0].type !== "text") return null;
+  const text = String(segs[0].data?.text ?? "");
+  const head = /^\[卡片消息\][ \t]*(.*)/.exec(text);
+  if (!head) return null;
+  const out = { name: head[1].trim(), type: "", prompt: "", fields: {} };
+  let last = "";
+  for (const line of text.split("\n").slice(1)) {
+    const m = /^(摘要|[A-Za-z_][\w]*):[ \t]?(.*)$/.exec(line);
+    if (m) {
+      last = m[1];
+      if (last === "摘要") out.prompt = m[2];
+      else out.fields[last] = m[2];
+    } else if (last && last !== "摘要") out.fields[last] += "\n" + line;
+    else if (last === "摘要") out.prompt += "\n" + line;
+  }
+  return out;
+}
+
+export function isMiniapp(ark) {
+  return ark.type === "miniapp" || ark.name === "小程序" || /^\[QQ小程序\]/.test(ark.prompt);
+}
+
+/** 卡片的一行说明（会话列表、引用里用） */
+export function arkSummary(ark) {
+  const f = ark.fields;
+  const title = String(f.title ?? "").trim() || ark.prompt.replace(/^\[[^\]]*\]/, "").trim();
+  if (isMiniapp(ark)) return `[QQ小程序] ${title}`.trim();
+  return `[卡片] ${title || ark.name}`.trim();
+}
+
+function renderArk(ark) {
+  const f = ark.fields;
+  const str = (k) => String(f[k] ?? "").trim();
+  if (isMiniapp(ark)) {
+    // QQ 小程序：只说明是哪个小程序分享了什么
+    const source = str("source");
+    const title = str("title") || ark.prompt.replace(/^\[QQ小程序\]/, "").trim();
+    return h("span", { class: "seg-ark-brief" }, h("span", { class: "ark-label" }, "QQ小程序"), source ? `${source}：${title}` : title || "小程序分享");
+  }
+  const link = safeUrl(f.jump_url) || safeUrl(f.url) || safeUrl(f.link);
+  const img = ["img", "image", "cover", "pic", "preview", "thumb"].map((k) => safeUrl(f[k])).find(Boolean);
+  const title = str("title") || ark.prompt.replace(/^\[[^\]]*\]/, "").trim() || ark.name || "卡片";
+  const desc = str("desc") || str("description") || str("summary");
+  const tag = str("tag") || str("source") || ark.name;
+  return h(link ? "a" : "div", { class: "seg-ark", href: link || undefined, target: link ? "_blank" : undefined, rel: link ? "noopener noreferrer" : undefined, title: link || undefined },
+    img ? h("img", { src: img, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : null,
+    h("span", { class: "ark-body" },
+      h("b", null, title),
+      desc ? h("span", null, desc) : null,
+      tag ? h("small", null, tag) : null));
 }
 
 /** 一行摘要（回复引用里用） */
 export function summaryOf(segs) {
+  const ark = arkOf(segs);
+  if (ark) return arkSummary(ark);
   let t = "";
   let sticker = false; // 大表情标记后面紧跟的图片就是这个表情
   for (const s of segs) {

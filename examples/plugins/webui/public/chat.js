@@ -435,6 +435,9 @@ function appendMessage(m, live) {
 
 /** 会话列表的预览：去掉表情标记，Markdown 链接只留文字 */
 function preview(text) {
+  // 旧记录的卡片消息：「[卡片消息] 卡片名 摘要: [QQ小程序]标题 字段: …」
+  const ark = /^\[卡片消息\]\s*(\S+)\s*(?:摘要:\s*(\[[^\]]*\])?(.*?)(?=\s+[A-Za-z_]+:|$))?/.exec(String(text ?? ""));
+  if (ark) return ark[1] === "小程序" || ark[2] === "[QQ小程序]" ? `[QQ小程序] ${ark[3] ?? ""}`.trim() : `[卡片] ${ark[3] || ark[1]}`.trim();
   return stripFaces(text).replace(/\[([^\]\n]*)\]\((?:https?|mqqapi):\/\/[^)\s]*\)/gi, "$1");
 }
 
