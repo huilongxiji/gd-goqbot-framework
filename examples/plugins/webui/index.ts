@@ -389,6 +389,30 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       push("chat", chat);
       return send(res, 200, { chat });
     }
+    case "GET /api/chats/group-info": {
+      // 群基本信息（官方接口需要白名单），查到的群名记进会话列表
+      const chat = store.get(q.get("key") ?? "");
+      if (!chat || chat.type !== "group") {
+        throw new HttpError(404, "没有这个群");
+      }
+      // 用 group_openid 查：group_id 超过 JS 数字精度，传过去会变
+      const info = await call<Record<string, unknown>>(ctx, "get_group_info", chat.openid ? { group_openid: chat.openid } : { group_id: chat.id });
+      const updated = store.setGroupName(chat.key, String(info.group_name ?? ""));
+      if (updated) {
+        push("chat", updated);
+      }
+      return send(res, 200, { info, chat: updated ?? chat });
+    }
+    case "GET /api/chats/user-info": {
+      // 用户信息：/v2/users/{user_openid}/info
+      const openid = q.get("openid") ?? "";
+      const userId = Number(q.get("user_id")) || 0;
+      if (!openid && !userId) {
+        throw new HttpError(400, "缺少用户");
+      }
+      const info = await call<Record<string, unknown>>(ctx, "get_user_info", openid ? { user_openid: openid } : { user_id: userId });
+      return send(res, 200, { info });
+    }
     case "GET /api/stream": {
       res.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/event-stream; charset=utf-8", connection: "keep-alive" });
       res.write(": ok\n\n");
@@ -625,6 +649,8 @@ const plugin: Plugin = {
     "events.subscribe",
     "send_group_msg",
     "send_private_msg",
+    "get_group_info",
+    "get_user_info",
     "host.info",
     "host.logs",
     "host.config.get",
@@ -651,6 +677,27 @@ const plugin: Plugin = {
 
     // 收到的消息和机器人发出的消息都存下来，并推给打开着的页面
     store.subscribe(({ chat, message }) => push("message", { chat, message }));
+    // 新出现的群自动查一次群名（官方接口需要白名单；没有权限时不再查）
+    const askedGroups = new Set<string>();
+    let groupInfoDenied = false;
+    store.subscribe(({ chat }) => {
+      if (chat.type !== "group" || chat.name || groupInfoDenied || askedGroups.has(chat.key)) {
+        return;
+      }
+      askedGroups.add(chat.key);
+      ctx.call<Record<string, unknown>>("get_group_info", chat.openid ? { group_openid: chat.openid } : { group_id: chat.id }).then((info) => {
+        const updated = store.setGroupName(chat.key, String(info.group_name ?? ""));
+        if (updated?.name) {
+          push("chat", updated);
+        }
+      }).catch((e: GoqbotError) => {
+        const text = String(e.data?.detail ?? e.data?.wording ?? e.message ?? "");
+        if (/11253|权限|白名单/.test(text)) {
+          groupInfoDenied = true;
+          ctx.log.info("机器人没有群基本信息接口的权限（错误码 11253），群聊列表显示群编号；可以在群聊页给群设置备注");
+        }
+      });
+    });
     await ctx.on(["message.*", "message_sent.*"], async (ev) => {
       try {
         await store.add(ev);

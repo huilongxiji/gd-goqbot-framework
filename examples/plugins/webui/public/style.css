@@ -378,6 +378,27 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .panel-title { flex: 1; min-width: 0; }
 .panel-title h2 { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .panel-title p { display: flex; gap: 12px; color: var(--muted); font-size: 12px; }
+.title-btn { max-width: 100%; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; }
+.title-btn:hover { color: var(--accent); }
+.title-btn:focus-visible, .avatar-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.avatar-btn { flex: none; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }
+.avatar-btn:hover .avatar { box-shadow: 0 0 0 2px var(--accent-soft); }
+
+/* 群资料、用户资料 */
+.profile { display: grid; gap: 14px; }
+.profile-head { display: flex; align-items: center; gap: 14px; }
+.profile-head > div { display: grid; gap: 2px; min-width: 0; }
+.profile-head b { font-size: 16px; overflow-wrap: anywhere; }
+.profile-head small { color: var(--muted); font-size: 12.5px; }
+.avatar.lg { width: 56px; height: 56px; font-size: 22px; }
+.avatar.lg.square { border-radius: 14px; }
+.avatar.lg.digits { font-size: 18px; }
+.profile-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; margin: 0; font-size: 13.5px; }
+.profile-list dt { color: var(--muted); }
+.profile-list dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.profile-sub { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); font-weight: 600; }
+.profile-loading, .profile-empty { margin: 0; color: var(--muted); font-size: 13px; }
+.profile-error { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--wait-soft); color: var(--wait); font-size: 13px; line-height: 1.6; }
 
 .msgs { flex: 1; overflow-y: auto; padding: 8px 24px 20px; display: flex; flex-direction: column; }
 .msgs-hint { align-self: center; color: var(--muted); font-size: 12px; padding: 10px 0; }

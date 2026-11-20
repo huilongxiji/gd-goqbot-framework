@@ -25,8 +25,10 @@ export interface ChatMessage {
   self: boolean; // 机器人自己发的
   user_id: number;
   user_openid?: string;
-  nickname: string;
+  nickname: string; // 群里优先用群昵称（sender.card），没有时用 QQ 昵称
   role?: string;
+  avatar?: string; // 发送者头像地址（事件里的 sender.avatar），旧记录没有
+  bot?: boolean; // 发送者是机器人
   message: Segment[];
   raw: string;
   event?: OneBotEvent; // 收到的完整事件，供页面查看原始数据；旧记录没有
@@ -37,8 +39,9 @@ export interface Chat {
   key: string; // private:<id> / group:<id>
   type: ChatType;
   id: number;
-  name: string; // 私聊为对方昵称；群聊官方接口不提供群名，为空
+  name: string; // 私聊为对方昵称；群聊为群基本信息接口查到的群名（查不到时为空）
   remark: string; // 自己设置的备注
+  avatar?: string; // 私聊对方的头像地址
   openid?: string; // 私聊对方的 user_openid / 群的 group_openid
   last_time: number;
   last_text: string;
@@ -156,7 +159,7 @@ export function summary(segs: Segment[]): string {
     }
   }
   // 其他机器人发的 Markdown 以文字形式收到，链接只留文字
-  text = text.replace(/\[([^\]\n]*)\]\((?:https?|mqqapi):\/\/[^)\s]*\)/gi, "$1");
+  text = text.replace(/\[([^\]\n]*)\]\((?:https?|mqqapi):\/\/[^)\s]*\)/gi, "$1").replace(/\*\*([^*\n]+)\*\*/g, "$1");
   return text.replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
@@ -229,8 +232,12 @@ export class ChatStore {
     if (typeof openid === "string" && openid) {
       chat.openid = openid;
     }
+    const avatar = typeof sender.avatar === "string" ? sender.avatar : "";
     if (type === "private" && !sent && nickname) {
       chat.name = nickname;
+    }
+    if (type === "private" && !sent && avatar) {
+      chat.avatar = avatar;
     }
     const msg: ChatMessage = {
       seq: ++chat.seq,
@@ -249,6 +256,12 @@ export class ChatStore {
     }
     if (typeof sender.role === "string" && sender.role) {
       msg.role = sender.role;
+    }
+    if (avatar && !sent) {
+      msg.avatar = avatar;
+    }
+    if (sender.bot === true && !sent) {
+      msg.bot = true;
     }
     chat.last_time = msg.time;
     chat.last_text = summary(segs);
@@ -324,6 +337,16 @@ export class ChatStore {
       chat.unread = 0;
       this.scheduleSave();
     }
+  }
+
+  /** 记下群基本信息接口查到的群名 */
+  setGroupName(key: string, name: string): Chat | undefined {
+    const chat = this.chats.get(key);
+    if (chat && chat.type === "group" && name && chat.name !== name) {
+      chat.name = name;
+      this.scheduleSave();
+    }
+    return chat;
   }
 
   setRemark(key: string, remark: string): Chat | undefined {

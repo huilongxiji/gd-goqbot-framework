@@ -43,7 +43,7 @@ setImageViewer((url) => {
 export function chatTitle(c) {
   if (c.remark) return c.remark;
   if (c.type === "private") return c.name || `用户 ${c.id}`;
-  return `群 ${c.id}`;
+  return c.name || `群 ${c.id}`;
 }
 
 /** 首字色块：没有头像时用，颜色按编号固定 */
@@ -54,23 +54,27 @@ function monogram(text, seed, cls) {
   return el;
 }
 
-function avatar(openid, fallbackText, seed, cls = "") {
+/**
+ * 用户头像：优先用事件里带的头像地址（sender.avatar），
+ * 没有时按官方规则拼 https://q.qlogo.cn/qqapp/<AppID>/<openid>/100，都打不开时显示首字色块
+ */
+function avatar(openid, fallbackText, seed, cls = "", url = "") {
   const fallback = monogram(fallbackText, seed, cls);
-  if (!openid || !chatState.appId) return fallback;
-  const img = h("img", {
-    class: "avatar " + cls, alt: "", loading: "lazy", referrerpolicy: "no-referrer",
-    src: `https://q.qlogo.cn/qqapp/${encodeURIComponent(chatState.appId)}/${encodeURIComponent(openid)}/100`,
-  });
+  const src = /^https?:\/\//i.test(url) ? url
+    : openid && chatState.appId ? `https://q.qlogo.cn/qqapp/${encodeURIComponent(chatState.appId)}/${encodeURIComponent(openid)}/100` : "";
+  if (!src) return fallback;
+  const img = h("img", { class: "avatar " + cls, alt: "", loading: "lazy", referrerpolicy: "no-referrer", src });
   img.addEventListener("error", () => img.replaceWith(fallback), { once: true });
   return img;
 }
 
 function chatAvatar(c, cls) {
   if (c.type === "group") {
-    // 没有备注时显示群编号的后两位，方便区分
-    return monogram(c.remark ? c.remark : String(c.id).slice(-2), "g" + c.id, cls + " square" + (c.remark ? "" : " digits"));
+    // 官方接口不提供群头像：有群名或备注时显示首字，都没有时显示群编号的后两位
+    const named = c.remark || c.name;
+    return monogram(named || String(c.id).slice(-2), "g" + c.id, cls + " square" + (named ? "" : " digits"));
   }
-  return avatar(c.openid, chatTitle(c), "p" + c.id, cls);
+  return avatar(c.openid, chatTitle(c), "p" + c.id, cls, c.avatar);
 }
 
 // ---------- 未读数 ----------
@@ -213,12 +217,108 @@ function renderHeader() {
   fill(view.head, 
     h("a", { class: "btn ghost icon-only back", href: `#/${c.type}`, "aria-label": "返回会话列表" }, icon("back")),
     chatAvatar(c, "sm"),
-    h("div", { class: "panel-title" }, h("h2", null, chatTitle(c)), h("p", null, sub)),
+    h("div", { class: "panel-title" },
+      h("h2", null, h("button", {
+        class: "title-btn", type: "button",
+        title: c.type === "group" ? "查看群资料" : "查看用户资料",
+        onclick: () => (c.type === "group" ? showGroupInfo(c) : showUserInfo({ openid: c.openid, userId: c.id, name: c.name, avatar: c.avatar })),
+      }, chatTitle(c))),
+      h("p", null, sub)),
     h("button", { class: "btn ghost small", type: "button", onclick: () => editRemark(c) }, icon("edit"), c.remark ? "修改备注" : "设置备注"));
 }
 
+// ---------- 群资料、用户资料 ----------
+
+/** 把接口错误换成能看懂的说明 */
+function friendlyError(msg) {
+  const s = String(msg ?? "");
+  if (/11253/.test(s)) return "机器人没有这个接口的权限（错误码 11253）。群基本信息、用户信息这类接口需要在 QQ 开放平台申请开通后才能用。";
+  if (/发送通道未就绪|尚未初始化/.test(s)) return "QQ 还没连接上，暂时查不到。";
+  if (/未知 user_id|未收到过该用户/.test(s)) return "还没收到过这个用户的消息，查不到。";
+  return s || "查询失败";
+}
+
+/** 资料里的一行：名称 + 值（值为空时不显示） */
+function infoRow(label, value, title) {
+  if (value === undefined || value === null || value === "") return null;
+  return [h("dt", null, label), h("dd", { title }, String(value))];
+}
+
+/** 接口返回的字段原样列出（对象、数组转成 JSON） */
+function rawRows(info, skip = []) {
+  return Object.entries(info ?? {})
+    .filter(([k]) => !skip.includes(k))
+    .map(([k, v]) => infoRow(k, v !== null && typeof v === "object" ? JSON.stringify(v) : v));
+}
+
+/** 点群名：调用群基本信息接口 */
+async function showGroupInfo(c) {
+  const body = h("div", { class: "profile" },
+    h("div", { class: "profile-head" },
+      chatAvatar(c, "lg"),
+      h("div", null, h("b", null, chatTitle(c)), h("small", null, `群编号 ${c.id}`))),
+    h("p", { class: "profile-loading" }, "正在查询群基本信息…"));
+  openDialog("群资料", body, { mid: true });
+  try {
+    const { info, chat } = await api("GET", `/api/chats/group-info?key=${encodeURIComponent(c.key)}`);
+    onChat(chat);
+    const tags = Array.isArray(info.group_tags) ? info.group_tags.join("、") : "";
+    fill(body,
+      h("div", { class: "profile-head" },
+        chatAvatar(chat, "lg"),
+        h("div", null, h("b", null, info.group_name || chatTitle(chat)), h("small", null, c.remark && info.group_name ? `备注：${c.remark}` : `群编号 ${c.id}`))),
+      h("dl", { class: "profile-list" },
+        infoRow("群简介", info.group_finger_memo ?? info.group_memo),
+        infoRow("分类", info.group_class_text),
+        infoRow("标签", tags),
+        infoRow("成员数", info.member_count ?? info.group_member_num),
+        infoRow("群编号", c.id, "goqbot 给这个群分配的编号，不是 QQ 群号"),
+        infoRow("群 OpenID", info.group_openid || c.openid)));
+  } catch (e) {
+    body.querySelector(".profile-loading")?.replaceWith(
+      h("p", { class: "profile-error" }, friendlyError(e.message)),
+      h("dl", { class: "profile-list" },
+        infoRow("群编号", c.id, "goqbot 给这个群分配的编号，不是 QQ 群号"),
+        infoRow("群 OpenID", c.openid)));
+  }
+}
+
+/**
+ * 点头像：调用 /v2/users/{user_openid}/info 查用户信息。
+ * u = { openid, userId, name, card, avatar, role, bot }，来自消息或会话
+ */
+async function showUserInfo(u) {
+  const roleText = u.role === "owner" ? "群主" : u.role === "admin" ? "管理员" : u.role === "member" ? "成员" : "";
+  const head = (name, url) => h("div", { class: "profile-head" },
+    avatar(u.openid, name, "p" + u.userId, "lg", url),
+    h("div", null, h("b", null, name), u.card && u.card !== name ? h("small", null, `群昵称：${u.card}`) : h("small", null, `用户编号 ${u.userId}`)));
+  const known = () => h("dl", { class: "profile-list" },
+    infoRow("群昵称", u.card),
+    infoRow("群身份", roleText),
+    infoRow("机器人", u.bot ? "是" : ""),
+    infoRow("用户编号", u.userId, "goqbot 给这个用户分配的编号，不是 QQ 号"),
+    infoRow("用户 OpenID", u.openid));
+  const name = u.card || u.name || `用户 ${u.userId}`;
+  const body = h("div", { class: "profile" }, head(name, u.avatar), known(), h("p", { class: "profile-loading" }, "正在查询用户信息…"));
+  openDialog("用户资料", body, { mid: true });
+  try {
+    const q = u.openid ? `openid=${encodeURIComponent(u.openid)}&user_id=${u.userId || 0}` : `user_id=${u.userId}`;
+    const { info } = await api("GET", `/api/chats/user-info?${q}`);
+    const apiName = info.nickname || info.username || "";
+    const apiAvatar = typeof info.avatar === "string" ? info.avatar : "";
+    const rows = rawRows(info, ["user_id", "user_openid", "sex", "age"]);
+    fill(body,
+      head(apiName || name, apiAvatar || u.avatar),
+      known(),
+      h("h3", { class: "profile-sub" }, "用户信息接口返回"),
+      rows.length ? h("dl", { class: "profile-list" }, rows) : h("p", { class: "profile-empty" }, "接口没有返回其他信息"));
+  } catch (e) {
+    body.querySelector(".profile-loading")?.replaceWith(h("p", { class: "profile-error" }, friendlyError(e.message)));
+  }
+}
+
 async function editRemark(c) {
-  const hint = c.type === "group" ? "官方接口不提供群名，可以给这个群起个名字，只在 WebUI 里显示" : "只在 WebUI 里显示";
+  const hint = c.type === "group" ? "没有权限查群名时，可以给这个群起个名字，只在 WebUI 里显示" : "只在 WebUI 里显示";
   const v = await promptDialog(c.remark ? "修改备注" : "设置备注", hint, c.remark, chatTitle(c));
   if (v === null) return;
   try {
@@ -361,9 +461,13 @@ function messageNode(m) {
   const c = chatState.chats.get(view.current);
   const name = m.self ? chatState.botName : m.nickname || `用户 ${m.user_id}`;
   const role = m.role === "owner" ? "群主" : m.role === "admin" ? "管理员" : "";
+  const openid = m.user_openid || (c?.type === "private" ? c.openid : "");
   const av = m.self
     ? monogram(chatState.botName, "self", "sm bot")
-    : avatar(m.user_openid || (c?.type === "private" ? c.openid : ""), name, "p" + m.user_id, "sm");
+    : h("button", {
+      class: "avatar-btn", type: "button", title: `查看 ${name} 的资料`,
+      onclick: () => showUserInfo({ openid, userId: m.user_id, name: m.event?.sender?.nickname || m.nickname, card: m.event?.sender?.card || "", avatar: m.avatar, role: m.role, bot: m.bot }),
+    }, avatar(openid, name, "p" + m.user_id, "sm", m.avatar));
   const open = () => showRaw(m);
   return h("div", { class: "msg" + (m.self ? " self" : ""), dataset: { seq: m.seq } },
     av,
@@ -372,7 +476,7 @@ function messageNode(m) {
         h("b", null, name),
         role ? h("span", { class: "role" }, role) : null,
         h("button", { class: "msg-stamp", type: "button", title: "查看这条消息的原始数据", onclick: open }, fullTime(m))),
-      bubble(renderSegments(m.message, messageCtx()))));
+      bubble(renderSegments(m.message, { ...messageCtx(), bot: !!m.bot }))));
 }
 
 /** 路由：同一页里切换会话（不重建页面，保留搜索内容） */

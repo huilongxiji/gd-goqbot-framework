@@ -309,7 +309,9 @@ function textMarkdown(segs, ctx) {
       src += `\uE000${tokens.length - 1}\uE001`;
     }
   }
-  return looksLikeMarkdown(src) ? { src, tokens } : null;
+  // 机器人发的文字一律按 Markdown 显示；其他人的文字看起来像 Markdown 时才按 Markdown 显示
+  if (!src.trim()) return null;
+  return ctx.bot || looksLikeMarkdown(src) ? { src, tokens } : null;
 }
 
 /** 渲染结果是否只有图片（只有图片时不套气泡） */
