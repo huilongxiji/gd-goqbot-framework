@@ -2,6 +2,7 @@ package onebot
 
 import (
 	"context"
+	"time"
 
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/dto/keyboard"
@@ -67,6 +68,18 @@ type OutMessage struct {
 	StreamRemainLen int
 	Parts           []MessagePart
 	Notes           []SendNote // 仅日志：reply 等随消息发送的动作说明
+	// reply 段命中的原消息（场景、群、发送者），发送前用来核对被动 msg_id 能不能用在这个会话
+	reply *replyTarget
+}
+
+// replyTarget reply 段引用的那条消息的来源
+type replyTarget struct {
+	scene       string // group / c2c
+	groupOpenID string
+	userOpenID  string
+	msgID       string    // 原消息的 QQ msg_id
+	at          time.Time // 原消息收到的时间
+	outbound    bool      // 机器人自己发的消息，不能当被动凭证
 }
 
 // HasContent 是否有可发送内容。流式末帧可能没有文本，只要带了 Stream 也算有内容。

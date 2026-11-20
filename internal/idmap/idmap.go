@@ -43,6 +43,10 @@ const (
 	GroupPassiveRepliesBoost = 50
 	// C2CPassiveReplies 单聊消息每条可被动回复次数
 	C2CPassiveReplies = 4
+
+	// GroupPrivateReplyTTL 群消息私聊回复（私聊用群消息的 msg_id 回复发送者）的有效期。
+	// 官方单聊文档写的是 60 分钟；次数按群消息规则，和群内回复共用
+	GroupPrivateReplyTTL = 60 * time.Minute
 )
 
 // 后台清理（janitor）参数：控制长期运行时内存内几个只增不减的 sync.Map。
@@ -82,16 +86,17 @@ type MsgMeta struct {
 	Outbound    bool // true=本程序发出的消息，不能当作被动 msg_id
 }
 
-// PassiveOK 是否还能当作被动回复凭证（入站且未过窗口）
-func (m MsgMeta) PassiveOK() bool {
-	if m.Outbound || m.MsgID == "" {
+// PassiveOK 这条消息现在还能不能当被动回复凭证。群消息的有效期按这个群的规则
+// （机器人开发者是群主或管理员时 60 分钟，否则 5 分钟），私聊消息 60 分钟
+func (s *Store) PassiveOK(m MsgMeta) bool {
+	if m.Outbound || m.MsgID == "" || m.Time.IsZero() {
 		return false
 	}
-	ttl := GroupPassiveTTL
-	if m.Scene == SceneC2C {
-		ttl = C2CPassiveTTL
+	ttl := C2CPassiveTTL
+	if m.Scene != SceneC2C {
+		ttl = s.GroupPassiveTTLOf(m.GroupOpenID)
 	}
-	return !m.Time.IsZero() && time.Since(m.Time) < ttl
+	return time.Since(m.Time) < ttl
 }
 
 type lazyEntry struct {

@@ -1565,6 +1565,12 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 	}
 	out := c.parseMessage(params.Get("message"))
 	passiveOnly := !active && params.Get("passive_only").Bool()
+	if r := out.reply; r != nil && out.MsgID != "" && (r.scene != string(idmap.SceneGroup) || r.groupOpenID != groupOpenID) {
+		// 别的群或私聊里的消息不能当这个群的被动凭证
+		out.MsgID = ""
+		out.RefMsgID = ""
+		out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "引用的不是这个群的消息，不作被动回复，也不显示引用", Fail: true})
+	}
 	if active {
 		out.MsgID = "" // 强制主动：忽略 reply、不套 lazy
 	} else if out.MsgID == "" {
@@ -1658,6 +1664,24 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 	if wakeup && passiveOnly {
 		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("is_wakeup 与 passive_only 互斥"))
 		return failed(1400, "is_wakeup 与 passive_only 互斥")
+	}
+	// 群消息私聊回复：msg_id 可以用群消息的，但只能私聊回复这条群消息的发送者（要求是好友）。
+	// 官方单聊文档：有效时间与次数按群消息规则（60 分钟、5 次；开发者是群主或管理员时 50 次），和群内回复共用次数
+	if r := out.reply; r != nil && r.userOpenID != userOpenID {
+		if out.MsgID != "" || out.RefMsgID != "" {
+			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "引用的消息不是这个用户发的，私聊不能用它作被动回复", Fail: true})
+		}
+		out.MsgID = ""
+		out.RefMsgID = ""
+	} else if r != nil && r.scene == string(idmap.SceneGroup) {
+		out.RefMsgID = "" // 私聊里不能引用群消息，只用它的 msg_id
+		out.MsgID = ""
+		if !r.outbound && r.msgID != "" && !r.at.IsZero() && time.Since(r.at) < idmap.GroupPrivateReplyTTL {
+			out.MsgID = r.msgID
+			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "群消息私聊回复：用该群消息的 msg_id 私聊回复发送者"})
+		} else {
+			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "群消息私聊回复：这条群消息已超过 60 分钟，不能再用", Fail: true})
+		}
 	}
 	// is_wakeup：单聊互动召回消息，与 msg_id/event_id 互斥，故强制走主动语义（不套被动凭证）
 	if wakeup {
@@ -1921,7 +1945,8 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				// 引用条用 REFIDX；被动 msg_id 只能用「用户入站且未过期」的凭证。
 				// 机器人自己发出的消息（Outbound）没有被动窗口，拿它当 msg_id 会 40034005「已过期」。
 				out.RefMsgID = meta.RefIdx
-				if meta.PassiveOK() {
+				out.reply = &replyTarget{scene: string(meta.Scene), groupOpenID: meta.GroupOpenID, userOpenID: meta.UserOpenID, msgID: meta.MsgID, at: meta.Time, outbound: meta.Outbound}
+				if c.ids.PassiveOK(meta) {
 					out.MsgID = meta.MsgID
 				}
 				note := SendNote{Title: "reply", ID: rid, Cached: true, Passive: out.MsgID != "", HasRef: meta.RefIdx != ""}
