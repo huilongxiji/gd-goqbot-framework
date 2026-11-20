@@ -722,7 +722,7 @@ function paintQuota() {
   const left = (Number(p.expires_at) || 0) - now;
   const used = Number(p.replies_used) || 0;
   const limit = Number(p.replies_limit) || (c2c ? 4 : 5);
-  const ttlMin = Math.round((Number(p.ttl) || (c2c ? 3600 : 300)) / 60);
+  const ttlMin = Math.round((Number(p.ttl) || 3600) / 60);
   let passiveMain, passiveCls = "";
   if (!p.received_at) { passiveMain = "还没有可回复的消息"; passiveCls = "muted"; }
   else if (left <= 0) { passiveMain = "已过期"; passiveCls = "muted"; }
@@ -752,7 +752,7 @@ function paintQuota() {
       h("span", { class: "quota-label" }, "被动回复"),
       h("span", { class: "quota-value " + passiveCls }, passiveMain),
       p.received_at ? h("span", { class: "quota-sub" }, `已回复 ${used} / ${limit} 次`) : null,
-      h("span", { class: "quota-rule" }, c2c ? rule : `${p.boosted ? "开发者是群主或管理员：" : ""}${rule}，私聊回复发送者也算次数`)),
+      h("span", { class: "quota-rule" }, c2c ? rule : `${p.boosted ? "开发者是群主或管理员，" : ""}${rule}，私聊回复发送者也算次数`)),
     activeRow,
     q.error ? h("p", { class: "quota-note warn" }, q.error) : null);
   // 收起时只显示一行：被动回复能用时显示剩余时间，否则显示主动消息的情况
