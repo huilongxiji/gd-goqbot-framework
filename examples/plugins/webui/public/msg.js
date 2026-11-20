@@ -156,8 +156,13 @@ function mediaImage(url, w = 0, hgt = 0) {
     img.width = Math.min(w, 320);
     img.height = Math.round((img.width / w) * hgt);
   }
-  img.addEventListener("error", () => img.replaceWith(h("span", { class: "seg-tag" }, "[图片已过期]")), { once: true });
-  return h("button", { class: "seg-image", type: "button", onclick: () => openViewer(url) }, img);
+  const btn = h("button", { class: "seg-image", type: "button", onclick: () => openViewer(url) }, img);
+  img.addEventListener("error", () => {
+    // 图片打不开时换成文字，并恢复气泡（只有图片的消息原本不带气泡）
+    btn.closest(".bubble")?.classList.remove("bare");
+    btn.replaceWith(h("span", { class: "seg-tag" }, "[图片已过期]"));
+  }, { once: true });
+  return btn;
 }
 
 /**

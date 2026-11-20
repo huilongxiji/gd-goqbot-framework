@@ -21,6 +21,7 @@ export interface ChatMessage {
   seq: number; // 会话内的序号，从 1 开始递增
   id: number; // OneBot message_id
   time: number; // 秒
+  recv_ms?: number; // WebUI 收到这条消息的时间（毫秒），旧记录没有
   self: boolean; // 机器人自己发的
   user_id: number;
   user_openid?: string;
@@ -28,6 +29,7 @@ export interface ChatMessage {
   role?: string;
   message: Segment[];
   raw: string;
+  event?: OneBotEvent; // 收到的完整事件，供页面查看原始数据；旧记录没有
 }
 
 /** 会话列表里的一项 */
@@ -232,11 +234,13 @@ export class ChatStore {
       seq: ++chat.seq,
       id: num(ev.message_id),
       time: num(ev.time) || Math.floor(Date.now() / 1000),
+      recv_ms: Date.now(),
       self: sent,
       user_id: num(ev.user_id),
       nickname,
       message: segs,
       raw,
+      event: ev,
     };
     if (typeof ev.user_openid === "string" && ev.user_openid && !sent) {
       msg.user_openid = ev.user_openid;

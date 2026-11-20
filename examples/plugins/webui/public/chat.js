@@ -1,5 +1,5 @@
 // 私聊 / 群聊页面：左边会话列表，右边消息窗口。当前阶段只接收消息
-import { h, fill, icon, api, toast, promptDialog, shortTime, clock, dayLabel, hue } from "./core.js";
+import { h, fill, icon, api, toast, promptDialog, openDialog, shortTime, dayLabel, hue } from "./core.js";
 import { renderSegments, summaryOf, setImageViewer, stripFaces, onlyImages } from "./msg.js";
 
 const PAGE_SIZE = 50;
@@ -265,11 +265,6 @@ function messageCtx() {
   };
 }
 
-/** 同一个人 3 分钟内连续发的消息合在一起，不重复显示头像和名字 */
-function continues(prev, m) {
-  return prev && prev.self === m.self && prev.user_id === m.user_id && m.time - prev.time < 180 && dayLabel(prev.time) === dayLabel(m.time);
-}
-
 function renderMessages() {
   const nodes = [];
   if (view.more) nodes.push(h("p", { class: "msgs-hint" }, "向上滚动加载更早的消息"));
@@ -278,7 +273,7 @@ function renderMessages() {
   let prev = null;
   for (const m of view.messages) {
     if (!prev || dayLabel(prev.time) !== dayLabel(m.time)) nodes.push(h("div", { class: "day" }, h("span", null, dayLabel(m.time))));
-    nodes.push(messageNode(m, continues(prev, m)));
+    nodes.push(messageNode(m));
     prev = m;
   }
   fill(view.scroller, ...nodes);
@@ -290,7 +285,7 @@ function appendMessage(m, live) {
   const nearBottom = view.scroller.scrollHeight - view.scroller.scrollTop - view.scroller.clientHeight < 120;
   view.scroller.querySelector(".msgs-hint:last-child")?.remove();
   if (!prev || dayLabel(prev.time) !== dayLabel(m.time)) view.scroller.append(h("div", { class: "day" }, h("span", null, dayLabel(m.time))));
-  const node = messageNode(m, continues(prev, m));
+  const node = messageNode(m);
   if (live) node.classList.add("arrive");
   view.scroller.append(node);
   if (nearBottom || m.self) view.scroller.scrollTop = view.scroller.scrollHeight;
@@ -301,22 +296,79 @@ function bubble(parts) {
   return h("div", { class: onlyImages(parts) ? "bubble bare" : "bubble" }, parts);
 }
 
-function messageNode(m, cont) {
+/** 两位、三位补零 */
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+
+/** 收到消息的时间：年-月-日 时:分:秒.毫秒（旧记录只有秒） */
+function fullTime(m) {
+  const ms = Number(m.recv_ms) || 0;
+  const d = new Date(ms || m.time * 1000);
+  const base = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return ms ? `${base}.${pad(d.getMilliseconds(), 3)}` : base;
+}
+
+/** JSON 着色：键、字符串、数字、true/false/null 分别上色 */
+function highlightJSON(text) {
+  const out = [];
+  const re = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+  let last = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1]) {
+      out.push(h("span", { class: m[2] ? "j-key" : "j-str" }, m[1]));
+      if (m[2]) out.push(m[2]);
+    } else if (m[3]) out.push(h("span", { class: "j-lit" }, m[3]));
+    else out.push(h("span", { class: "j-num" }, m[4]));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // 不是 https / 本机地址时浏览器不给用剪贴板接口，退回到选中复制
+    const ta = h("textarea", { style: "position:fixed;left:-9999px" }, text);
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast("已复制");
+}
+
+/** 查看一条消息的原始数据（WebUI 收到的完整事件） */
+function showRaw(m) {
+  const data = m.event ?? (({ event, ...rest }) => rest)(m);
+  const text = JSON.stringify(data, null, 2);
+  openDialog("消息原始数据", h("div", { class: "raw-view" },
+    h("div", { class: "raw-head" },
+      h("span", null, "收到时间 ", h("b", null, fullTime(m))),
+      m.id ? h("span", null, "消息编号 ", h("b", null, String(m.id))) : null,
+      h("button", { class: "btn small", type: "button", onclick: () => copyText(text) }, "复制 JSON")),
+    m.event ? null : h("p", { class: "raw-note" }, "这条消息是旧版 WebUI 保存的，没有留下完整事件，下面是当时保存的内容。"),
+    h("pre", { class: "raw-json" }, highlightJSON(text))), { wide: true });
+}
+
+function messageNode(m) {
   const c = chatState.chats.get(view.current);
   const name = m.self ? chatState.botName : m.nickname || `用户 ${m.user_id}`;
   const role = m.role === "owner" ? "群主" : m.role === "admin" ? "管理员" : "";
   const av = m.self
     ? monogram(chatState.botName, "self", "sm bot")
     : avatar(m.user_openid || (c?.type === "private" ? c.openid : ""), name, "p" + m.user_id, "sm");
-  return h("div", { class: "msg" + (m.self ? " self" : "") + (cont ? " cont" : ""), dataset: { seq: m.seq } },
-    cont ? h("span", { class: "avatar-gap" }) : av,
+  const open = () => showRaw(m);
+  return h("div", { class: "msg" + (m.self ? " self" : ""), dataset: { seq: m.seq } },
+    av,
     h("div", { class: "msg-main" },
-      cont ? null : h("div", { class: "msg-meta" },
+      h("div", { class: "msg-meta" },
         h("b", null, name),
         role ? h("span", { class: "role" }, role) : null,
-        c?.type === "group" && !m.self ? h("span", { class: "uid" }, String(m.user_id)) : null),
-      bubble(renderSegments(m.message, messageCtx())),
-      h("time", { class: "msg-time", title: new Date(m.time * 1000).toLocaleString("zh-CN") }, clock(m.time))));
+        !m.self && m.user_id ? h("button", { class: "uid", type: "button", title: "查看这条消息的原始数据", onclick: open }, String(m.user_id)) : null,
+        h("button", { class: "msg-stamp", type: "button", title: "查看这条消息的原始数据", onclick: open }, fullTime(m))),
+      bubble(renderSegments(m.message, messageCtx()))));
 }
 
 /** 路由：同一页里切换会话（不重建页面，保留搜索内容） */

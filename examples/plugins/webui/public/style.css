@@ -370,7 +370,6 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .avatar.digits { font-size: 15px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .avatar.md.digits { font-size: 16px; }
 .avatar.bot { background: var(--accent); color: var(--accent-ink); }
-.avatar-gap { width: 36px; flex: none; }
 
 .chat-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas); }
 .panel-empty { margin: auto; display: grid; justify-items: center; gap: 10px; color: var(--muted); }
@@ -387,32 +386,30 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .day span { font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); padding: 2px 10px; border-radius: 999px; }
 
 .msg { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; max-width: 100%; }
-.msg.cont { margin-top: 3px; }
 .msg-main { display: grid; gap: 3px; min-width: 0; max-width: min(620px, 78%); justify-items: start; }
-.msg-meta { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
+.msg-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
 .msg-meta b { font-weight: 600; color: var(--ink); opacity: .85; }
 .msg-meta .role { color: var(--wait); background: var(--wait-soft); padding: 0 6px; border-radius: 4px; font-size: 11px; }
-.msg-meta .uid { font-variant-numeric: tabular-nums; }
+/* 用户编号和时间：点击查看这条消息的原始数据 */
+.msg-meta .uid, .msg-meta .msg-stamp { padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; font-variant-numeric: tabular-nums; border-radius: 3px; }
+.msg-meta .uid:hover, .msg-meta .msg-stamp:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.msg-meta .uid:focus-visible, .msg-meta .msg-stamp:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.msg-meta .msg-stamp { opacity: .8; }
 .bubble {
   position: relative; padding: 8px 12px; border-radius: 4px 14px 14px 14px; background: var(--surface); border: 1px solid var(--line);
   overflow-wrap: anywhere; white-space: pre-wrap; max-width: 100%;
 }
-.msg.cont .bubble { border-radius: 14px; }
 .msg-main { position: relative; }
-.msg-time { position: absolute; bottom: 4px; left: 100%; margin-left: 8px; white-space: nowrap; font-size: 11px; color: var(--muted); opacity: 0; transition: opacity .15s; font-variant-numeric: tabular-nums; }
-.msg.self .msg-time { left: auto; right: 100%; margin: 0 8px 0 0; }
-.msg:hover .msg-time { opacity: 1; }
 
 .msg.self { flex-direction: row-reverse; }
 .msg.self .msg-main { justify-items: end; }
 .msg.self .msg-meta { flex-direction: row-reverse; }
 .msg.self .bubble { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 14px 4px 14px 14px; }
-.msg.self.cont .bubble { border-radius: 14px; }
 
 /* 一条新消息到来时淡入，只有这一处动效 */
 .msg.arrive { animation: arrive .28s ease-out; }
 @keyframes arrive { from { opacity: 0; transform: translateY(6px); } }
-@media (prefers-reduced-motion: reduce) { .msg.arrive { animation: none; } .msg-time { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .msg.arrive { animation: none; } }
 
 /* bubble 里的内容按行排列：文字和 @ 连在一起，图片等单独成块 */
 .bubble { display: block; }
@@ -472,6 +469,18 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .dialog-body { padding: 18px; }
 .confirm { display: grid; gap: 18px; }
 .confirm .actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* 消息原始数据 */
+.raw-view { display: grid; gap: 12px; }
+.raw-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.raw-head b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.raw-head .btn { margin-left: auto; }
+.raw-note { margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--wait-soft); color: var(--wait); font-size: 13px; }
+.raw-json { margin: 0; padding: 12px 14px; max-height: 64vh; overflow: auto; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.raw-json .j-key { color: var(--accent); }
+.raw-json .j-str { color: var(--ok); }
+.raw-json .j-num { color: var(--wait); }
+.raw-json .j-lit { color: var(--bad); }
+
 /* 查看大图 */
 .lightbox { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: none; overflow: auto; color: #fff; }
 .lightbox::backdrop { background: rgba(4, 12, 15, .88); }
