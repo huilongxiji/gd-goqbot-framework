@@ -16,7 +16,13 @@ type Event struct {
 // EventBus 事件总线，供 QQ 侧推送、OneBot 侧订阅
 type EventBus struct {
 	mu       sync.RWMutex
-	handlers []func(*Event) int
+	nextID   int
+	handlers []busHandler
+}
+
+type busHandler struct {
+	id int
+	fn func(*Event) int
 }
 
 // NewEventBus 创建事件总线
@@ -24,21 +30,33 @@ func NewEventBus() *EventBus {
 	return &EventBus{}
 }
 
-// OnPush 注册事件推送回调，返回值为成功投递的连接数
-func (b *EventBus) OnPush(fn func(*Event) int) {
+// OnPush 注册事件推送回调，回调返回值为成功投递的连接数。返回的函数用于取消注册（可重复调用）
+func (b *EventBus) OnPush(fn func(*Event) int) func() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.handlers = append(b.handlers, fn)
+	b.nextID++
+	id := b.nextID
+	b.handlers = append(b.handlers, busHandler{id: id, fn: fn})
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		for i, h := range b.handlers {
+			if h.id == id {
+				b.handlers = append(b.handlers[:i:i], b.handlers[i+1:]...)
+				return
+			}
+		}
+	}
 }
 
 // Push 广播事件，返回成功投递的下游连接总数
 func (b *EventBus) Push(ev *Event) int {
 	b.mu.RLock()
-	handlers := append([]func(*Event) int{}, b.handlers...)
+	handlers := append([]busHandler{}, b.handlers...)
 	b.mu.RUnlock()
 	delivered := 0
-	for _, fn := range handlers {
-		delivered += fn(ev)
+	for _, h := range handlers {
+		delivered += h.fn(ev)
 	}
 	return delivered
 }

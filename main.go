@@ -16,8 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -35,7 +33,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.13.1"
+	AppVersion = "1.14.0"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -156,7 +154,6 @@ func run(configPath, exeDir string) (restart bool) {
 	caller := onebot.NewCaller(selfID, appID, ids, cfg.OneBot.Debug, AppName, AppVersion)
 	conv := onebot.NewConverter(ids, bus, func() int64 { return selfID }, cfg.QQ.ResolvedMentionMode(), cfg.OneBot.MessageFormat, cfg.OneBot.DowntimeMessage, caller)
 
-	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -206,12 +203,11 @@ func run(configPath, exeDir string) (restart bool) {
 			filelog.Errorf("[plugins] %s 配置无效，不会加载: %v", pc.Name, err)
 		}
 	}
-	tokenSet := strings.TrimSpace(cfg.OneBot.AccessToken) != ""
 	pluginManager := plugins.New(pluginConfigs, plugins.Options{
 		HostVersion:         AppVersion,
 		LogDir:              filepath.Join(logDir, "plugins"),
 		SelfID:              func() int64 { return selfID },
-		DownstreamSensitive: tokenSet,
+		DownstreamSensitive: true, // 每条连接是否开放敏感能力由 allow-sensitive-plugins 和它的 access-token 决定
 	})
 	caller.SetPlugins(pluginManager)
 	// 事件总线上的事件同时推给订阅了的插件（不计入下游送达数，不影响 downtime_message 的判断）；
@@ -222,25 +218,11 @@ func run(configPath, exeDir string) (restart bool) {
 	})
 	pluginManager.SetEmitter(bus.PushRaw)
 
-	// 启动 OneBot 下游连接
-	var wsServers []*onebot.WSServer
-	var wsClients []*onebot.WSClient
-	for _, srv := range cfg.OneBot.Servers {
-		if ws := srv.WS; ws != nil && !ws.Disabled {
-			s := onebot.NewWSServer(ws, &cfg.OneBot, selfID, bus, caller)
-			wsServers = append(wsServers, s)
-			wg.Go(func() {
-				if err := s.Run(); err != nil {
-					filelog.Errorf("[onebot] 正向 WS 服务退出: %v", err)
-				}
-			})
-		}
-		if rev := srv.WSReverse; rev != nil && !rev.Disabled {
-			c := onebot.NewWSClient(rev, &cfg.OneBot, selfID, bus, caller)
-			wsClients = append(wsClients, c)
-			c.StartHeartbeat()
-			c.Run()
-		}
+	// 启动 OneBot 下游连接。之后改了配置里的下游连接会立即按差异更新，不用重启
+	conns := onebot.NewConnections(selfID, bus, caller)
+	conns.Apply(cfg.OneBot)
+	if !cfg.OneBot.HasEnabledServer() {
+		log.Printf("[onebot] 没有开启的下游连接：可以在 WebUI 的「连接」页开启或添加，或修改 config.yml 的 onebot.servers")
 	}
 
 	// 替换 botgo logger：过滤逐拍心跳（debug=true 时心跳照常显示），其余日志原样
@@ -253,36 +235,28 @@ func run(configPath, exeDir string) (restart bool) {
 	}
 	// 插件可调用的运行管理能力（host.*）
 	pluginManager.SetHost(hostctl.New(hostctl.Options{
-		AppName:    AppName,
-		Version:    AppVersion,
-		ConfigPath: configPath,
-		Template:   configTemplate,
-		LogDir:     logDir,
-		LogEnabled: cfg.Log.FileEnabled(),
-		SelfID:     func() int64 { return selfID },
-		QQReady:    qqClient.Ready,
-		QQBotName:  qqClient.BotName,
-		Connections: func() []map[string]any {
-			out := make([]map[string]any, 0, len(wsServers)+len(wsClients))
-			for _, s := range wsServers {
-				out = append(out, s.Status())
-			}
-			for _, c := range wsClients {
-				out = append(out, c.Status())
-			}
-			return out
-		},
+		AppName:        AppName,
+		Version:        AppVersion,
+		ConfigPath:     configPath,
+		Template:       configTemplate,
+		LogDir:         logDir,
+		LogEnabled:     cfg.Log.FileEnabled(),
+		SelfID:         func() int64 { return selfID },
+		QQReady:        qqClient.Ready,
+		QQBotName:      qqClient.BotName,
+		Connections:    conns.Status,
 		Plugins:        pluginManager.List,
 		RequestRestart: requestRestart,
+		Running:        cfg,
+		ApplyOneBot: func(ob config.OneBotConfig) any {
+			return conns.Apply(ob)
+		},
 	}))
 
 	// 上游启动成功后才拉起插件，避免 Fatalf 跳过 defer 留下子进程。
 	// 插件在后台握手，单个插件失败不影响 OneBot 与 QQ 连接；状态可用 get_plugin_list 查询。
 	defer pluginManager.Close()
 	if n := pluginManager.EnabledCount(); n > 0 {
-		if !tokenSet {
-			filelog.Warnf("[plugins] 未设置 onebot.access_token：插件照常运行，但插件的敏感能力不对下游开放")
-		}
 		pluginManager.Start(ctx)
 		log.Printf("[plugins] 插件目录 %s: 共 %d 个插件，已开启 %d 个，正在后台启动", pluginDir, len(pluginConfigs), n)
 	}
@@ -302,12 +276,7 @@ func run(configPath, exeDir string) (restart bool) {
 		restart = true
 		// 先关插件，再断开下游与 QQ 连接、释放监听端口，新进程才能重新监听、打开数据库
 		pluginManager.Close()
-		for _, s := range wsServers {
-			s.Stop()
-		}
-		for _, c := range wsClients {
-			c.Stop()
-		}
+		conns.StopAll()
 		qqClient.Stop()
 	}
 	cancel()

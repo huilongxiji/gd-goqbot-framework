@@ -63,6 +63,7 @@ export interface Context {
 
   /**
    * 订阅事件。types 写成 post_type.子类型，如 "message.group"、"notice.*"、"*"。
+   * 机器人自己发出的消息是 "message_sent.group" / "message_sent.private"（只推给插件）。
    * 返回取消订阅的函数。
    */
   on(types: string | string[], handler: (event: OneBotEvent) => void | Promise<void>): Promise<() => Promise<void>>;

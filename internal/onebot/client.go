@@ -24,7 +24,11 @@ type WSClient struct {
 	mu        sync.Mutex                    // 保护 universal/event 连接指针
 	universal *wsConn                       // universal 端点连接（收发合一）
 	event     *wsConn                       // event 端点连接（仅推事件）
+	api       *wsConn                       // api 端点连接（仅收动作请求）
+	stopped   bool                          // 已调用 Stop（受 mu 保护）
 	stop      chan struct{}                 // 关闭信号，触发各 goroutine 退出
+	stopOnce  sync.Once
+	unsub     func() // 取消事件总线订阅
 
 	failMu       sync.Mutex
 	sendFailures [][]byte // 写失败缓存，跨重连重发
@@ -60,7 +64,7 @@ func NewWSClient(cfg *config.WSReverseServerConfig, obCfg *config.OneBotConfig, 
 		caller: caller,
 		stop:   make(chan struct{}),
 	}
-	bus.OnPush(c.onEventPush)
+	c.unsub = bus.OnPush(c.onEventPush)
 	return c
 }
 
@@ -71,24 +75,27 @@ func (c *WSClient) Run() {
 		return
 	}
 	if c.cfg.API != "" {
-		go c.connectLoop("API", c.cfg.API, nil, false)
+		go c.connectLoop("API", c.cfg.API, &c.api, false)
 	}
 	if c.cfg.Event != "" {
 		go c.connectLoop("Event", c.cfg.Event, &c.event, true)
 	}
 }
 
-// Stop 停止客户端
+// Stop 停止客户端：断开所有端点，不再重连（可重复调用）
 func (c *WSClient) Stop() {
-	close(c.stop)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.universal != nil {
-		_ = c.universal.close()
-	}
-	if c.event != nil {
-		_ = c.event.close()
-	}
+	c.stopOnce.Do(func() {
+		close(c.stop)
+		c.unsub()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.stopped = true
+		for _, conn := range []*wsConn{c.universal, c.event, c.api} {
+			if conn != nil {
+				_ = conn.close()
+			}
+		}
+	})
 }
 
 // reconnectInterval 返回重连等待间隔，未配置时默认 5s
@@ -142,15 +149,18 @@ func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool
 	}
 	log.Printf("[onebot] 反向 WS 连接成功 %s -> %s", typ, addr)
 
-	wrapped := newWSConn(conn, c.caller, c.cacheFailure, requestScope{allowSensitivePlugins: c.cfg.AllowSensitivePlugins})
-	if conptr != nil {
-		c.mu.Lock()
-		if *conptr != nil {
-			_ = (*conptr).close()
-		}
-		*conptr = wrapped
+	wrapped := newWSConn(conn, c.caller, c.cacheFailure, requestScope{allowSensitivePlugins: c.cfg.AllowSensitivePlugins && c.obCfg.AccessToken != ""})
+	c.mu.Lock()
+	if c.stopped {
 		c.mu.Unlock()
+		_ = wrapped.close()
+		return nil
 	}
+	if *conptr != nil {
+		_ = (*conptr).close()
+	}
+	*conptr = wrapped
+	c.mu.Unlock()
 	c.flushFailures(wrapped)
 
 	if typ != "Event" {
@@ -182,7 +192,11 @@ func (c *WSClient) listenAPI(typ string, conn *wsConn) {
 		}
 		t, reader, err := conn.conn.NextReader()
 		if err != nil {
-			filelog.Warnf("[onebot] 反向 WS %s 读取失败: %v", typ, err)
+			select {
+			case <-c.stop: // 主动停止，不算故障
+			default:
+				filelog.Warnf("[onebot] 反向 WS %s 读取失败: %v", typ, err)
+			}
 			return
 		}
 		buf := bytes.NewBuffer(nil)

@@ -86,11 +86,14 @@ qq:
   mention_mode: at          # 让框架能识别「@机器人」，多框架时推荐
 
 onebot:
-  access_token: ""          # 建议设置，框架那边填同一个值
   servers:
     - ws-reverse:
+        disabled: false     # 打开这条连接（模板里默认关闭）
         universal: ws://127.0.0.1:8080/onebot/v11/ws   # NoneBot2 默认地址
+        access-token: ""    # 建议设置，框架那边填同一个值
 ```
+
+模板里的两条示例连接默认是关闭的（`disabled: true`），每条连接的开关、口令、心跳都单独设置。
 
 **4. 再次启动**：看到 `goqbot x.y.z 已启动，等待连接...` 就说明成功了。框架那边怎么设置，请看上面 [支持的框架](#-支持的框架) 里对应的教程。
 

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tidwall/gjson"
 	"goqbot/internal/filelog"
@@ -66,6 +68,66 @@ func (c *Caller) pluginManager() *plugins.Manager {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.plugins
+}
+
+// inlineBase64 消息里内联的 base64 文件内容（图片、语音等），报给插件时省略，避免单条事件过大
+var inlineBase64 = regexp.MustCompile(`base64://[A-Za-z0-9+/=_-]{64,}`)
+
+// stripInlineBase64 把消息里的 base64:// 文件内容换成 base64://（已省略）
+func stripInlineBase64(v any) any {
+	switch t := v.(type) {
+	case string:
+		return inlineBase64.ReplaceAllString(t, "base64://")
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = stripInlineBase64(x)
+		}
+		return out
+	case map[string]any:
+		if t["type"] == "markdown" {
+			return t // markdown 段的 data.data 可能是 base64 编码的正文，不是文件，保留
+		}
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = stripInlineBase64(x)
+		}
+		return out
+	}
+	return v
+}
+
+// reportSent 机器人发出一条消息后，向订阅了 message_sent.* 的插件报一条 message_sent 事件
+// （格式与 NapCat 的 message_sent 相同）。只给插件，不推给下游框架。
+func (c *Caller) reportSent(snap map[string]any) {
+	m := c.pluginManager()
+	if m == nil {
+		return
+	}
+	ev := make(map[string]any, len(snap)+4)
+	for k, v := range snap {
+		if k == "group" || k == "real_id" {
+			continue
+		}
+		ev[k] = v
+	}
+	ev["post_type"] = "message_sent"
+	ev["self_id"] = c.getSelfID()
+	ev["time"] = time.Now().Unix()
+	if snap["message_type"] == "group" {
+		ev["sub_type"] = "normal"
+	} else {
+		ev["sub_type"] = "friend"
+	}
+	ev["message"] = stripInlineBase64(ev["message"])
+	if raw, ok := ev["raw_message"].(string); ok {
+		ev["raw_message"] = inlineBase64.ReplaceAllString(raw, "base64://")
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	m.DispatchEvent(b)
 }
 
 // BuiltinActions 实现 plugins.ActionRunner：全部内置动作名

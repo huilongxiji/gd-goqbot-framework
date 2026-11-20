@@ -238,6 +238,14 @@ type EventDecl struct {
 }
 
 // Info 插件状态快照（get_plugin_list 的返回项）
+// Permission 插件声明需要的一项能力，以及它现在是否被允许
+type Permission struct {
+	Name      string `json:"name"`      // 能力名，或带 * 的通配写法
+	Sensitive bool   `json:"sensitive"` // 是敏感能力（敏感能力不会被通配符匹配）
+	Wildcard  bool   `json:"wildcard"`  // 是通配写法
+	Granted   bool   `json:"granted"`   // 现在是否允许（没被 grants 收紧掉）
+}
+
 type Info struct {
 	Name            string           `json:"name"`             // 实例名
 	Kind            string           `json:"kind"`             // 插件种类：js / executable
@@ -250,5 +258,6 @@ type Info struct {
 	Events          []EventDecl      `json:"events"`           // 声明可能发出的事件
 	Requires        []string         `json:"requires"`         // 插件声明需要调用的能力
 	Grants          []string         `json:"grants"`           // plugin.yml 收紧后的权限；null=不限制
+	Permissions     []Permission     `json:"permissions"`      // requires 里每一项的授权情况（plugins.list 返回）
 	DroppedEvents   int64            `json:"dropped_events"`   // 来不及推送而丢弃的事件数
 }

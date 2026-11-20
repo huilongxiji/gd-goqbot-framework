@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -52,6 +54,11 @@ type Options struct {
 	Connections    func() []map[string]any // 下游连接状态
 	Plugins        func() []plugins.Info   // 插件状态
 	RequestRestart func(reason string)     // 请求重启 goqbot（异步执行，先让调用方收到回复）
+
+	// Running 启动时加载的配置，用来判断修改后哪些项要重启才生效
+	Running *config.Config
+	// ApplyOneBot 保存配置后立即应用 onebot 下游连接（access_token、heartbeat_interval、servers），返回应用结果
+	ApplyOneBot func(ob config.OneBotConfig) any
 }
 
 // Service 运行管理能力的实现
@@ -60,11 +67,43 @@ type Service struct {
 	start   time.Time
 	mu      sync.Mutex // 配置写入、更新互斥
 	updated bool       // 已完成一次更新，等待重启
+	running config.Config
 }
 
 // New 创建运行管理服务
 func New(opts Options) *Service {
-	return &Service{opts: opts, start: time.Now()}
+	s := &Service{opts: opts, start: time.Now()}
+	if opts.Running != nil {
+		s.running = *opts.Running
+	}
+	return s
+}
+
+// restartRequired 返回与运行中配置不同、且要重启才能生效的配置项
+func restartRequired(running, next *config.Config) []string {
+	out := []string{}
+	if !reflect.DeepEqual(running.QQ, next.QQ) {
+		out = append(out, "qq")
+	}
+	if running.OneBot.MessageFormat != next.OneBot.MessageFormat {
+		out = append(out, "onebot.message_format")
+	}
+	if running.OneBot.Debug != next.OneBot.Debug {
+		out = append(out, "onebot.debug")
+	}
+	if running.OneBot.DowntimeMessage != next.OneBot.DowntimeMessage {
+		out = append(out, "onebot.downtime_message")
+	}
+	if !reflect.DeepEqual(running.IDMap, next.IDMap) {
+		out = append(out, "idmap")
+	}
+	if !reflect.DeepEqual(running.Log, next.Log) {
+		out = append(out, "log")
+	}
+	if !reflect.DeepEqual(running.Plugins, next.Plugins) {
+		out = append(out, "plugins")
+	}
+	return out
 }
 
 // Info host.info
@@ -106,21 +145,47 @@ func (s *Service) Info() map[string]any {
 }
 
 // Logs host.logs：读取 goqbot 当天（或指定日期）日志的最后若干行
-func (s *Service) Logs(lines int, date string) ([]string, error) {
+// 日志文件是 goqbot-YYYY-MM-DD.log，一天一个
+var logFileName = regexp.MustCompile(`^goqbot-(\d{4}-\d{2}-\d{2})\.log$`)
+
+func (s *Service) Logs(lines int, date string) (map[string]any, error) {
 	if !s.opts.LogEnabled {
 		return nil, plugins.Detail(plugins.ErrCallFailed, "未开启文件日志（log.enabled=false）")
 	}
 	if date == "" {
 		date = time.Now().Format("2006-01-02")
 	}
+	files := s.logFiles()
 	out, err := plugins.TailFile(filepath.Join(s.opts.LogDir, "goqbot-"+date+".log"), lines)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, plugins.Detail(plugins.ErrCallFailed, "没有 %s 的日志", date)
+		if !os.IsNotExist(err) {
+			return nil, plugins.Detail(plugins.ErrCallFailed, "读取日志失败")
 		}
-		return nil, plugins.Detail(plugins.ErrCallFailed, "读取日志失败")
+		out = []string{} // 这一天没有日志文件
 	}
-	return out, nil
+	return map[string]any{"date": date, "lines": out, "files": files}, nil
+}
+
+// logFiles 列出日志目录里的全部日志文件，最新的在前
+func (s *Service) logFiles() []map[string]any {
+	entries, err := os.ReadDir(s.opts.LogDir)
+	if err != nil {
+		return []map[string]any{}
+	}
+	files := make([]map[string]any, 0, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- { // ReadDir 按文件名升序，倒过来就是最新的在前
+		e := entries[i]
+		m := logFileName.FindStringSubmatch(e.Name())
+		if m == nil || !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, map[string]any{"date": m[1], "size": info.Size()})
+	}
+	return files
 }
 
 // ConfigGet host.config.get
@@ -244,10 +309,20 @@ func (s *Service) writeConfig(content []byte, restart bool) (map[string]any, err
 	if added == nil {
 		added = []string{}
 	}
+	result := map[string]any{"restarting": restart, "added": added}
 	if restart && s.opts.RequestRestart != nil {
 		s.opts.RequestRestart("配置已修改")
+		return result, nil
 	}
-	return map[string]any{"restarting": restart, "added": added}, nil
+	// 不重启：下游连接立即按新配置更新，其他改动提示要重启
+	if s.opts.ApplyOneBot != nil {
+		result["applied"] = s.opts.ApplyOneBot(cfg.OneBot)
+		s.running.OneBot.AccessToken = cfg.OneBot.AccessToken
+		s.running.OneBot.HeartbeatInterval = cfg.OneBot.HeartbeatInterval
+		s.running.OneBot.Servers = cfg.OneBot.Servers
+	}
+	result["restart_required"] = restartRequired(&s.running, cfg)
+	return result, nil
 }
 
 // Restart host.restart
@@ -353,6 +428,7 @@ func setPath(n *yaml.Node, segs []string, val *yaml.Node) error {
 				child := n.Content[i+1]
 				if last {
 					replaceNode(child, val)
+					moveLineComment(n.Content[i], child)
 					return nil
 				}
 				return setPath(child, segs[1:], val)
@@ -360,6 +436,7 @@ func setPath(n *yaml.Node, segs []string, val *yaml.Node) error {
 		}
 		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: seg}
 		if last {
+			flowEmpty(val)
 			n.Content = append(n.Content, key, val)
 			return nil
 		}
@@ -383,9 +460,98 @@ func setPath(n *yaml.Node, segs []string, val *yaml.Node) error {
 
 // replaceNode 用 val 替换 dst 的内容，保留 dst 上的注释
 func replaceNode(dst, val *yaml.Node) {
+	if mergeScalarSeq(dst, val) {
+		return
+	}
 	head, line, foot := dst.HeadComment, dst.LineComment, dst.FootComment
+	flowEmpty(val)
 	*dst = *val
 	dst.HeadComment, dst.LineComment, dst.FootComment = head, line, foot
+}
+
+// commentedItem 匹配被注释掉的列表项：# - "名称"   # 说明
+var commentedItem = regexp.MustCompile(`^#\s*-\s*"?([^"\s#]+)"?\s*(#.*)?$`)
+
+// mergeScalarSeq 修改纯文字列表（如 qq.text_intent）时尽量保留注释：
+// 原有的项连同行尾说明原样保留；新加的项如果在注释里出现过（# - "名称" # 说明），把说明拿过来并删掉那行注释；
+// 去掉的项改写成一行注释，以后手动编辑时去掉 # 就能打开。不是纯文字列表时返回 false，按普通方式替换。
+func mergeScalarSeq(dst, val *yaml.Node) bool {
+	if dst.Kind != yaml.SequenceNode || val.Kind != yaml.SequenceNode || len(val.Content) == 0 {
+		return false
+	}
+	for _, n := range append(append([]*yaml.Node{}, dst.Content...), val.Content...) {
+		if n.Kind != yaml.ScalarNode {
+			return false
+		}
+	}
+	var foot []string
+	old := make(map[string]*yaml.Node, len(dst.Content))
+	var style yaml.Style
+	for _, it := range dst.Content {
+		if it.FootComment != "" {
+			foot = append(foot, strings.Split(it.FootComment, "\n")...)
+			it.FootComment = ""
+		}
+		old[it.Value] = it
+		style = it.Style
+	}
+	keep := make(map[string]bool, len(val.Content))
+	items := make([]*yaml.Node, 0, len(val.Content))
+	for _, v := range val.Content {
+		keep[v.Value] = true
+		if o, ok := old[v.Value]; ok {
+			items = append(items, o)
+			continue
+		}
+		v.Style = style
+		for i, l := range foot {
+			if m := commentedItem.FindStringSubmatch(strings.TrimSpace(l)); m != nil && m[1] == v.Value {
+				v.LineComment = m[2]
+				foot = append(foot[:i], foot[i+1:]...)
+				break
+			}
+		}
+		items = append(items, v)
+	}
+	for _, it := range dst.Content {
+		if !keep[it.Value] {
+			l := fmt.Sprintf("# - %q", it.Value)
+			if it.LineComment != "" {
+				l += " " + it.LineComment
+			}
+			foot = append(foot, l)
+		}
+	}
+	dst.Content = items
+	if len(foot) > 0 {
+		items[len(items)-1].FootComment = strings.Join(foot, "\n")
+	}
+	return true
+}
+
+// moveLineComment 键的行尾注释（servers: # 说明）放在哪里才能被 yaml.v3 正确写出：
+// 值是 [] / {} 时放在值上（写成 servers: [] # 说明，放在键上会被写到下一个键后面）；
+// 值是多行的列表 / 映射时放在键上（放在值上会被丢掉）。
+func moveLineComment(key, val *yaml.Node) {
+	collection := val.Kind == yaml.SequenceNode || val.Kind == yaml.MappingNode
+	if !collection {
+		return
+	}
+	if val.Style&yaml.FlowStyle != 0 && len(val.Content) == 0 {
+		if key.LineComment != "" && val.LineComment == "" {
+			val.LineComment, key.LineComment = key.LineComment, ""
+		}
+	} else if val.LineComment != "" && key.LineComment == "" {
+		key.LineComment, val.LineComment = val.LineComment, ""
+	}
+}
+
+// flowEmpty 空列表、空映射写成同一行的 [] / {}。
+// 否则键上带行尾注释时（如 servers: # 说明），yaml.v3 会把 [] 写到下一行行首，生成无法解析的文件。
+func flowEmpty(n *yaml.Node) {
+	if (n.Kind == yaml.SequenceNode || n.Kind == yaml.MappingNode) && len(n.Content) == 0 {
+		n.Style |= yaml.FlowStyle
+	}
 }
 
 // jsonToNode 把 JSON 值转成 YAML 节点（整数保持整数，不变成浮点数）

@@ -117,19 +117,25 @@ type ServerConfig struct {
 
 // WSServerConfig 正向 WS 服务端：本进程监听，等待下游接入
 type WSServerConfig struct {
-	Disabled              bool   `yaml:"disabled"`                // true=不启用该监听
-	Address               string `yaml:"address"`                 // 监听地址，如 0.0.0.0:8080
-	AllowSensitivePlugins bool   `yaml:"allow-sensitive-plugins"` // true=经此监听连入的下游可调用插件的敏感能力（如获取 Cookie）
+	Name                  string  `yaml:"name,omitempty"`               // 名称，只用于显示（如 NoneBot），可不填
+	Disabled              bool    `yaml:"disabled"`                     // true=不启用该监听
+	Address               string  `yaml:"address"`                      // 监听地址，如 0.0.0.0:8080
+	AccessToken           *string `yaml:"access-token,omitempty"`       // 这条连接的口令；不写=用 onebot.access_token
+	HeartbeatInterval     *int    `yaml:"heartbeat-interval,omitempty"` // 这条连接的心跳间隔（毫秒）；不写=用 onebot.heartbeat_interval
+	AllowSensitivePlugins bool    `yaml:"allow-sensitive-plugins"`      // true=经此监听连入的下游可调用插件的敏感能力（如获取 Cookie）
 }
 
 // WSReverseServerConfig 反向 WS 客户端：本进程主动连接下游
 type WSReverseServerConfig struct {
-	Disabled              bool   `yaml:"disabled"`                // true=不启用该连接
-	Universal             string `yaml:"universal"`               // API+Event 合一端点；设置后优先于 api/event
-	API                   string `yaml:"api"`                     // 仅收动作请求的端点
-	Event                 string `yaml:"event"`                   // 仅推事件的端点
-	ReconnectInterval     int    `yaml:"reconnect-interval"`      // 断线重连间隔毫秒，默认 3000
-	AllowSensitivePlugins bool   `yaml:"allow-sensitive-plugins"` // true=该下游可调用插件的敏感能力（如获取 Cookie）
+	Name                  string  `yaml:"name,omitempty"`               // 名称，只用于显示（如 NoneBot），可不填
+	Disabled              bool    `yaml:"disabled"`                     // true=不启用该连接
+	Universal             string  `yaml:"universal"`                    // API+Event 合一端点；设置后优先于 api/event
+	AccessToken           *string `yaml:"access-token,omitempty"`       // 这条连接的口令；不写=用 onebot.access_token
+	HeartbeatInterval     *int    `yaml:"heartbeat-interval,omitempty"` // 这条连接的心跳间隔（毫秒）；不写=用 onebot.heartbeat_interval
+	API                   string  `yaml:"api"`                          // 仅收动作请求的端点
+	Event                 string  `yaml:"event"`                        // 仅推事件的端点
+	ReconnectInterval     int     `yaml:"reconnect-interval"`           // 断线重连间隔毫秒，默认 3000
+	AllowSensitivePlugins bool    `yaml:"allow-sensitive-plugins"`      // true=该下游可调用插件的敏感能力（如获取 Cookie）
 }
 
 // EnsureComplete 校验配置文件是否缺少参数，缺失的键按模板补齐默认值后写回文件。
@@ -293,6 +299,33 @@ func (c *QQConfig) IntentOverride() (dto.Intent, bool) {
 		return dto.Intent(*c.Intents), true
 	}
 	return 0, false
+}
+
+// Effective 返回一条连接实际使用的口令和心跳间隔：连接自己写了就用自己的，否则用 onebot 下的全局值。
+// 心跳 0 按 5000，负数表示不发心跳。
+func (o *OneBotConfig) Effective(token *string, heartbeat *int) (string, int) {
+	t := o.AccessToken
+	if token != nil {
+		t = *token
+	}
+	hb := o.HeartbeatInterval
+	if heartbeat != nil {
+		hb = *heartbeat
+	}
+	if hb == 0 {
+		hb = 5000
+	}
+	return strings.TrimSpace(t), hb
+}
+
+// HasEnabledServer 是否至少有一条开启的下游连接
+func (o *OneBotConfig) HasEnabledServer() bool {
+	for _, s := range o.Servers {
+		if (s.WS != nil && !s.WS.Disabled) || (s.WSReverse != nil && !s.WSReverse.Disabled) {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate 校验配置

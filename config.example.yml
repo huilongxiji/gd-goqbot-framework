@@ -31,23 +31,25 @@ qq:
     # - "GroupMsgReceiveEventHandler"  # 群开启了机器人主动发言
     # - "C2CMsgRejectEventHandler"     # 用户关闭了主动消息推送（get_c2c_msg_state 依赖它）
     # - "C2CMsgReceiveEventHandler"    # 用户开启了主动消息推送（同上）
-    # - "ATMessageEventHandler"        # 频道里 @ 机器人（暂不转换）
-    # - "DirectMessageEventHandler"    # 频道私信（暂不转换）
 
 onebot:
-  access_token: ""                 # ★ 连接口令，框架那边填同一个值；建议设置
-  heartbeat_interval: 5000         # 心跳间隔（毫秒），负数=关闭
   message_format: "array"          # 消息格式：array 消息段 / string 额外附带 CQ 码
   debug: false                     # true=日志里显示更多调试信息
   downtime_message: ""             # 所有框架都掉线时自动回复的文字，空=不回复
-  servers:                         # ★ 框架的连接方式，可以写多条
+  servers:                         # ★ 框架的连接方式，可以写多条，每条的开关、口令、心跳都单独设置；也可以在 WebUI 的「连接」页管理（立即生效）
     - ws:                          # 正向 WS：框架连进来
+        disabled: true             # 开关：true=关闭（示例默认关闭），false=开启
         address: 0.0.0.0:6700
-        # allow-sensitive-plugins: true  # 允许这条连接调用插件的敏感能力
+        access-token: ""           # 连接口令，框架那边填同一个值；建议设置
+        heartbeat-interval: 5000   # 心跳间隔（毫秒），负数=不发
+        # allow-sensitive-plugins: true  # 允许调用插件的敏感能力（还需要设置 access-token）
     - ws-reverse:                  # 反向 WS：goqbot 主动连框架（这是 NoneBot2 的默认地址）
+        disabled: true             # 开关：true=关闭（示例默认关闭），false=开启
         universal: ws://127.0.0.1:8080/onebot/v11/ws
+        access-token: ""           # 连接口令，框架那边填同一个值；建议设置
+        heartbeat-interval: 5000   # 心跳间隔（毫秒），负数=不发
         reconnect-interval: 3000   # 断线重连间隔（毫秒）
-        # allow-sensitive-plugins: true  # 允许这条连接调用插件的敏感能力
+        # allow-sensitive-plugins: true  # 允许调用插件的敏感能力（还需要设置 access-token）
 
 idmap:
   path: "idmap.db"                 # ID 对照表，重启后仍能撤回消息、查回用户

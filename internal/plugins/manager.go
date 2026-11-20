@@ -27,7 +27,7 @@ type ActionRunner interface {
 // HostServices goqbot 自身的运行管理能力（host.*），由 main 装配
 type HostServices interface {
 	Info() map[string]any
-	Logs(lines int, date string) ([]string, error)
+	Logs(lines int, date string) (map[string]any, error) // {"date", "lines", "files"}
 	ConfigGet() (map[string]any, error)
 	ConfigSet(content string, restart bool) (map[string]any, error)
 	ConfigUpdate(values map[string]json.RawMessage, restart bool) (map[string]any, error)
@@ -40,8 +40,8 @@ type Options struct {
 	HostVersion string       // 握手时告知插件的 goqbot 版本
 	LogDir      string       // 插件 stderr 日志目录（plugin.yml 开启 log_stderr 时使用）
 	SelfID      func() int64 // 机器人 self_id（握手、插件发出的事件里使用）
-	// DownstreamSensitive 下游能否调用插件的敏感能力（设置了 onebot.access_token 时为 true；
-	// 每条连接还要单独开启 allow-sensitive-plugins）
+	// DownstreamSensitive 下游能否调用插件的敏感能力。具体到每条连接，还要这条连接开启了
+	// allow-sensitive-plugins 并且设置了 access-token（由 OneBot 侧按连接判断）
 	DownstreamSensitive bool
 }
 
@@ -157,7 +157,9 @@ func (m *Manager) Start(ctx context.Context) {
 func (m *Manager) List() []Info {
 	result := make([]Info, 0, len(m.ordered))
 	for _, p := range m.ordered {
-		result = append(result, p.snapshot())
+		info := p.snapshot()
+		info.Permissions = m.permissions(p, info.Requires)
+		result = append(result, info)
 	}
 	return result
 }
@@ -222,7 +224,7 @@ func (m *Manager) DispatchEvent(raw []byte) {
 			continue // 插件发出的事件不推回给它自己
 		}
 		inst := p.currentInstance()
-		if inst == nil {
+		if inst == nil || !p.allowed("events.subscribe", false) { // 权限被收回后立即停止推送
 			continue
 		}
 		id := inst.matchSubscription(eventType)

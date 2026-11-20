@@ -130,6 +130,7 @@ func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, mess
 		}
 	}
 	c.CacheMsg(mid, snap)
+	c.reportSent(snap)
 }
 
 // outboundMessageField 把发送入参还原为 get_msg 的 message / raw_message。

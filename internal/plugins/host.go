@@ -109,7 +109,7 @@ func init() {
 	defineHost("events.emit", "向所有下游框架和订阅了的其他插件发出自定义事件", false,
 		`{"type":"object","properties":{"event":{"type":"string"},"data":{"type":"object"}},"required":["event"],"additionalProperties":false}`,
 		(*Manager).hostEmit)
-	defineHost("host.info", "goqbot 版本、运行时长、QQ 连接状态、下游连接、插件概况", false,
+	defineHost("host.info", "goqbot 版本、运行时长、QQ 连接状态、下游连接（每条含 index、running、error）、插件概况", false,
 		`{"type":"object","additionalProperties":false}`,
 		func(m *Manager, _ context.Context, _ *plugin, args json.RawMessage) (any, error) {
 			if err := decodeArgs(args, &struct{}{}); err != nil {
@@ -117,7 +117,7 @@ func init() {
 			}
 			return m.host.Info(), nil
 		})
-	defineHost("host.logs", "读取 goqbot 日志的最后若干行", true,
+	defineHost("host.logs", "读取 goqbot 某一天日志的最后若干行，并列出全部日志文件", true,
 		`{"type":"object","properties":{"lines":{"type":"integer","minimum":1,"maximum":2000},"date":{"type":"string"}},"additionalProperties":false}`,
 		func(m *Manager, _ context.Context, _ *plugin, args json.RawMessage) (any, error) {
 			var a struct {
@@ -134,11 +134,7 @@ func init() {
 			if a.Date != "" && !datePattern.MatchString(a.Date) {
 				return nil, Detail(ErrInvalidArguments, "date 格式应为 YYYY-MM-DD")
 			}
-			out, err := m.host.Logs(lines, a.Date)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"lines": out}, nil
+			return m.host.Logs(lines, a.Date)
 		})
 	defineHost("host.config.get", "读取 config.yml：content 为原文（含注释），data 为解析后的对象", true,
 		`{"type":"object","additionalProperties":false}`,
@@ -148,7 +144,7 @@ func init() {
 			}
 			return m.host.ConfigGet()
 		})
-	defineHost("host.config.set", "整份替换 config.yml（校验通过才写入，原文件备份为 config.yml.bak）", true,
+	defineHost("host.config.set", "整份替换 config.yml（校验通过才写入，原文件备份为 config.yml.bak）。onebot 下游连接立即生效，其他改动见返回的 restart_required", true,
 		`{"type":"object","properties":{"content":{"type":"string"},"restart":{"type":"boolean"}},"required":["content"],"additionalProperties":false}`,
 		func(m *Manager, _ context.Context, _ *plugin, args json.RawMessage) (any, error) {
 			var a struct {
@@ -163,7 +159,7 @@ func init() {
 			}
 			return m.host.ConfigSet(*a.Content, a.Restart)
 		})
-	defineHost("host.config.update", "按路径修改个别配置项，保留注释和其他内容", true,
+	defineHost("host.config.update", "按路径修改个别配置项，保留注释和其他内容。onebot 下游连接立即生效，其他改动见返回的 restart_required", true,
 		`{"type":"object","properties":{"values":{"type":"object"},"restart":{"type":"boolean"}},"required":["values"],"additionalProperties":false}`,
 		func(m *Manager, _ context.Context, _ *plugin, args json.RawMessage) (any, error) {
 			var a struct {
@@ -251,6 +247,54 @@ func init() {
 			log.Printf("[plugins] %s 把插件 %s 的开关改为 %v（重启 goqbot 后生效）", p.cfg.Name, target.cfg.Name, *a.Enabled)
 			return map[string]any{"restart_required": true}, nil
 		})
+	defineHost("plugins.set_grants", "修改插件的权限范围（写入它的 plugin.yml 的 grants），立即生效；grants 为 null 表示不收紧，按插件声明授权", true,
+		`{"type":"object","properties":{"plugin":{"type":"string"},"grants":{"type":["array","null"],"items":{"type":"string"}}},"required":["plugin","grants"],"additionalProperties":false}`,
+		func(m *Manager, _ context.Context, p *plugin, args json.RawMessage) (any, error) {
+			var a struct {
+				Plugin string          `json:"plugin"`
+				Grants json.RawMessage `json:"grants"` // 不用指针：null 会解成 nil 指针，分不清「没传」和「传了 null」
+			}
+			if err := decodeArgs(args, &a); err != nil {
+				return nil, err
+			}
+			if len(a.Grants) == 0 {
+				return nil, Detail(ErrInvalidArguments, "缺少 grants")
+			}
+			var grants []string
+			if string(bytes.TrimSpace(a.Grants)) != "null" {
+				if err := json.Unmarshal(a.Grants, &grants); err != nil {
+					return nil, Detail(ErrInvalidArguments, "grants 应为字符串数组或 null")
+				}
+				if grants == nil {
+					grants = []string{}
+				}
+				for _, g := range grants {
+					if !grantPattern.MatchString(g) {
+						return nil, Detail(ErrInvalidArguments, "grants 中的 %q 无效", g)
+					}
+				}
+			}
+			target := m.findAny(a.Plugin)
+			if target == nil {
+				return nil, ErrNotFound
+			}
+			if target == p {
+				return nil, Detail(ErrForbidden, "不能修改自己的权限")
+			}
+			if err := setManifestGrants(target.cfg.Dir, grants); err != nil {
+				return nil, Detail(ErrCallFailed, "写入 %s 失败：%v", ManifestName, err)
+			}
+			target.mu.Lock()
+			target.cfg.Grants = grants
+			target.info.Grants = grants
+			target.mu.Unlock()
+			if grants == nil {
+				log.Printf("[plugins] %s 取消了插件 %s 的权限收紧（立即生效）", p.cfg.Name, target.cfg.Name)
+			} else {
+				log.Printf("[plugins] %s 把插件 %s 的权限改为 [%s]（立即生效）", p.cfg.Name, target.cfg.Name, strings.Join(grants, ", "))
+			}
+			return map[string]any{"permissions": m.permissions(target, target.snapshot().Requires)}, nil
+		})
 	defineHost("plugins.restart", "立即重启某个已开启的插件", true,
 		`{"type":"object","properties":{"plugin":{"type":"string"}},"required":["plugin"],"additionalProperties":false}`,
 		func(m *Manager, _ context.Context, p *plugin, args json.RawMessage) (any, error) {
@@ -274,7 +318,7 @@ func init() {
 			}
 			return map[string]any{}, nil
 		})
-	defineHost("plugins.logs", "读取插件的 stderr 日志（需要该插件开启 log_stderr）", true,
+	defineHost("plugins.logs", "读取插件今天的日志（goqbot 日志里这个插件的记录；开启了 log_stderr 时另外返回 stderr）", true,
 		`{"type":"object","properties":{"plugin":{"type":"string"},"lines":{"type":"integer","minimum":1,"maximum":2000}},"required":["plugin"],"additionalProperties":false}`,
 		func(m *Manager, _ context.Context, _ *plugin, args json.RawMessage) (any, error) {
 			var a struct {
@@ -291,14 +335,30 @@ func init() {
 			if m.findAny(a.Plugin) == nil {
 				return nil, ErrNotFound
 			}
-			out, err := TailFile(filepath.Join(m.opts.LogDir, a.Plugin+".log"), lines)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil, Detail(ErrCallFailed, "没有日志（插件未开启 log_stderr）")
-				}
+			// 插件的 ctx.log / console 输出和启动、退出记录都在 goqbot 的日志里，按插件名筛出来
+			mainLog := filepath.Join(filepath.Dir(m.opts.LogDir), "goqbot-"+time.Now().Format("2006-01-02")+".log")
+			all, err := TailFile(mainLog, 20000)
+			if err != nil && !os.IsNotExist(err) {
 				return nil, Detail(ErrCallFailed, "读取日志失败")
 			}
-			return map[string]any{"lines": out}, nil
+			tagA, tagB := "[plugin:"+a.Plugin+"]", "[plugins] "+a.Plugin+" "
+			out := []string{}
+			for _, l := range all {
+				if strings.Contains(l, tagA) || strings.Contains(l, tagB) {
+					out = append(out, l)
+				}
+			}
+			if len(out) > lines {
+				out = out[len(out)-lines:]
+			}
+			result := map[string]any{"lines": out}
+			if target := m.findAny(a.Plugin); target.cfg.LogStderr {
+				stderr, err := TailFile(filepath.Join(m.opts.LogDir, a.Plugin+".log"), lines)
+				if err == nil {
+					result["stderr"] = stderr
+				}
+			}
+			return result, nil
 		})
 }
 
@@ -438,6 +498,47 @@ func (p *plugin) effectiveGrants() []string {
 		}
 	}
 	return out
+}
+
+// isSensitive name 是否为敏感能力（管理能力，或其他插件声明为敏感的能力）
+func (m *Manager) isSensitive(name string) bool {
+	if hc, ok := hostCatalog[name]; ok {
+		return hc.Sensitive
+	}
+	for _, cl := range m.registeredPluginCaps() {
+		if cl.cap.Name == name {
+			return cl.cap.Sensitive
+		}
+	}
+	return false
+}
+
+// permissions 插件 requires 里每一项的授权情况
+func (m *Manager) permissions(p *plugin, requires []string) []Permission {
+	out := make([]Permission, 0, len(requires))
+	for _, r := range requires {
+		wild := strings.Contains(r, "*")
+		sensitive := !wild && m.isSensitive(r)
+		out = append(out, Permission{Name: r, Sensitive: sensitive, Wildcard: wild, Granted: p.grantedPattern(r, sensitive)})
+	}
+	return out
+}
+
+// grantedPattern requires 里的一项现在是否被允许：grants 未设置时都允许；
+// 设置了时，具体能力名按 grants 判断，通配写法要 grants 里有同样写法或更宽的写法
+func (p *plugin) grantedPattern(r string, sensitive bool) bool {
+	p.mu.Lock()
+	grants := p.cfg.Grants
+	p.mu.Unlock()
+	if grants == nil {
+		return true
+	}
+	for _, g := range grants {
+		if g == r || (!sensitive && globMatch(g, r)) {
+			return true
+		}
+	}
+	return false
 }
 
 // sensitiveGranted 插件获得的敏感能力（管理能力与其他插件的敏感能力），用于启动日志警告

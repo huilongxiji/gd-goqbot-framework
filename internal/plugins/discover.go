@@ -363,6 +363,59 @@ func loadManifest(path string) (manifest, error) {
 
 // setManifestEnabled 修改插件工作目录里 plugin.yml 的 enabled（保留注释与其他内容；文件不存在时创建）
 func setManifestEnabled(dir string, enabled bool) error {
+	return editManifest(dir, func(root *yaml.Node) {
+		value := "false"
+		if enabled {
+			value = "true"
+		}
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == "enabled" {
+				v := root.Content[i+1]
+				v.Kind, v.Tag, v.Value, v.Style = yaml.ScalarNode, "!!bool", value, 0
+				return
+			}
+		}
+		root.Content = append([]*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "enabled", HeadComment: "插件开关：false=重启 goqbot 后不再载入"},
+			{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value},
+		}, root.Content...)
+	})
+}
+
+// setManifestGrants 修改插件 plugin.yml 的 grants（保留注释）；grants 为 nil 时删掉这一项，表示不收紧
+func setManifestGrants(dir string, grants []string) error {
+	return editManifest(dir, func(root *yaml.Node) {
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == "grants" {
+				if grants == nil {
+					root.Content = append(root.Content[:i], root.Content[i+2:]...)
+				} else {
+					root.Content[i+1] = grantsNode(grants)
+				}
+				return
+			}
+		}
+		if grants != nil {
+			root.Content = append(root.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "grants", HeadComment: "收紧权限：插件只能调用这里列出、并且自己声明过的能力"},
+				grantsNode(grants))
+		}
+	})
+}
+
+func grantsNode(grants []string) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	if len(grants) == 0 {
+		n.Style = yaml.FlowStyle // grants: []，一项都不允许
+	}
+	for _, g := range grants {
+		n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: g})
+	}
+	return n
+}
+
+// editManifest 读取插件的 plugin.yml（没有就新建），交给 edit 修改后整体写回
+func editManifest(dir string, edit func(root *yaml.Node)) error {
 	path := filepath.Join(dir, ManifestName)
 	var doc yaml.Node
 	data, err := os.ReadFile(path)
@@ -379,25 +432,13 @@ func setManifestEnabled(dir string, enabled bool) error {
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return fmt.Errorf("%s 的顶层不是映射", ManifestName)
 	}
-	root := doc.Content[0]
-	value := "false"
-	if enabled {
-		value = "true"
-	}
-	found := false
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "enabled" {
-			v := root.Content[i+1]
-			v.Kind, v.Tag, v.Value, v.Style = yaml.ScalarNode, "!!bool", value, 0
-			found = true
-			break
+	edit(doc.Content[0])
+	if len(doc.Content[0].Content) == 0 && doc.Content[0].HeadComment == "" && doc.Content[0].FootComment == "" {
+		// 什么都没有了：原来有文件就清空（不写出 {}），原来没有就不新建
+		if _, err := os.Stat(path); err != nil {
+			return nil
 		}
-	}
-	if !found {
-		root.Content = append([]*yaml.Node{
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "enabled", HeadComment: "插件开关：false=重启 goqbot 后不再载入"},
-			{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value},
-		}, root.Content...)
+		return writeFileAtomic(path, nil, 0o644)
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

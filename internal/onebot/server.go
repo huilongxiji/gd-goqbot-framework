@@ -141,9 +141,14 @@ type WSServer struct {
 	selfID   int64                  // 握手与心跳上报用 self_id
 	bus      *EventBus              // 事件总线，订阅后向已连下游推事件
 	caller   *Caller                // 动作调用器，处理下游 API 请求
-	mu       sync.Mutex             // 保护 eventCon
+	mu       sync.Mutex             // 保护 eventCon、conns、stopped
 	eventCon []*wsConn              // 当前已建立的事件推送连接
-	stop     chan struct{}          // 关闭信号
+	conns    map[*wsConn]struct{}   // 全部已建立的连接（停止时一并断开）
+	stopped  bool
+	unsub    func()        // 取消事件总线订阅
+	listener net.Listener  // Start 成功后的监听
+	stop     chan struct{} // 关闭信号
+	stopOnce sync.Once
 }
 
 // NewWSServer 创建正向 WS 服务端
@@ -154,43 +159,98 @@ func NewWSServer(cfg *config.WSServerConfig, obCfg *config.OneBotConfig, selfID 
 		selfID: selfID,
 		bus:    bus,
 		caller: caller,
+		conns:  map[*wsConn]struct{}{},
 		stop:   make(chan struct{}),
 	}
-	bus.OnPush(s.onEventPush)
+	s.unsub = bus.OnPush(s.onEventPush)
 	return s
 }
 
-// Run 启动监听（阻塞）
-func (s *WSServer) Run() error {
+// listenAddress 去掉地址里可能带的 ws:// 前缀
+func listenAddress(addr string) string {
+	if after, ok := strings.CutPrefix(addr, "ws://"); ok {
+		return after
+	}
+	if after, ok := strings.CutPrefix(addr, "wss://"); ok {
+		return after
+	}
+	return addr
+}
+
+// Start 开始监听（不阻塞）。端口被占用等错误直接返回，此时服务已停止，不需要再调用 Stop
+func (s *WSServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/event", s.handleEvent)
 	mux.HandleFunc("/api", s.handleAPI)
 	mux.HandleFunc("/", s.handleAny)
 
-	network, address := "tcp", s.cfg.Address
-	if strings.HasPrefix(s.cfg.Address, "ws://") {
-		address = strings.TrimPrefix(s.cfg.Address, "ws://")
-	} else if strings.HasPrefix(s.cfg.Address, "wss://") {
-		address = strings.TrimPrefix(s.cfg.Address, "wss://")
-	}
-	listener, err := net.Listen(network, address)
+	listener, err := net.Listen("tcp", listenAddress(s.cfg.Address))
 	if err != nil {
+		s.Stop()
 		return err
 	}
+	s.mu.Lock()
+	s.listener = listener
+	s.mu.Unlock()
 	log.Printf("[onebot] 正向 WS 服务器已启动: %s", listener.Addr())
 
 	go s.heartbeatLoop()
-
 	go func() {
-		<-s.stop
-		_ = listener.Close()
+		err := http.Serve(listener, mux)
+		select {
+		case <-s.stop:
+		default:
+			filelog.Errorf("[onebot] 正向 WS 服务退出: %v", err)
+		}
 	}()
-	return http.Serve(listener, mux)
+	return nil
 }
 
-// Stop 停止服务
+// Stop 停止服务：关闭监听，断开所有已连入的下游（可重复调用）
 func (s *WSServer) Stop() {
-	close(s.stop)
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		s.unsub()
+		s.mu.Lock()
+		s.stopped = true
+		listener := s.listener
+		conns := make([]*wsConn, 0, len(s.conns))
+		for c := range s.conns {
+			conns = append(conns, c)
+		}
+		s.conns = map[*wsConn]struct{}{}
+		s.eventCon = nil
+		s.mu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+			log.Printf("[onebot] 正向 WS 服务器已停止: %s", listener.Addr())
+		}
+		for _, c := range conns {
+			_ = c.close()
+		}
+	})
+}
+
+// track 登记一条新连接；服务已停止时直接断开并返回 false
+func (s *WSServer) track(conn *wsConn, event bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		_ = conn.close()
+		return false
+	}
+	s.conns[conn] = struct{}{}
+	if event {
+		s.eventCon = append(s.eventCon, conn)
+	}
+	return true
+}
+
+// untrack 连接断开后移除登记
+func (s *WSServer) untrack(conn *wsConn) {
+	s.mu.Lock()
+	delete(s.conns, conn)
+	s.mu.Unlock()
 }
 
 // heartbeatLoop 按配置间隔向所有事件连接推送 heartbeat 元事件
@@ -229,7 +289,8 @@ func checkAuth(r *http.Request, token string) int {
 
 // scope 经本监听连入的下游所拥有的权限
 func (s *WSServer) scope() requestScope {
-	return requestScope{allowSensitivePlugins: s.cfg.AllowSensitivePlugins}
+	// 敏感能力只开放给设置了口令的连接
+	return requestScope{allowSensitivePlugins: s.cfg.AllowSensitivePlugins && s.obCfg.AccessToken != ""}
 }
 
 // handshake 返回连接建立时下发的 lifecycle connect 元事件
@@ -266,9 +327,7 @@ func (s *WSServer) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[onebot] 正向 WS 连接成功: %s (/event)，客户端 %s", r.RemoteAddr, clientLabel(r))
 	conn := newWSConn(c, s.caller, nil, s.scope())
-	s.mu.Lock()
-	s.eventCon = append(s.eventCon, conn)
-	s.mu.Unlock()
+	s.track(conn, true)
 }
 
 // handleAPI 处理 /api 端点：升级后只接收并处理动作请求
@@ -283,6 +342,10 @@ func (s *WSServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[onebot] 正向 WS 连接成功: %s (/api)，客户端 %s", r.RemoteAddr, clientLabel(r))
 	conn := newWSConn(c, s.caller, nil, s.scope())
+	if !s.track(conn, false) {
+		return
+	}
+	defer s.untrack(conn)
 	conn.listenAPI()
 }
 
@@ -302,9 +365,10 @@ func (s *WSServer) handleAny(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[onebot] 正向 WS 连接成功: %s (/)，客户端 %s", r.RemoteAddr, clientLabel(r))
 	conn := newWSConn(c, s.caller, nil, s.scope())
-	s.mu.Lock()
-	s.eventCon = append(s.eventCon, conn)
-	s.mu.Unlock()
+	if !s.track(conn, true) {
+		return
+	}
+	defer s.untrack(conn)
 	conn.listenAPI()
 }
 
@@ -317,6 +381,7 @@ func (s *WSServer) onEventPush(ev *Event) int {
 		conn := s.eventCon[i]
 		if err := conn.writeText(ev.Raw); err != nil {
 			_ = conn.close()
+			delete(s.conns, conn)
 			continue
 		}
 		if i != j {
