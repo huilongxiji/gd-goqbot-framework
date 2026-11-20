@@ -366,6 +366,8 @@ function push(event: string, data: unknown): void {
 
 let settings: Settings;
 let store: ChatStore;
+/** 机器人在各个群里的身份，缓存 5 分钟 */
+const botRoles = new Map<string, { role: string; error: string; at: number }>();
 
 /** /api/* 接口 */
 async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -423,6 +425,28 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
         ? await call(ctx, "send_group_msg", { group_id: target, message })
         : await call(ctx, "send_private_msg", { user_id: target, message });
       return send(res, 200, { message_id: idOf(result.message_id) });
+    }
+    case "GET /api/chats/bot-role": {
+      // 机器人在这个群里的身份（owner / admin / member），决定能不能禁言、撤回别人的消息。
+      // 官方接口需要白名单；查不到时 role 为空，页面按「不确定」处理
+      const chat = store.get(q.get("key") ?? "");
+      if (!chat || chat.type !== "group") {
+        throw new HttpError(404, "没有这个群");
+      }
+      const cached = botRoles.get(chat.key);
+      if (cached && Date.now() - cached.at < 5 * 60_000) {
+        return send(res, 200, { role: cached.role, error: cached.error });
+      }
+      let role = "";
+      let error = "";
+      try {
+        const st = await call<Record<string, unknown>>(ctx, "get_group_bot_state", chat.openid ? { group_openid: chat.openid } : { group_id: idOf(chat.id) });
+        role = String(st.member_role ?? "");
+      } catch (e) {
+        error = (e as Error).message;
+      }
+      botRoles.set(chat.key, { role, error, at: Date.now() });
+      return send(res, 200, { role, error });
     }
     case "POST /api/chats/recall": {
       const body = await readJSON(req);
@@ -713,6 +737,7 @@ const plugin: Plugin = {
     "get_user_info",
     "delete_msg",
     "set_group_ban",
+    "get_group_bot_state",
     "host.info",
     "host.logs",
     "host.config.get",

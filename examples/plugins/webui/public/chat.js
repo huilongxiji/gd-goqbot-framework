@@ -176,7 +176,7 @@ function openMenu(label, list, x, y, scroller) {
       class: "ctx-item" + (it.danger ? " danger" : ""), type: "button", role: "menuitem",
       disabled: !!it.disabled, title: it.hint || undefined,
       onclick: () => { closeMenu(); it.run(); },
-    }, it.label)));
+    }, it.label, it.disabled && it.hint ? h("small", null, it.hint) : null)));
   document.body.append(menu);
   // 放在鼠标位置，超出窗口时往回收
   const r = menu.getBoundingClientRect();
@@ -301,7 +301,9 @@ async function openChat(key) {
   view.head = h("header", { class: "panel-head" });
   view.scroller = h("div", { class: "msgs", role: "log", "aria-live": "polite" });
   view.draft = { reply: null, mentions: [] };
+  view.botRole = chat.type === "group" ? null : "";
   view.composer = renderComposer(chat);
+  if (chat.type === "group") loadBotRole(key);
   fill(view.panel, view.head, view.scroller, view.composer.root);
   renderHeader();
   renderList();
@@ -795,6 +797,32 @@ function repeatSegments(m) {
   return out.length ? out : null;
 }
 
+/** 查机器人在这个群里的身份：owner / admin / member；查不到时为 "unknown" */
+async function loadBotRole(key) {
+  try {
+    const r = await api("GET", `/api/chats/bot-role?key=${encodeURIComponent(key)}`);
+    if (view?.current === key) view.botRole = r.role || "unknown";
+  } catch {
+    if (view?.current === key) view.botRole = "unknown";
+  }
+}
+
+/**
+ * 机器人能不能管这个人（禁言、撤回 TA 的消息）。
+ * 机器人要是群主或管理员；不能管群主；机器人是管理员时不能管其他管理员
+ */
+function canManage(m) {
+  const role = view.botRole;
+  if (role === "owner" || role === "admin") {
+    if (m.role === "owner") return { ok: false, hint: "不能对群主操作" };
+    if (m.role === "admin" && role !== "owner") return { ok: false, hint: "机器人是管理员，不能对其他管理员操作" };
+    return { ok: true, hint: "" };
+  }
+  if (role === "member") return { ok: false, hint: "机器人不是群主或管理员，没有这个权限" };
+  // 查不到机器人的身份（接口没有权限或还在查询）：不拦着，失败时会提示原因
+  return { ok: true, hint: role === null ? "正在查询机器人在群里的身份" : "查不到机器人在群里的身份，操作可能会因为没有权限而失败" };
+}
+
 function openMessageMenu(m, x, y) {
   const c = chatState.chats.get(view.current);
   if (!c) return;
@@ -805,14 +833,15 @@ function openMessageMenu(m, x, y) {
   const repeat = repeatSegments(m);
   const name = senderName(m);
   const oldHint = "这条是旧版 WebUI 保存的记录，编号不完整，不能操作";
+  const manage = group && !m.self ? canManage(m) : { ok: true, hint: "" };
   openMenu("消息操作", [
     group && !m.self ? { label: `艾特 ${name}`, run: () => mentionUser(m), disabled: !userId || legacy, hint: !userId ? oldHint : "" } : null,
     { label: "回复", run: () => replyTo(m), disabled: !msgId || legacy, hint: !msgId ? oldHint : "" },
     { label: "复读", run: () => repeatMessage(m, repeat), disabled: !repeat || legacy, hint: !repeat ? "这类消息不能复读" : "" },
     { sep: true },
-    group && !m.self ? { label: `禁言 ${name}…`, run: () => banUser(c, m, userId), disabled: !userId || legacy, hint: !userId ? oldHint : "需要机器人是群管理员" } : null,
-    { label: "撤回消息", danger: true, run: () => recallMessage(m, msgId), disabled: !msgId || (!group && !m.self),
-      hint: !msgId ? oldHint : !group && !m.self ? "私聊里只能撤回机器人自己发的消息" : m.self ? "" : "撤回别人的消息需要机器人是群管理员" },
+    group && !m.self ? { label: `禁言 ${name}…`, run: () => banUser(c, m, userId), disabled: !userId || legacy || !manage.ok, hint: !userId ? oldHint : manage.hint } : null,
+    { label: "撤回消息", danger: true, run: () => recallMessage(m, msgId), disabled: !msgId || (!group && !m.self) || !manage.ok,
+      hint: !msgId ? oldHint : !group && !m.self ? "私聊里只能撤回机器人自己发的消息" : manage.hint },
     { sep: true },
     { label: "查看原始数据", run: () => showRaw(m) },
   ], x, y, view.scroller);
@@ -853,7 +882,7 @@ function banUser(c, m, userId) {
     }
   };
   close = openDialog(`禁言 ${name}`, h("div", { class: "ban-pick" },
-    h("p", null, "选择禁言时长。需要机器人是这个群的管理员。"),
+    h("p", null, "选择禁言时长。"),
     h("div", { class: "ban-choices" }, choices.map(([label, sec]) => h("button", { class: "btn", type: "button", onclick: () => run(sec, label) }, label))),
     h("button", { class: "btn ghost small", type: "button", onclick: () => run(0, "") }, "解除禁言")));
 }
