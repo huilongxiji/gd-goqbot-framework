@@ -1,6 +1,6 @@
 // 私聊 / 群聊页面：左边会话列表，右边消息窗口。当前阶段只接收消息
 import { h, fill, icon, api, toast, promptDialog, openDialog, shortTime, dayLabel, hue } from "./core.js";
-import { renderSegments, summaryOf, setImageViewer, stripFaces, onlyImages } from "./msg.js";
+import { renderSegments, summaryOf, setImageViewer, setForwardViewer, forwardLine, stripFaces, onlyImages } from "./msg.js";
 
 const PAGE_SIZE = 50;
 
@@ -36,6 +36,21 @@ setImageViewer((url) => {
   dlg.addEventListener("close", () => dlg.remove(), { once: true });
   document.body.append(dlg);
   dlg.showModal();
+});
+
+// ---------- 聊天记录：展开全部消息 ----------
+
+setForwardViewer((title, nodes) => {
+  const ctx = view ? messageCtx() : { findReply: () => null, nameOf: () => "" };
+  openDialog(title, h("ol", { class: "fwd-list" }, nodes.map((nd) => {
+    const { name } = forwardLine(nd);
+    const t = Number(nd.time) || 0;
+    const content = Array.isArray(nd.content) ? nd.content : [{ type: "text", data: { text: String(nd.content ?? "") } }];
+    const parts = renderSegments(content, ctx);
+    return h("li", null,
+      h("div", { class: "fwd-meta" }, h("b", null, name || "未知"), t ? h("time", null, new Date(t * 1000).toLocaleString("zh-CN", { hour12: false })) : null),
+      h("div", { class: onlyImages(parts) ? "fwd-body bare" : "fwd-body" }, parts));
+  })), { mid: true });
 });
 
 // ---------- 名称与头像 ----------
@@ -362,6 +377,30 @@ function messageCtx() {
       const m = view.messages.findLast((x) => String(x.user_id) === String(qq) && x.nickname);
       return m?.nickname;
     },
+    nameOfOpenid(openid) {
+      const m = view.messages.findLast((x) => x.user_openid === openid && x.nickname);
+      return m?.nickname;
+    },
+    /** 按被引用消息的 msg_idx（REFIDX_...）找原消息 */
+    findByRef(ref) {
+      const key = "msg_idx=" + ref;
+      return view.messages.findLast((x) => Array.isArray(x.event?.msg_scene_ext) && x.event.msg_scene_ext.includes(key));
+    },
+    /** 按正文找原消息（找不到 msg_idx 时用），只比对文字 */
+    findByText(text) {
+      const norm = (t) => stripFaces(t).replace(/<@[^>]+>/g, "").replace(/\s+/g, "");
+      const want = norm(text ?? "");
+      if (!want) return undefined;
+      return view.messages.findLast((x) => norm(x.message.filter((s) => s.type === "text").map((s) => String(s.data?.text ?? "")).join("")) === want);
+    },
+    jumpTo(seq) {
+      const el = view.scroller.querySelector(`.msg[data-seq="${seq}"]`);
+      if (!el) return toast("被引用的消息不在已加载的记录里", "error");
+      el.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      el.classList.remove("flash");
+      void el.offsetWidth;
+      el.classList.add("flash");
+    },
   };
 }
 
@@ -476,7 +515,7 @@ function messageNode(m) {
         h("b", null, name),
         role ? h("span", { class: "role" }, role) : null,
         h("button", { class: "msg-stamp", type: "button", title: "查看这条消息的原始数据", onclick: open }, fullTime(m))),
-      bubble(renderSegments(m.message, { ...messageCtx(), bot: !!m.bot }))));
+      bubble(renderSegments(m.message, { ...messageCtx(), bot: !!m.bot, event: m.event }))));
 }
 
 /** 路由：同一页里切换会话（不重建页面，保留搜索内容） */

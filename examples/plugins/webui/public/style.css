@@ -434,7 +434,7 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 
 /* bubble 里的内容按行排列：文字和 @ 连在一起，图片等单独成块 */
 .bubble { display: block; }
-.bubble > .seg-image, .bubble > .seg-audio, .bubble > .seg-video, .bubble > .seg-file, .bubble > .seg-card,
+.bubble > .seg-image, .bubble > .seg-audio, .bubble > .seg-video, .bubble > .seg-file, .bubble > .seg-card, .bubble > .seg-forward,
 .bubble > .md, .bubble > .kb, .bubble > .seg-reply { display: block; margin: 4px 0; }
 .bubble > :first-child { margin-top: 0; }
 /* 只有图片的消息：不要气泡，图片直接放在名字下面 */
@@ -458,6 +458,32 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .seg-card small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .seg-reply { padding: 4px 8px; border-left: 3px solid color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--ink) 5%, transparent); border-radius: 4px; font-size: 12.5px; color: var(--muted); white-space: normal; }
 .seg-reply b { color: var(--ink); font-weight: 600; }
+/* 引用：发送者一行，正文最多三行，图片缩略 */
+.seg-reply.quote { display: grid !important; gap: 2px; justify-items: start; width: fit-content; max-width: 100%; text-align: left; font: inherit; font-size: 12.5px; border-top: 0; border-right: 0; border-bottom: 0; }
+.seg-reply.quote.jump { cursor: pointer; }
+.seg-reply.quote.jump:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.seg-reply.quote:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.quote-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quote-imgs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.quote-img { padding: 0; border: 0; background: none; cursor: zoom-in; line-height: 0; }
+.quote-img img { height: 56px; max-width: 96px; object-fit: cover; border-radius: 4px; display: block; }
+.msg.flash .bubble { animation: flash 1.2s ease-out; }
+@keyframes flash { 0%, 30% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .msg.flash .bubble { animation: none; outline: 2px solid var(--accent); } }
+
+/* 聊天记录卡片 */
+.seg-forward { display: grid !important; gap: 3px; width: 260px; max-width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); color: inherit; font: inherit; text-align: left; white-space: normal; cursor: pointer; }
+.seg-forward:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.seg-forward:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg-forward b { font-size: 13.5px; margin-bottom: 2px; }
+.seg-forward span { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-forward small { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.fwd-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; max-height: 64vh; overflow: auto; }
+.fwd-meta { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.fwd-meta b { color: var(--ink); font-weight: 600; }
+.fwd-body { display: block; width: fit-content; max-width: 100%; padding: 8px 12px; border-radius: 4px 12px 12px 12px; background: var(--surface-2); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+.fwd-body.bare { padding: 0; background: none; border: 0; }
+.fwd-body > .seg-image, .fwd-body > .seg-reply, .fwd-body > .seg-forward, .fwd-body > .md { display: block; margin: 4px 0; }
 
 .md { white-space: normal; display: grid !important; gap: 6px; }
 .md p, .md ul, .md ol, .md blockquote, .md pre { margin: 0; }

@@ -124,7 +124,7 @@ function stripFaces(text: string): string {
 }
 
 /** 会话列表里显示的一行摘要 */
-export function summary(segs: Segment[]): string {
+export function summary(segs: Segment[], quote = false): string {
   const names: Record<string, string> = {
     image: "[图片]", face: "[表情]", record: "[语音]", video: "[视频]", file: "[文件]",
     markdown: "[Markdown]", keyboard: "[按钮]", forward: "[聊天记录]", share: "[分享]", ark: "[卡片]", json: "[卡片]",
@@ -146,7 +146,8 @@ export function summary(segs: Segment[]): string {
       text += "@" + String(s.data.name ?? s.data.qq ?? "");
     } else if (s.type === "face" && s.data.text) {
       text += String(s.data.text);
-    } else if (s.type === "reply") {
+    } else if (s.type === "reply" || (s.type === "forward" && quote)) {
+      // 引用消息（QQ 类型 103）里的 forward 段是被引用的内容，不算进摘要
       continue;
     } else if (s.type === "markdown") {
       const c = markdownOf(s.data).content;
@@ -264,7 +265,7 @@ export class ChatStore {
       msg.bot = true;
     }
     chat.last_time = msg.time;
-    chat.last_text = summary(segs);
+    chat.last_text = summary(segs, Number(ev.qq_message_type) === 103);
     chat.last_sender = sent ? "我" : nickname;
     if (!sent) {
       chat.unread++;

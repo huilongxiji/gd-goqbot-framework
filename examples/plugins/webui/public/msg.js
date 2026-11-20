@@ -168,6 +168,10 @@ let openViewer = () => {};
 /** 由页面注入：点图片时放大查看 */
 export function setImageViewer(fn) { openViewer = fn; }
 
+let openForward = () => {};
+/** 由页面注入：点聊天记录卡片时展开全部消息 */
+export function setForwardViewer(fn) { openForward = fn; }
+
 function mediaImage(url, w = 0, hgt = 0) {
   const img = h("img", { src: url, loading: "lazy", alt: "图片", referrerpolicy: "no-referrer" });
   if (w && hgt) {
@@ -189,6 +193,8 @@ function mediaImage(url, w = 0, hgt = 0) {
  */
 export function renderSegments(segs, ctx) {
   const parts = [];
+  const quote = quoteOf(segs, ctx.event);
+  if (quote) parts.push(renderQuote(quote, ctx));
   const asMd = textMarkdown(segs, ctx);
   let mdPlaced = false;
   for (const s of segs) {
@@ -267,7 +273,8 @@ export function renderSegments(segs, ctx) {
         break;
       }
       case "forward":
-        parts.push(h("span", { class: "seg-tag" }, "[聊天记录]"));
+        // 引用消息被 goqbot 转成了 forward 段，已经在上面按引用显示
+        if (!quote) parts.push(renderForward(d, ctx));
         break;
       case "face":
         parts.push(h("span", { class: "seg-face", title: "QQ 表情" }, d.text ? String(d.text) : "[表情]"));
@@ -280,6 +287,131 @@ export function renderSegments(segs, ctx) {
     }
   }
   return parts.length ? parts : [h("span", { class: "seg-tag" }, "[空消息]")];
+}
+
+// ---------- 引用消息（QQ message_type=103） ----------
+// 被引用的是普通消息时，msg_elements[0] 带着它的 msg_idx（REFIDX_...）、正文和附件；
+// 被引用的消息本身也是引用时，content 是「=== 消息 1 ===」格式的摘要，[关联消息] 后面是更早的引用，不显示。
+
+const IMAGE_FILE_RE = /\.(?:jpe?g|png|gif|webp|bmp)$/i;
+
+function httpsUrl(u) {
+  const s = String(u ?? "");
+  if (/^https?:\/\//i.test(s)) return s;
+  return s && !s.includes("://") ? "https://" + s : "";
+}
+
+function attachmentImages(atts) {
+  return (Array.isArray(atts) ? atts : [])
+    .filter((a) => a && (/^image\//i.test(a.content_type ?? "") || IMAGE_FILE_RE.test(a.filename ?? "")))
+    .map((a) => httpsUrl(a.url))
+    .filter(Boolean);
+}
+
+/** 解析「=== 消息 1 ===」摘要里的第一条：发送者、正文、图片附件 */
+function parseQuoteSummary(content) {
+  const lines = String(content).replace(/\r/g, "").split("\n");
+  const start = lines.findIndex((l) => /^=== 消息 \d+ ===/.test(l.trim()));
+  const out = { sender: "", text: "", images: [] };
+  let inText = false;
+  for (const line of lines.slice(start + 1)) {
+    if (/^=== 消息 \d+ ===/.test(line.trim())) break;
+    if (/^\s/.test(line) || line.startsWith("[关联消息]") || line.startsWith("---")) { inText = false; continue; }
+    let m;
+    if ((m = /^\[消息内容\]\s?(.*)$/.exec(line))) { out.text = m[1]; inText = true; }
+    else if ((m = /^\[发送者\]\s*(.*)$/.exec(line))) { out.sender = m[1].trim(); inText = false; }
+    else if ((m = /^\[附件\d+\]\s*类型:(\S+).*?URL:(\S+)/.exec(line))) {
+      if (/图/.test(m[1])) out.images.push(httpsUrl(m[2]));
+      inText = false;
+    } else if (line.startsWith("[")) inText = false;
+    else if (inText) out.text += "\n" + line;
+  }
+  return out;
+}
+
+/** 旧记录里由引用转成的 forward 段：节点文字带「[消息类型] 引用消息」 */
+function quoteNodeText(seg) {
+  const node = Array.isArray(seg?.data?.content) ? seg.data.content[0] : null;
+  const segs = Array.isArray(node?.data?.content) ? node.data.content : [];
+  const text = segs.filter((s) => s.type === "text").map((s) => String(s.data?.text ?? "")).join("");
+  return /\[消息类型\] 引用消息/.test(text) ? { text, segs } : null;
+}
+
+function isQuoteForward(seg) {
+  return !!quoteNodeText(seg);
+}
+
+/** 取出这条消息引用的内容；不是引用消息时返回 null */
+function quoteOf(segs, ev) {
+  if (ev && Number(ev.qq_message_type) === 103 && Array.isArray(ev.msg_elements)) {
+    const el = ev.msg_elements.find((e) => e && (e.content || (Array.isArray(e.attachments) && e.attachments.length)));
+    if (el) {
+      if (/^\s*=== 消息 \d+ ===/.test(el.content ?? "")) return parseQuoteSummary(el.content);
+      return { sender: "", text: String(el.content ?? ""), images: attachmentImages(el.attachments), refIdx: String(el.msg_idx ?? "") };
+    }
+  }
+  const fwd = segs.find((s) => s.type === "forward" && isQuoteForward(s));
+  if (fwd) {
+    const { text, segs: nodeSegs } = quoteNodeText(fwd);
+    const nested = text.includes("[关联消息]");
+    const images = nested ? [] : nodeSegs.filter((s) => s.type === "image").map((s) => safeUrl(s.data?.url) || safeUrl(s.data?.file)).filter(Boolean);
+    return { sender: "", text: text.split("\n[消息类型]")[0], images };
+  }
+  return null;
+}
+
+/** <@openid> 换成 @名字 */
+function mentionText(text, ctx) {
+  return text
+    .replace(/<@!?([0-9A-Za-z_-]+)>/g, (_, id) => "@" + (ctx.nameOfOpenid?.(id) || "某人"))
+    .replace(/<qqbot-at-user\s+[^>]*?id=["']?([^"'\s>/]+)["']?[^>]*>/g, (_, id) => "@" + (ctx.nameOfOpenid?.(id) || "某人"))
+    .replace(/<@all>|<qqbot-at-everyone\s*\/?>/g, "@全体成员");
+}
+
+function renderQuote(q, ctx) {
+  // 找到被引用的原消息时，显示原消息的发送者，点引用可以跳过去
+  const orig = (q.refIdx && ctx.findByRef?.(q.refIdx)) || ctx.findByText?.(q.text) || null;
+  const sender = q.sender || (orig ? (orig.self ? "机器人" : orig.nickname || "") : "");
+  let text = mentionText(stripFaces(q.text), ctx).trim();
+  if (!text && !q.images.length) text = /<faceType=6\b/.test(q.text) ? "[表情]" : orig ? summaryOf(orig.message) : "[消息]";
+  const imgs = q.images.length ? h("span", { class: "quote-imgs" }, q.images.slice(0, 4).map((url) => {
+    const img = h("img", { src: url, alt: "图片", loading: "lazy", referrerpolicy: "no-referrer" });
+    const btn = h("button", { class: "quote-img", type: "button", title: "查看大图", onclick: (e) => { e.stopPropagation(); openViewer(url); } }, img);
+    img.addEventListener("error", () => btn.replaceWith(h("span", { class: "seg-tag" }, "[图片已过期]")), { once: true });
+    return btn;
+  })) : null;
+  const box = h(orig ? "button" : "div", {
+    class: "seg-reply quote" + (orig ? " jump" : ""), type: orig ? "button" : undefined,
+    title: orig ? "跳到被引用的消息" : undefined, onclick: orig ? () => ctx.jumpTo?.(orig.seq) : undefined,
+  }, h("b", null, sender || "引用"), text ? h("span", { class: "quote-text" }, text) : null, imgs);
+  return box;
+}
+
+// ---------- 聊天记录（合并转发） ----------
+
+function forwardNodes(d) {
+  const list = Array.isArray(d.content) ? d.content : Array.isArray(d.message) ? d.message : [];
+  return list.filter((n) => n && typeof n === "object").map((n) => n.data ?? n);
+}
+
+/** 节点的发送者和一行摘要 */
+export function forwardLine(nd) {
+  const name = String(nd.nickname ?? nd.name ?? "").trim();
+  const content = Array.isArray(nd.content) ? summaryOf(nd.content) : stripFaces(String(nd.content ?? ""));
+  return { name, content: content || "[消息]" };
+}
+
+function renderForward(d, ctx) {
+  const nodes = forwardNodes(d);
+  if (!nodes.length) return h("span", { class: "seg-tag" }, "[聊天记录]");
+  const title = String(ctx.event?.forward_title || "聊天记录");
+  return h("button", { class: "seg-forward", type: "button", onclick: () => openForward(title, nodes) },
+    h("b", null, title),
+    nodes.slice(0, 4).map((nd) => {
+      const { name, content } = forwardLine(nd);
+      return h("span", null, name ? `${name}：${content}` : content);
+    }),
+    h("small", null, `查看 ${nodes.length} 条消息`));
 }
 
 /** 看起来是 Markdown：有链接、引用、标题、粗体、代码块或图片写法 */
@@ -332,6 +464,7 @@ export function summaryOf(segs) {
     else if (s.type === "image") t += wasSticker ? "[表情]" : "[图片]";
     else if (s.type === "face") t += d.text || "[表情]";
     else if (s.type === "markdown") t += markdownOf(d).content.slice(0, 40) || "[Markdown]";
+    else if (s.type === "forward") t += isQuoteForward(s) ? "" : "[聊天记录]";
     else if (s.type !== "reply") t += `[${s.type}]`;
   }
   t = t.replace(/\s+/g, " ").trim();
