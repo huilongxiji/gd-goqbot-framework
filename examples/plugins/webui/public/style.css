@@ -390,10 +390,10 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
 .msg-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
 .msg-meta b { font-weight: 600; color: var(--ink); opacity: .85; }
 .msg-meta .role { color: var(--wait); background: var(--wait-soft); padding: 0 6px; border-radius: 4px; font-size: 11px; }
-/* 用户编号和时间：点击查看这条消息的原始数据 */
-.msg-meta .uid, .msg-meta .msg-stamp { padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; font-variant-numeric: tabular-nums; border-radius: 3px; }
-.msg-meta .uid:hover, .msg-meta .msg-stamp:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.msg-meta .uid:focus-visible, .msg-meta .msg-stamp:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 消息时间：点击查看这条消息的原始数据 */
+.msg-meta .msg-stamp { padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; font-variant-numeric: tabular-nums; border-radius: 3px; }
+.msg-meta .msg-stamp:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.msg-meta .msg-stamp:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .msg-meta .msg-stamp { opacity: .8; }
 .bubble {
   position: relative; padding: 8px 12px; border-radius: 4px 14px 14px 14px; background: var(--surface); border: 1px solid var(--line);

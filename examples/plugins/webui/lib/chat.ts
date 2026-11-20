@@ -155,6 +155,8 @@ export function summary(segs: Segment[]): string {
       break;
     }
   }
+  // 其他机器人发的 Markdown 以文字形式收到，链接只留文字
+  text = text.replace(/\[([^\]\n]*)\]\((?:https?|mqqapi):\/\/[^)\s]*\)/gi, "$1");
   return text.replace(/\s+/g, " ").trim().slice(0, 80);
 }
 

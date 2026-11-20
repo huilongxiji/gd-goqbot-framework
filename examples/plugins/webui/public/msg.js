@@ -60,13 +60,22 @@ export function markdownOf(data) {
 
 // ---------- Markdown：只支持 QQ 官方 markdown 常用的写法 ----------
 
+// 其他机器人发的 Markdown 会以纯文字的形式收到，里面夹着 @。
+// 渲染前把 @ 换成占位符 \uE000序号\uE001，渲染时再换回 @ 标签
+let mdTokens = [];
+
+function withTokens(text) {
+  if (!mdTokens.length || !text.includes("\uE000")) return [text];
+  return text.split(/\uE000(\d+)\uE001/).map((p, i) => (i % 2 ? mdTokens[Number(p)] ?? "" : p)).filter((p) => p !== "");
+}
+
 /** 行内：图片、链接、粗体、斜体、删除线、行内代码 */
 function inline(text) {
   const out = [];
   const re = /!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_/g;
   let last = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m.index > last) out.push(...withTokens(text.slice(last, m.index)));
     if (m[2] !== undefined) {
       const url = safeUrl(m[2]);
       // QQ 的写法：![描述 #200px #100px](地址)
@@ -81,11 +90,20 @@ function inline(text) {
     else out.push(h("em", null, inline(m[9] ?? m[10])));
     last = re.lastIndex;
   }
-  if (last < text.length) out.push(text.slice(last));
+  if (last < text.length) out.push(...withTokens(text.slice(last)));
   return out;
 }
 
-export function renderMarkdown(src) {
+export function renderMarkdown(src, tokens = []) {
+  mdTokens = tokens;
+  try {
+    return renderMarkdownInner(src);
+  } finally {
+    mdTokens = [];
+  }
+}
+
+function renderMarkdownInner(src) {
   const root = h("div", { class: "md" });
   const lines = src.replace(/\r\n?/g, "\n").split("\n");
   let list = null, para = [];
@@ -171,8 +189,15 @@ function mediaImage(url, w = 0, hgt = 0) {
  */
 export function renderSegments(segs, ctx) {
   const parts = [];
+  const asMd = textMarkdown(segs, ctx);
+  let mdPlaced = false;
   for (const s of segs) {
     const d = s.data ?? {};
+    if (asMd && (s.type === "text" || s.type === "at" || s.type === "face")) {
+      // 文字和 @ 合成一段 Markdown，放在第一段文字的位置
+      if (!mdPlaced) { parts.push(renderMarkdown(asMd.src, asMd.tokens)); mdPlaced = true; }
+      continue;
+    }
     switch (s.type) {
       case "text": {
         const text = String(d.text ?? "");
@@ -255,6 +280,36 @@ export function renderSegments(segs, ctx) {
     }
   }
   return parts.length ? parts : [h("span", { class: "seg-tag" }, "[空消息]")];
+}
+
+/** 看起来是 Markdown：有链接、引用、标题、粗体、代码块或图片写法 */
+function looksLikeMarkdown(src) {
+  return /\[[^\]\n]+\]\((?:https?|mqqapi):\/\/[^)\s]+\)/i.test(src)
+    || /!\[[^\]\n]*\]\(https?:\/\/[^)\s]+\)/i.test(src)
+    || /^\s{0,3}>\s?\S/m.test(src)
+    || /^#{1,6}\s+\S/m.test(src)
+    || /\*\*[^*\n]+\*\*/.test(src)
+    || /^```/m.test(src);
+}
+
+/**
+ * 其他机器人发的 Markdown 消息，官方接口只给出 Markdown 原文，goqbot 转成了文字段和 @ 段。
+ * 文字看起来是 Markdown 时，把文字和 @ 合起来按 Markdown 渲染；返回 null 表示按普通文字显示
+ */
+function textMarkdown(segs, ctx) {
+  if (segs.some((s) => s.type === "markdown")) return null;
+  let src = "";
+  const tokens = [];
+  for (const s of segs) {
+    const d = s.data ?? {};
+    if (s.type === "text") src += stripFaces(d.text);
+    else if (s.type === "face") src += d.text ? String(d.text) : "";
+    else if (s.type === "at") {
+      tokens.push(h("span", { class: "seg-at" }, "@" + (d.qq === "all" ? "全体成员" : d.name || ctx.nameOf(d.qq) || d.qq)));
+      src += `\uE000${tokens.length - 1}\uE001`;
+    }
+  }
+  return looksLikeMarkdown(src) ? { src, tokens } : null;
 }
 
 /** 渲染结果是否只有图片（只有图片时不套气泡） */

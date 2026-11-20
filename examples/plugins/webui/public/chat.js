@@ -159,7 +159,7 @@ function renderList() {
       h("span", { class: "chat-item-main" },
         h("span", { class: "chat-item-top" }, h("b", null, chatTitle(c)), h("time", null, shortTime(c.last_time))),
         h("span", { class: "chat-item-bottom" },
-          h("span", { class: "chat-item-text" }, c.type === "group" && c.last_sender ? `${c.last_sender}：${stripFaces(c.last_text)}` : c.last_sender === "我" ? `我：${stripFaces(c.last_text)}` : stripFaces(c.last_text)),
+          h("span", { class: "chat-item-text" }, c.type === "group" && c.last_sender ? `${c.last_sender}：${preview(c.last_text)}` : c.last_sender === "我" ? `我：${preview(c.last_text)}` : preview(c.last_text)),
           c.unread ? h("span", { class: "badge" }, c.unread > 99 ? "99+" : c.unread) : null)))));
 }
 
@@ -291,6 +291,11 @@ function appendMessage(m, live) {
   if (nearBottom || m.self) view.scroller.scrollTop = view.scroller.scrollHeight;
 }
 
+/** 会话列表的预览：去掉表情标记，Markdown 链接只留文字 */
+function preview(text) {
+  return stripFaces(text).replace(/\[([^\]\n]*)\]\((?:https?|mqqapi):\/\/[^)\s]*\)/gi, "$1");
+}
+
 /** 消息气泡：只有图片（含表情图）时不加气泡，直接显示图片 */
 function bubble(parts) {
   return h("div", { class: onlyImages(parts) ? "bubble bare" : "bubble" }, parts);
@@ -366,7 +371,6 @@ function messageNode(m) {
       h("div", { class: "msg-meta" },
         h("b", null, name),
         role ? h("span", { class: "role" }, role) : null,
-        !m.self && m.user_id ? h("button", { class: "uid", type: "button", title: "查看这条消息的原始数据", onclick: open }, String(m.user_id)) : null,
         h("button", { class: "msg-stamp", type: "button", title: "查看这条消息的原始数据", onclick: open }, fullTime(m))),
       bubble(renderSegments(m.message, messageCtx()))));
 }
