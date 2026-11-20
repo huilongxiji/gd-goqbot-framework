@@ -1,0 +1,2 @@
+# 插件开关：这是示例插件，默认关闭。想试用就改成 true，然后重启 goqbot
+enabled: false

@@ -93,7 +93,7 @@ onebot:
         access-token: ""    # 建议设置，框架那边填同一个值
 ```
 
-模板里的两条示例连接默认是关闭的（`disabled: true`），每条连接的开关、口令、心跳都单独设置。
+模板里的两条示例连接默认是关闭的（`disabled: true`），每条连接的开关、口令、心跳都单独设置。用完整包时也可以不改配置，启动后在 WebUI 的「连接」页打开或新建，保存后立即生效。
 
 **4. 再次启动**：看到 `goqbot x.y.z 已启动，等待连接...` 就说明成功了。框架那边怎么设置，请看上面 [支持的框架](#-支持的框架) 里对应的教程。
 
@@ -111,6 +111,19 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 ```
 
 </details>
+
+## 🔌 自带的插件
+
+完整包解压后，`plugins/` 文件夹里已经放好了两个插件，源代码都在仓库的 [`examples/plugins/`](examples/plugins)：
+
+| 插件 | 默认 | 作用 |
+|---|---|---|
+| [`webui`](examples/plugins/webui) | **开启** | 网页管理面板：按群、按用户查看消息，管理连接、插件与权限、日志、配置和更新，内置 `#gq` 运行状态指令。启动后日志里会打印带口令的登录链接，默认地址 `http://127.0.0.1:6099` |
+| [`hello_ts`](examples/plugins/hello_ts) | **关闭** | 写插件用的最小示例（TypeScript），只供参考，不影响机器人 |
+
+- **开关插件**：插件文件夹里的 `plugin.yml` 写 `enabled: true` 或 `enabled: false`，重启 goqbot 后生效。`hello_ts` 自带的 `plugin.yml` 是 `false`；`webui` 没有这个文件，表示开启，不想用就新建一个写上 `enabled: false`。
+- **精简包和自己编译**不带插件，也没有 Node。需要 WebUI 时，把 `examples/plugins/webui` 复制到 goqbot 旁边的 `plugins/` 里，并准备好 Node 22.18 或更高版本（推荐 Node 26）。
+- 写插件可以参考最小示例 [`hello_ts`](examples/plugins/hello_ts) 和类型说明 [`goqbot.d.ts`](examples/plugins/goqbot.d.ts)。
 
 ## 📦 功能一览
 
