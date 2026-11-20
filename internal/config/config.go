@@ -74,7 +74,7 @@ type QQConfig struct {
 	Disabled              bool     `yaml:"disabled"`                 // true=跳过 QQ 上游连接（仅测试 OneBot 侧时用）
 	IPRejectAction        string   `yaml:"ip_reject_action"`         // IP 白名单被拒(11298)后策略：stop(默认)/retry/exit
 	IPRejectRetryInterval int      `yaml:"ip_reject_retry_interval"` // 秒，仅 retry 生效；默认 60，最小 5
-	DeveloperOpenID       string   `yaml:"developer_openid"`         // 机器人开发者（机器人账号的管理员）在本机器人下的 OpenID；开发者是群主/管理员的群，被动回复为 60 分钟 / 50 次
+	DeveloperOpenID       string   `yaml:"developer_openid"`         // 机器人开发者（机器人账号的管理员）在本机器人下的 OpenID；开发者是群主/管理员的群，每条消息可被动回复 50 次（否则 5 次）
 }
 
 // AppSecret 返回 botgo 鉴权用的 AppSecret（优先 client_secret，回退 token）

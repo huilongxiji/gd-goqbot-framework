@@ -28,12 +28,12 @@ const (
 	SceneC2C Scene = "c2c"
 )
 
-// 被动回复有效期与每条消息可回复次数（官方规则）
+// 被动回复有效期与每条消息可回复次数（官方规则）：
+// 群聊、私聊的被动回复都是 60 分钟；群消息每条最多回复 5 次（机器人开发者是该群群主或管理员时 50 次），
+// 私聊消息每条最多回复 4 次。群消息也可以私聊回复它的发送者，次数和群内回复共用
 const (
 	// GroupPassiveTTL 群被动回复有效期
-	GroupPassiveTTL = 5 * time.Minute
-	// GroupPassiveTTLBoost 机器人开发者是群主或管理员时，群被动回复有效期延长到 60 分钟
-	GroupPassiveTTLBoost = 60 * time.Minute
+	GroupPassiveTTL = 60 * time.Minute
 	// C2CPassiveTTL 单聊被动回复有效期
 	C2CPassiveTTL = 60 * time.Minute
 
@@ -43,10 +43,6 @@ const (
 	GroupPassiveRepliesBoost = 50
 	// C2CPassiveReplies 单聊消息每条可被动回复次数
 	C2CPassiveReplies = 4
-
-	// GroupPrivateReplyTTL 群消息私聊回复（私聊用群消息的 msg_id 回复发送者）的有效期。
-	// 官方单聊文档写的是 60 分钟；次数按群消息规则，和群内回复共用
-	GroupPrivateReplyTTL = 60 * time.Minute
 )
 
 // 后台清理（janitor）参数：控制长期运行时内存内几个只增不减的 sync.Map。
@@ -86,15 +82,14 @@ type MsgMeta struct {
 	Outbound    bool // true=本程序发出的消息，不能当作被动 msg_id
 }
 
-// PassiveOK 这条消息现在还能不能当被动回复凭证。群消息的有效期按这个群的规则
-// （机器人开发者是群主或管理员时 60 分钟，否则 5 分钟），私聊消息 60 分钟
+// PassiveOK 这条消息现在还能不能当被动回复凭证（用户发来的消息，且还在有效期内）
 func (s *Store) PassiveOK(m MsgMeta) bool {
 	if m.Outbound || m.MsgID == "" || m.Time.IsZero() {
 		return false
 	}
 	ttl := C2CPassiveTTL
 	if m.Scene != SceneC2C {
-		ttl = s.GroupPassiveTTLOf(m.GroupOpenID)
+		ttl = GroupPassiveTTL
 	}
 	return time.Since(m.Time) < ttl
 }
@@ -372,16 +367,15 @@ func (s *Store) loadLazy(key string, ttl time.Duration) (string, string, bool) {
 
 // LazyGroup 取群被动回复目标凭证，优先 group+user 维度；返回 (id, kind)
 func (s *Store) LazyGroup(groupOpenID, userOpenID string) (string, string, bool) {
-	ttl := s.GroupPassiveTTLOf(groupOpenID)
 	if userOpenID != "" {
-		if id, kind, ok := s.loadLazy("gu:"+groupOpenID+":"+userOpenID, ttl); ok {
+		if id, kind, ok := s.loadLazy("gu:"+groupOpenID+":"+userOpenID, GroupPassiveTTL); ok {
 			return id, kind, true
 		}
 	}
-	return s.loadLazy("g:"+groupOpenID, ttl)
+	return s.loadLazy("g:"+groupOpenID, GroupPassiveTTL)
 }
 
-// SetGroupBoost 记下机器人开发者在这个群是不是群主或管理员（影响被动回复有效期和次数）
+// SetGroupBoost 记下机器人开发者在这个群是不是群主或管理员（影响每条群消息可被动回复的次数）
 func (s *Store) SetGroupBoost(groupOpenID string, boosted bool) {
 	if groupOpenID == "" {
 		return
@@ -399,14 +393,6 @@ func (s *Store) GroupBoosted(groupOpenID string) bool {
 	return ok
 }
 
-// GroupPassiveTTLOf 这个群的被动回复有效期
-func (s *Store) GroupPassiveTTLOf(groupOpenID string) time.Duration {
-	if s.GroupBoosted(groupOpenID) {
-		return GroupPassiveTTLBoost
-	}
-	return GroupPassiveTTL
-}
-
 // PassiveState 被动回复凭证的状态
 type PassiveState struct {
 	Available   bool      // 凭证还在有效期内
@@ -421,7 +407,7 @@ type PassiveState struct {
 
 // GroupPassiveState 群最近一条被动凭证（群维度）的状态；没有收到过消息时 ReceivedAt 为零值
 func (s *Store) GroupPassiveState(groupOpenID string) PassiveState {
-	st := PassiveState{TTL: s.GroupPassiveTTLOf(groupOpenID), RepliesMax: GroupPassiveReplies, Boosted: s.GroupBoosted(groupOpenID)}
+	st := PassiveState{TTL: GroupPassiveTTL, RepliesMax: GroupPassiveReplies, Boosted: s.GroupBoosted(groupOpenID)}
 	if st.Boosted {
 		st.RepliesMax = GroupPassiveRepliesBoost
 	}
@@ -718,8 +704,7 @@ func (s *Store) sweepLazy(now time.Time) {
 	s.lazy.Range(func(k, v any) bool {
 		key := k.(string)
 		e := v.(*lazyEntry)
-		// 群凭证可能因开发者是群主/管理员而延长到 60 分钟，这里按最长的有效期回收；是否过期由 loadLazy 按群判断
-		ttl := GroupPassiveTTLBoost
+		ttl := GroupPassiveTTL
 		if strings.HasPrefix(key, "c:") {
 			ttl = C2CPassiveTTL
 		}

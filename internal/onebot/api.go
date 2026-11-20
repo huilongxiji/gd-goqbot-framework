@@ -1666,7 +1666,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		return failed(1400, "is_wakeup 与 passive_only 互斥")
 	}
 	// 群消息私聊回复：msg_id 可以用群消息的，但只能私聊回复这条群消息的发送者（要求是好友）。
-	// 官方单聊文档：有效时间与次数按群消息规则（60 分钟、5 次；开发者是群主或管理员时 50 次），和群内回复共用次数
+	// 有效时间与次数按群消息规则（60 分钟、5 次；开发者是群主或管理员时 50 次），和群内回复共用次数
 	if r := out.reply; r != nil && r.userOpenID != userOpenID {
 		if out.MsgID != "" || out.RefMsgID != "" {
 			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "引用的消息不是这个用户发的，私聊不能用它作被动回复", Fail: true})
@@ -1676,7 +1676,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 	} else if r != nil && r.scene == string(idmap.SceneGroup) {
 		out.RefMsgID = "" // 私聊里不能引用群消息，只用它的 msg_id
 		out.MsgID = ""
-		if !r.outbound && r.msgID != "" && !r.at.IsZero() && time.Since(r.at) < idmap.GroupPrivateReplyTTL {
+		if !r.outbound && r.msgID != "" && !r.at.IsZero() && time.Since(r.at) < idmap.GroupPassiveTTL {
 			out.MsgID = r.msgID
 			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "群消息私聊回复：用该群消息的 msg_id 私聊回复发送者"})
 		} else {

@@ -54,7 +54,7 @@ type Converter struct {
 }
 
 // SetDeveloperOpenID 设置机器人开发者（机器人账号的管理员）的 OpenID。
-// 开发者在某个群里发言时，按 TA 的群身份决定这个群的被动回复规则：群主/管理员为 60 分钟、每条 50 次，否则 5 分钟、5 次
+// 开发者在某个群里发言时，按 TA 的群身份决定这个群每条消息可被动回复的次数：群主/管理员为 50 次，否则 5 次
 func (c *Converter) SetDeveloperOpenID(openid string) {
 	c.developerOpenID = strings.TrimSpace(openid)
 }
