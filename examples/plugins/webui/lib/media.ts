@@ -167,8 +167,16 @@ export class MediaCache {
     const res = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: { "user-agent": "Mozilla/5.0 goqbot-webui" } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     if (Number(res.headers.get("content-length") ?? 0) > MAX_FILE) throw new Error("图片太大");
-    const data = Buffer.from(await res.arrayBuffer());
-    if (data.length > MAX_FILE || !imageType(data)) throw new Error("不是图片");
+    // 边读边计数：对方没给 content-length 时也不会把超大的内容整个读进内存
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of (res.body ?? []) as AsyncIterable<Uint8Array>) {
+      size += chunk.length;
+      if (size > MAX_FILE) throw new Error("图片太大");
+      chunks.push(Buffer.from(chunk));
+    }
+    const data = Buffer.concat(chunks);
+    if (!imageType(data)) throw new Error("不是图片");
     await writeFile(file + ".part", data);
     await rename(file + ".part", file);
     this.total += data.length;
