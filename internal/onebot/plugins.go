@@ -84,6 +84,12 @@ func stripInlineBase64(v any) any {
 			out[i] = stripInlineBase64(x)
 		}
 		return out
+	case []map[string]any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = stripInlineBase64(x)
+		}
+		return out
 	case map[string]any:
 		if t["type"] == "markdown" {
 			return t // markdown 段的 data.data 可能是 base64 编码的正文，不是文件，保留

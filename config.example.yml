@@ -55,6 +55,8 @@ onebot:
 idmap:
   path: "idmap.db"                 # ID 对照表，重启后仍能撤回消息、查回用户
   # disabled: true                 # 只存在内存里，重启后丢失
+  # keep_days: 3                   # 消息记录保留天数，默认 3；0=不按天数删除（用户的 ID 对照一直保留）
+  # max_size_mb: 1024              # 文件大小上限（MB），默认 1024；0=不限制。超出时从最早的消息记录删起
 
 log:
   enabled: true                    # 是否按天写日志文件

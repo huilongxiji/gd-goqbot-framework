@@ -54,6 +54,32 @@ func (c *LogConfig) FileEnabled() bool {
 type IDMapConfig struct {
 	Disabled bool   `yaml:"disabled"` // true=纯内存不持久化（重启后 message_id/反查丢失）
 	Path     string `yaml:"path"`     // 持久化文件，默认 idmap.db；相对路径=可执行文件同级目录
+	// KeepDays 消息记录保留天数，默认 3；0=不按天数删除（只受 MaxSizeMB 限制）
+	KeepDays *int `yaml:"keep_days,omitempty"`
+	// MaxSizeMB 文件大小上限（MB），默认 1024；0=不限制。超出时从最早的消息记录删起
+	MaxSizeMB *int `yaml:"max_size_mb,omitempty"`
+}
+
+// 消息记录保留天数、文件大小上限的默认值
+const (
+	DefaultIDMapKeepDays  = 3
+	DefaultIDMapMaxSizeMB = 1024
+)
+
+// KeepDaysOrDefault 消息记录保留天数（没写时为默认值）
+func (c IDMapConfig) KeepDaysOrDefault() int {
+	if c.KeepDays == nil {
+		return DefaultIDMapKeepDays
+	}
+	return *c.KeepDays
+}
+
+// MaxSizeMBOrDefault 文件大小上限 MB（没写时为默认值）
+func (c IDMapConfig) MaxSizeMBOrDefault() int {
+	if c.MaxSizeMB == nil {
+		return DefaultIDMapMaxSizeMB
+	}
+	return *c.MaxSizeMB
 }
 
 // QQConfig QQ 官方机器人凭据与连接选项
@@ -331,6 +357,12 @@ func (o *OneBotConfig) HasEnabledServer() bool {
 
 // Validate 校验配置
 func (c *Config) Validate() error {
+	if d := c.IDMap.KeepDaysOrDefault(); d < 0 || d > 36500 {
+		return fmt.Errorf("idmap.keep_days 要在 0 到 36500 之间（0=不按天数删除），当前为 %d", d)
+	}
+	if mb := c.IDMap.MaxSizeMBOrDefault(); mb != 0 && (mb < 16 || mb > 1024*1024) {
+		return fmt.Errorf("idmap.max_size_mb 要填 0（不限制）或 16 到 1048576 之间的数，当前为 %d", mb)
+	}
 	switch c.QQ.IPRejectAction {
 	case "stop", "retry", "exit":
 		// ok

@@ -53,6 +53,7 @@ type Options struct {
 	QQBotName      func() string           // 机器人名字
 	Connections    func() []map[string]any // 下游连接状态
 	Plugins        func() []plugins.Info   // 插件状态
+	IDMap          func() map[string]any   // idmap 情况（是否持久化、文件大小、消息记录条数等）
 	RequestRestart func(reason string)     // 请求重启 goqbot（异步执行，先让调用方收到回复）
 
 	// Running 启动时加载的配置，用来判断修改后哪些项要重启才生效
@@ -141,6 +142,9 @@ func (s *Service) Info() map[string]any {
 		}
 	}
 	info["plugins"] = map[string]any{"total": total, "ready": ready}
+	if s.opts.IDMap != nil {
+		info["idmap"] = s.opts.IDMap()
+	}
 	return info
 }
 

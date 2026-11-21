@@ -1,6 +1,7 @@
 package onebot
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -50,13 +51,14 @@ type Caller struct {
 
 	ids *idmap.Store // openid<->数字 id 映射，用于动作里的 id 反查
 
-	// get_msg 内存缓存（仅内存，不持久化）：message_id -> 事件快照
+	// get_msg 内存缓存（仅内存，不持久化）：message_id -> 事件快照。
+	// 存成紧凑的 JSON（比 map 省好几倍内存），内联的 base64:// 文件内容省略掉
 	cacheMu    sync.RWMutex
-	msgCache   map[int64]map[string]any
+	msgCache   map[int64][]byte
 	cacheOrder []int64 // 插入顺序，用于上限淘汰
 
-	// get_forward_msg 内存缓存：forward id (QQ msg_id) -> node 数组
-	fwdCache map[string][]map[string]any
+	// get_forward_msg 内存缓存：forward id (QQ msg_id) -> node 数组的 JSON
+	fwdCache map[string][]byte
 	fwdOrder []string
 }
 
@@ -69,14 +71,18 @@ func NewCaller(selfID int64, appID string, ids *idmap.Store, debug bool, appName
 		appVersion: appVersion,
 		ids:        ids,
 		debug:      debug,
-		msgCache:   make(map[int64]map[string]any),
-		fwdCache:   make(map[string][]map[string]any),
+		msgCache:   make(map[int64][]byte),
+		fwdCache:   make(map[string][]byte),
 	}
 }
 
 // CacheMsg 缓存一条已构造的消息事件快照，供 get_msg 取回（有界，FIFO 淘汰）
 func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 	if id == 0 || snap == nil {
+		return
+	}
+	b, err := json.Marshal(stripInlineBase64(snap))
+	if err != nil {
 		return
 	}
 	c.cacheMu.Lock()
@@ -89,7 +95,7 @@ func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 			delete(c.msgCache, oldest)
 		}
 	}
-	c.msgCache[id] = snap
+	c.msgCache[id] = b
 }
 
 // cacheOutbound 把刚发出去的消息写入 get_msg 缓存，字段对齐 OneBot v11 / go-cqhttp：
@@ -162,6 +168,10 @@ func (c *Caller) CacheForward(id string, nodes []map[string]any) {
 	if id == "" || len(nodes) == 0 {
 		return
 	}
+	b, err := json.Marshal(stripInlineBase64(nodes))
+	if err != nil {
+		return
+	}
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 	if _, exists := c.fwdCache[id]; !exists {
@@ -172,19 +182,19 @@ func (c *Caller) CacheForward(id string, nodes []map[string]any) {
 			delete(c.fwdCache, oldest)
 		}
 	}
-	c.fwdCache[id] = nodes
+	c.fwdCache[id] = b
 }
 
-// getForward 按 forward id 取回缓存的节点数组
-func (c *Caller) getForward(id string) ([]map[string]any, bool) {
+// getForward 按 forward id 取回缓存的节点数组（JSON）
+func (c *Caller) getForward(id string) (json.RawMessage, bool) {
 	c.cacheMu.RLock()
 	defer c.cacheMu.RUnlock()
 	nodes, ok := c.fwdCache[id]
 	return nodes, ok
 }
 
-// getCachedMsg 按 message_id 取回缓存的事件快照
-func (c *Caller) getCachedMsg(id int64) (map[string]any, bool) {
+// getCachedMsg 按 message_id 取回缓存的事件快照（JSON）
+func (c *Caller) getCachedMsg(id int64) (json.RawMessage, bool) {
 	c.cacheMu.RLock()
 	defer c.cacheMu.RUnlock()
 	snap, ok := c.msgCache[id]
@@ -393,11 +403,22 @@ func (c *Caller) getMsg(params gjson.Result) map[string]any {
 	if id == 0 {
 		return failed(1400, "缺少 message_id")
 	}
-	snap, found := c.getCachedMsg(id)
+	raw, found := c.getCachedMsg(id)
 	if !found {
 		return failed(1404, "消息不存在或未缓存")
 	}
+	var snap map[string]any
+	if err := decodeJSONNumber(raw, &snap); err != nil {
+		return failed(1500, "缓存的消息解析失败")
+	}
 	return ok(snap)
+}
+
+// decodeJSONNumber 解析 JSON，数字保留为 json.Number（19 位的编号不会丢精度）
+func decodeJSONNumber(raw []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	return d.Decode(v)
 }
 
 // getForwardMsg 按 forward id 取回合并转发节点（go-cqhttp/NoneBot 兼容 messages 字段）
@@ -413,7 +434,11 @@ func (c *Caller) getForwardMsg(params gjson.Result) map[string]any {
 	if !found || len(nodes) == 0 {
 		return failed(1404, "未知 forward id")
 	}
-	return ok(map[string]any{"messages": nodes})
+	var list []any
+	if err := decodeJSONNumber(nodes, &list); err != nil {
+		return failed(1500, "缓存的合并转发解析失败")
+	}
+	return ok(map[string]any{"messages": list})
 }
 
 // resolveGroupOpenID 从 group_id 反查群 openid
