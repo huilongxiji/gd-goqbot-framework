@@ -196,11 +196,11 @@ func run(configPath, exeDir string) (restart bool) {
 		discoverOpts.Node, discoverOpts.RunnerPath, nodeVersion = node.Path, runner, node.Version
 	}
 	pluginConfigs, skipped, perr := plugins.Discover(pluginDir, discoverOpts)
-	// WebUI 的开关在 config.yml 的 webui.enabled；插件文件夹里的 plugin.yml 写了 enabled: false 时同样不启动
+	// WebUI 默认关闭，config.yml 里 webui.enabled 为 true 才启动；插件文件夹里的 plugin.yml 写了 enabled: false 时同样不启动
 	for i := range pluginConfigs {
-		if pluginConfigs[i].Name == "webui" && pluginConfigs[i].Enabled && !cfg.WebUI.EnabledOrDefault() {
+		if pluginConfigs[i].Name == "webui" && pluginConfigs[i].Enabled && !cfg.WebUI.IsEnabled() {
 			pluginConfigs[i].Enabled = false
-			log.Printf("[plugins] WebUI 已关闭（config.yml 里 webui.enabled 为 false）")
+			log.Printf("[plugins] WebUI 没有开启：要使用网页管理面板，把 config.yml 里 webui 的 enabled 改成 true 后重启 goqbot")
 		}
 	}
 	for _, pc := range pluginConfigs {
@@ -239,7 +239,11 @@ func run(configPath, exeDir string) (restart bool) {
 	conns := onebot.NewConnections(selfID, bus, caller)
 	conns.Apply(cfg.OneBot)
 	if !cfg.OneBot.HasEnabledServer() {
-		log.Printf("[onebot] 没有开启的下游连接：可以在 WebUI 的「连接」页开启或添加，或修改 config.yml 的 onebot.servers")
+		if cfg.WebUI.IsEnabled() {
+			log.Printf("[onebot] 没有开启的下游连接：可以在 WebUI 的「连接」页开启或添加，或修改 config.yml 的 onebot.servers")
+		} else {
+			log.Printf("[onebot] 没有开启的下游连接：请修改 config.yml 的 onebot.servers")
+		}
 	}
 
 	// 替换 botgo logger：过滤逐拍心跳（debug=true 时心跳照常显示），其余日志原样

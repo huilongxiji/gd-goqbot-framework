@@ -33,13 +33,13 @@ type Config struct {
 
 // WebUIConfig 网页管理面板（plugins/webui 插件）的开关、监听地址和端口
 type WebUIConfig struct {
-	Enabled *bool  `yaml:"enabled"` // nil 或 true=启用；false=不启动 webui 插件
+	Enabled *bool  `yaml:"enabled"` // true=启用；没写或 false=不启动 webui 插件（默认关闭）
 	Host    string `yaml:"host"`    // 监听地址，默认 127.0.0.1（只能在本机打开）
 	Port    int    `yaml:"port"`    // 端口，默认 6099
 }
 
-// EnabledOrDefault 是否启用 WebUI，没写时启用
-func (w WebUIConfig) EnabledOrDefault() bool { return w.Enabled == nil || *w.Enabled }
+// IsEnabled 是否启用 WebUI：只有明确写了 enabled: true 才启用，默认关闭
+func (w WebUIConfig) IsEnabled() bool { return w.Enabled != nil && *w.Enabled }
 
 // PluginsConfig 插件配置。插件放进插件目录即可载入，开关等可选设置写在各插件文件夹的 plugin.yml 中。
 type PluginsConfig struct {
