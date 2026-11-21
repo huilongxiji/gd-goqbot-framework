@@ -35,7 +35,7 @@ qq:
 
 onebot:
   message_format: "array"          # 消息格式：array 消息段 / string 额外附带 CQ 码
-  debug: false                     # true=日志里显示更多调试信息
+  debug: false                     # OneBot 调试：true=输出框架发来的动作请求、参数、耗时和连接重试过程，排查 WS 配置问题时打开
   downtime_message: ""             # 所有框架都掉线时自动回复的文字，空=不回复
   servers:                         # ★ 框架的连接方式，可以写多条，每条的开关、口令、心跳都单独设置；也可以在 WebUI 的「连接」页管理（立即生效）
     - ws:                          # 正向 WS：框架连进来
@@ -66,6 +66,7 @@ webui:
 log:
   enabled: true                    # 是否按天写日志文件
   path: "logs"                     # 日志目录
+  debug: false                     # 框架调试模式：true=输出全部调试信息（启动详情、QQ 连接细节、原始报文、心跳等），排查完记得关掉
 
 # 插件一般不用配置，放进插件目录就能用
 # plugins:

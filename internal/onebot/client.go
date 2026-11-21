@@ -127,7 +127,7 @@ func (c *WSClient) connectLoop(typ, addr string, conptr **wsConn, sendHandshake 
 				filelog.Warnf("[onebot] 反向 WS %s 仍然连不上 %s（已重试 %d 次）：%v", typ, addr, fails, err)
 				lastWarn = time.Now()
 			default:
-				filelog.Debugf("[onebot] 反向 WS %s 连接失败 %s: %v", typ, addr, err)
+				filelog.OneBotDebugf("[onebot] 反向 WS %s 连接失败 %s: %v", typ, addr, err)
 			}
 		} else {
 			fails = 0
@@ -143,7 +143,7 @@ func (c *WSClient) connectLoop(typ, addr string, conptr **wsConn, sendHandshake 
 // connect 建立一次连接并阻塞监听：带鉴权头握手，可选发 lifecycle，重发失败缓存，
 // 按端点类型分流到 listenAPI/listenEvent
 func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool, prevFails int) error {
-	filelog.Debugf("[onebot] 连接反向 WebSocket %s: %s", typ, addr)
+	filelog.OneBotDebugf("[onebot] 连接反向 WebSocket %s: %s", typ, addr)
 	header := http.Header{
 		"X-Client-Role": []string{typ},
 		"X-Self-ID":     []string{strconv.FormatInt(c.selfID, 10)},

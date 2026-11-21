@@ -483,6 +483,7 @@ const GOQBOT_FIELDS: Record<string, "string" | "bool" | "int" | "strings"> = {
   "idmap.keep_days": "int",
   "idmap.max_size_mb": "int",
   "log.enabled": "bool",
+  "log.debug": "bool",
   "log.path": "string",
   "plugins.path": "string",
   "plugins.node": "string",

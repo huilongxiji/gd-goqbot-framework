@@ -609,7 +609,7 @@ function capLabel(perm) {
 }
 
 const RESTART_LABELS = {
-  qq: "QQ 账号与事件", "onebot.message_format": "消息格式", "onebot.debug": "调试日志", "onebot.downtime_message": "掉线自动回复",
+  qq: "QQ 账号与事件", "onebot.message_format": "消息格式", "onebot.debug": "OneBot 调试", "onebot.downtime_message": "掉线自动回复",
   idmap: "ID 对照表", log: "日志", plugins: "插件", webui: "WebUI 的开关、地址和端口",
 };
 
@@ -661,7 +661,7 @@ export function renderConfig(root) {
   const FIELDS = ["qq.app_id", "qq.client_secret", "qq.token", "qq.uin", "qq.use_uin", "qq.sandbox", "qq.shard_count", "qq.shard_id",
     "qq.mention_mode", "qq.ip_reject_action", "qq.ip_reject_retry_interval", "qq.developer_openid", "qq.text_intent",
     "onebot.message_format", "onebot.debug", "onebot.downtime_message", "idmap.disabled", "idmap.path", "idmap.keep_days", "idmap.max_size_mb",
-    "log.enabled", "log.path", "plugins.path", "plugins.node"];
+    "log.enabled", "log.path", "log.debug", "plugins.path", "plugins.node"];
   const IDMAP_DEFAULTS = [["idmap.keep_days", 3], ["idmap.max_size_mb", 1024]];
   function goqbotChanges() {
     const out = {};
@@ -797,7 +797,7 @@ export function renderConfig(root) {
       section("消息上报", null,
         h("div", { class: "form-grid" },
           field("消息格式", select("onebot.message_format", [["array", "消息段数组（推荐）"], ["string", "额外附带 CQ 码"]], "array")),
-          swc("调试日志", "日志里显示接口名、参数、耗时等调试信息", "onebot.debug"),
+          swc("OneBot 调试", "输出框架发来的动作请求、参数、耗时和连接重试过程，排查连接配置问题时打开", "onebot.debug"),
           field("掉线自动回复", text("onebot.downtime_message", { placeholder: "空 = 不回复" }), "所有框架都掉线时，自动回复给发消息的人", true))),
       section("数据与日志", null,
         h("div", { class: "form-grid" },
@@ -808,6 +808,7 @@ export function renderConfig(root) {
           field("ID 对照表大小上限（MB）", num("idmap.max_size_mb", { min: 0 }),
             `0 = 不限制，最小 16；超出时从最早的消息记录删起，用户的 ID 对照不会删。重启 goqbot 后生效。${idmapUsage(r.usage?.idmap)}`),
           swc("写日志文件", "按天写入日志目录；关闭后只在终端显示", "log.enabled", { def: true }),
+          swc("框架调试模式", "输出全部调试信息：启动详情、QQ 连接细节、原始报文、心跳等，日志会很多，排查完记得关掉", "log.debug"),
           field("日志目录", text("log.path", { placeholder: "logs" })))),
       section("插件", "一般不用改。",
         h("div", { class: "form-grid" },

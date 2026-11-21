@@ -47,6 +47,29 @@ type Client struct {
 	ipRejected bool                // stop 策略：永久停止重连
 	lastIPLog  time.Time           // 日志节流：避免 retry 下刷屏
 	gw         gatewayInfo         // 最近一次查到的接入点信息，连上时汇总显示
+	lostAt     time.Time           // 连接断开的时间，恢复后用来显示中断了多久
+}
+
+// isScheduledReconnect QQ 定期要求换连接（op 7 Reconnect，code 9000），属于正常现象，之后会恢复会话
+func isScheduledReconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errs.Error(err)
+	return e != nil && e.Code() == errs.CodeNeedReConnect
+}
+
+// onResumed 断线后恢复会话成功
+func (c *Client) onResumed() {
+	c.mu.Lock()
+	lost := c.lostAt
+	c.lostAt = time.Time{}
+	c.mu.Unlock()
+	if lost.IsZero() {
+		log.Printf("[qq] 已恢复连接")
+		return
+	}
+	log.Printf("[qq] 已恢复连接（中断 %s，期间的消息会补发）", humanSeconds(uint32(time.Since(lost).Seconds())))
 }
 
 // gatewayInfo /gateway/bot 返回的接入点、建议分片数和连接次数（WS 连接频控）
@@ -172,6 +195,7 @@ func (c *Client) Start(ctx context.Context) error {
 	filelog.Debugf("[qq] IP 白名单被拒策略: %s，重试间隔 %d 秒", c.action, int(c.retryInterval/time.Second))
 	log.Printf("[qq] 正在连接 QQ（分片 %d/%d）...", c.cfg.ShardID+1, c.cfg.ShardCount)
 
+	websocket.OnResumed = c.onResumed
 	go c.runShard(runCtx, api, tokenSource, intent)
 	return nil
 }
@@ -266,6 +290,7 @@ func (c *Client) registerHandlers() dto.Intent {
 		c.mu.Lock()
 		c.botName = data.User.Username
 		c.ready = true
+		c.lostAt = time.Time{}
 		c.mu.Unlock()
 		c.caller.SetNickname(data.User.Username)
 		if c.conv != nil {
@@ -275,6 +300,10 @@ func (c *Client) registerHandlers() dto.Intent {
 		filelog.Debugf("[qq] 机器人 openid %s，session_id %s", data.User.ID, data.SessionID)
 	})
 	errNotify := event.ErrorNotifyHandler(func(err error) {
+		if isScheduledReconnect(err) {
+			filelog.Debugf("[qq] WebSocket: %v", err)
+			return
+		}
 		filelog.Errorf("[qq] WebSocket 错误: %v", err)
 	})
 
@@ -534,7 +563,14 @@ func (c *Client) connectOnce(session *dto.Session) {
 		return
 	}
 	if err = wsClient.Listening(); err != nil {
-		filelog.Warnf("[qq] WebSocket 监听结束: %v", err)
+		c.mu.Lock()
+		c.lostAt = time.Now()
+		c.mu.Unlock()
+		if isScheduledReconnect(err) {
+			log.Printf("[qq] QQ 要求定期更换连接，正在恢复会话...")
+		} else {
+			filelog.Warnf("[qq] 与 QQ 的连接断开了：%v，正在重连", err)
+		}
 		// Listening 因 IP 被拒关闭时也会到这里
 		if errs.IsIPWhitelistRejected(err) {
 			c.onIPReject("ws-listen", err)

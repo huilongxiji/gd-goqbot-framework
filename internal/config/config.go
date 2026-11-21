@@ -51,6 +51,7 @@ type PluginsConfig struct {
 type LogConfig struct {
 	Enabled *bool  `yaml:"enabled"` // nil 或 true=开启；false=仅终端不落盘
 	Path    string `yaml:"path"`    // 日志目录，默认 logs；相对路径=可执行文件同级
+	Debug   bool   `yaml:"debug"`   // 框架调试模式：启动详情、QQ 连接细节、原始报文等全部调试信息（OneBot 连接的调试另见 onebot.debug）
 }
 
 // FileEnabled 是否写入本地日志文件（默认 true）。

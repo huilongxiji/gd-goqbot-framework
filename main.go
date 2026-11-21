@@ -34,7 +34,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.12"
+	AppVersion = "1.14.13"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -138,10 +138,14 @@ func run(configPath, exeDir string) (restart bool) {
 	}()
 	log.SetFlags(0)
 	log.SetOutput(filelog.StdLogWriter())
-	filelog.SetDebug(cfg.OneBot.Debug)
+	filelog.SetDebug(cfg.Log.Debug)
+	filelog.SetOneBotDebug(cfg.OneBot.Debug)
 	log.Printf("[goqbot] %s %s 正在启动（%s-%s）", AppName, AppVersion, runtime.GOOS, runtime.GOARCH)
+	if cfg.Log.Debug {
+		log.Printf("[goqbot] 框架调试模式已开启（log.debug），会输出全部调试信息")
+	}
 	if cfg.OneBot.Debug {
-		log.Printf("[goqbot] 调试模式已开启（onebot.debug），会输出全部调试信息")
+		log.Printf("[onebot] OneBot 调试已开启（onebot.debug），会输出框架发来的动作请求、参数、耗时和连接过程")
 	}
 	filelog.Debugf("[goqbot] 配置文件 %s，日志目录 %s", configPath, logDir)
 
@@ -282,11 +286,11 @@ func run(configPath, exeDir string) (restart bool) {
 		}
 	}
 
-	// 替换 botgo logger：过滤逐拍心跳（debug=true 时心跳照常显示），其余日志原样
-	botgo.SetLogger(qq.NewBotLogger(cfg.OneBot.Debug))
+	// 替换 botgo logger：普通模式只留警告和错误，框架调试模式（log.debug）下全部输出
+	botgo.SetLogger(qq.NewBotLogger(cfg.Log.Debug))
 
 	// 启动 QQ 上游连接
-	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
+	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.Log.Debug)
 	caller.SetReadyFunc(qqClient.Online)
 	if err := qqClient.Start(ctx); err != nil {
 		filelog.Fatalf("[qq] 启动 QQ 连接失败: %v", err)

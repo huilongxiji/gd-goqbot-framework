@@ -50,9 +50,12 @@ func (l *botLogger) emit(level, msg string) {
 	}
 }
 
-// isBenign 退出时 botgo 报的正常结束提示（例如 context canceled），普通模式下不显示
+// isBenign 不是故障的提示，普通模式下不显示：退出时的 context canceled；
+// QQ 定期要求换连接时报的 need reconnect（code 9000）和 close 4009（会话到时），goqbot 会自己说明并恢复会话
 func isBenign(msg string) bool {
-	return strings.Contains(msg, "context canceled")
+	return strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "need reconnect") ||
+		strings.Contains(msg, "close 4009")
 }
 
 // Debug、Info、Warn、Error 及对应的 f 格式化版本实现 botgo log.Logger 接口，统一经 emit 输出

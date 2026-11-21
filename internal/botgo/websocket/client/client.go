@@ -274,6 +274,9 @@ func (c *Client) listenMessageAndHandle() {
 			c.readyHandler(payload)
 			continue
 		}
+		if payload.Type == "RESUMED" && websocket.OnResumed != nil {
+			websocket.OnResumed()
+		}
 		// 解析具体事件，并投递给业务注册的 handler
 		if err := c.handleOne(payload); err != nil {
 			log.Errorf("%s parseAndHandle failed, %v", c.session, err)

@@ -27,6 +27,9 @@ func RegisterResumeSignal(signal syscall.Signal) {
 	ResumeSignal = signal
 }
 
+// OnResumed 断线后恢复会话成功（收到 RESUMED）时调用（goqbot 修改：用来提示「已恢复连接」）
+var OnResumed func()
+
 // PanicBufLen Panic 堆栈大小
 var PanicBufLen = 1024
 

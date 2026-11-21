@@ -113,18 +113,28 @@ func emitLevel(level, msg string) {
 	WriteFile([]byte(line))
 }
 
-// debugOn 是否为调试模式（config.yml 的 onebot.debug）
-var debugOn atomic.Bool
+// debugOn 框架调试模式（config.yml 的 log.debug）；oneBotDebugOn OneBot 调试（onebot.debug）
+var debugOn, oneBotDebugOn atomic.Bool
 
-// SetDebug 设置是否为调试模式：调试模式下 Debugf 的内容才会输出（终端和日志文件都是）
+// SetDebug 设置框架调试模式：开启后 Debugf 的内容才会输出（终端和日志文件都是）
 func SetDebug(on bool) { debugOn.Store(on) }
 
-// DebugOn 当前是否为调试模式
+// DebugOn 当前是否为框架调试模式
 func DebugOn() bool { return debugOn.Load() }
 
-// Debugf 只在调试模式输出的详细信息；普通模式下终端和日志文件都不记录
+// Debugf 只在框架调试模式输出的详细信息；普通模式下终端和日志文件都不记录
 func Debugf(format string, v ...interface{}) {
 	if debugOn.Load() {
+		emitLevel("Debug", fmt.Sprintf(format, v...))
+	}
+}
+
+// SetOneBotDebug 设置 OneBot 调试：开启后 OneBotDebugf 的内容才会输出
+func SetOneBotDebug(on bool) { oneBotDebugOn.Store(on) }
+
+// OneBotDebugf 只在 OneBot 调试（onebot.debug）开启时输出：WS 连接过程等，用来排查连接配置问题
+func OneBotDebugf(format string, v ...interface{}) {
+	if oneBotDebugOn.Load() {
 		emitLevel("Debug", fmt.Sprintf(format, v...))
 	}
 }
