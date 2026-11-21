@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"goqbot/internal/banner"
 	"goqbot/internal/botgo"
 	"goqbot/internal/config"
 	"goqbot/internal/filelog"
@@ -34,7 +35,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.13"
+	AppVersion = "1.14.14"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -50,6 +51,8 @@ func main() {
 		fmt.Printf("%s %s\n", AppName, AppVersion)
 		return
 	}
+	// 终端里显示 goqbot 字符字，窗口标题设为「goqbot 版本」（不写进日志文件；输出被重定向时不显示）
+	banner.Show(AppName, AppVersion)
 
 	// 未显式指定 -config 时，默认加载可执行文件同级目录下的 config.yml（不受当前工作目录影响）
 	explicit := false
