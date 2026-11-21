@@ -48,6 +48,7 @@ type Caller struct {
 	gateway    GatewayQuerier   // /gateway/bot 查询器，由 qq.Client 注入
 	debug      bool             // true=打印收到的动作日志
 	plugins    *plugins.Manager // 插件宿主，由 main 注入；未注入时插件动作返回不可用
+	ready      func() bool      // QQ 连接是否已就绪，由 main 注入；get_status 用
 
 	ids *idmap.Store // openid<->数字 id 映射，用于动作里的 id 反查
 
@@ -215,6 +216,24 @@ func (c *Caller) SetSender(s MessageSender) {
 	c.sender = s
 }
 
+// SetReadyFunc 注入「QQ 连接是否已就绪」的查询，get_status 据此如实报告在线状态
+func (c *Caller) SetReadyFunc(f func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ready = f
+}
+
+// online QQ 连接是否已就绪；没注入查询时按发送通道是否存在判断
+func (c *Caller) online() bool {
+	c.mu.RLock()
+	f, s := c.ready, c.sender
+	c.mu.RUnlock()
+	if f != nil {
+		return f()
+	}
+	return s != nil
+}
+
 // SetGatewayQuerier 注入 /gateway/bot 查询实现（由 qq.Client 在建立 openapi 后调用）
 func (c *Caller) SetGatewayQuerier(q GatewayQuerier) {
 	c.mu.Lock()
@@ -283,7 +302,9 @@ func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope
 			"nickname": c.getNickname(),
 		})
 	case "get_status":
-		return ok(map[string]any{"online": true, "good": true})
+		// 如实报告：QQ 断线重连期间 online=false，框架可据此暂停发消息或提示
+		on := c.online()
+		return ok(map[string]any{"online": on, "good": on})
 	case "get_version_info":
 		return ok(map[string]any{
 			"app_name":    c.appName,
@@ -2269,7 +2290,7 @@ func (c *Caller) handleScopedRequest(payload []byte, scope requestScope) []byte 
 	}
 	ret := c.callScoped(action, params, scope)
 	if echo := j.Get("echo"); echo.Exists() {
-		ret["echo"] = echo.Value()
+		ret["echo"] = json.RawMessage(echo.Raw) // 原样返回，数字 echo 不丢精度
 	}
 	b, _ := json.Marshal(ret)
 	return b

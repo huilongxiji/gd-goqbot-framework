@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -1096,11 +1097,23 @@ func (inst *instance) receivePeer(rawID json.RawMessage, method string, params j
 		case !initialized:
 			rerr = &rpcError{Code: codeNotInitialized, Message: "not_initialized", Data: map[string]any{"code": "not_initialized"}}
 		default:
-			result, rerr = inst.owner.m.serve(ctx, inst.owner, method, params)
+			result, rerr = inst.serveSafe(ctx, method, params)
 		}
 		inst.respond(id, result, rerr)
 	}()
 	return nil
+}
+
+// serveSafe 处理插件的一个请求；处理过程中出错崩溃时只让这个请求失败，
+// 不让整个 goqbot 退出（这个 goroutine 里的 panic 没有别处能接住）
+func (inst *instance) serveSafe(ctx context.Context, method string, params json.RawMessage) (result json.RawMessage, rerr *rpcError) {
+	defer func() {
+		if r := recover(); r != nil {
+			filelog.Errorf("[plugins] 处理插件 %s 的请求 %s 时发生 panic: %v\n%s", inst.owner.cfg.Name, method, r, debug.Stack())
+			result, rerr = nil, newRPCError(Detail(ErrCallFailed, "goqbot 处理这个请求时出错，详情见 goqbot 日志"))
+		}
+	}()
+	return inst.owner.m.serve(ctx, inst.owner, method, params)
 }
 
 // handleNotification 处理插件发来的通知；不认识的通知忽略，便于以后扩展

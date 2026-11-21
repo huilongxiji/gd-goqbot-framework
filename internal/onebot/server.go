@@ -2,14 +2,20 @@ package onebot
 
 import (
 	"bytes"
+	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/gorilla/websocket"
 	"goqbot/internal/config"
@@ -23,6 +29,16 @@ var upgrader = websocket.Upgrader{
 
 // errConnClosed 表示连接已关闭，写入被丢弃
 var errConnClosed = errors.New("ws connection closed")
+
+// errQueueFull 表示这个连接待发的消息堆满了（对方处理太慢或卡住了）
+var errQueueFull = errors.New("待推送的事件堆积太多，对方可能卡住了")
+
+const (
+	// maxFrameBytes 下游发来的单条消息上限（带 base64 图片的消息可能很大，留足余量）
+	maxFrameBytes = 128 << 20
+	// writeQueueSize 每个连接最多堆积多少条待发消息；推事件时堆满就断开这个连接，不拖累其他连接
+	writeQueueSize = 1024
+)
 
 // wsConn 包装一个 websocket 连接，所有写入经由专用 writer goroutine 串行化
 type wsConn struct {
@@ -47,10 +63,11 @@ func newWSConn(conn *websocket.Conn, caller *Caller, onWriteErr func([]byte), sc
 		conn:       conn,
 		caller:     caller,
 		scope:      scope,
-		writeCh:    make(chan outboundFrame, 256),
+		writeCh:    make(chan outboundFrame, writeQueueSize),
 		closeCh:    make(chan struct{}),
 		onWriteErr: onWriteErr,
 	}
+	conn.SetReadLimit(maxFrameBytes)
 	go c.startWriter()
 	return c
 }
@@ -79,6 +96,22 @@ func (c *wsConn) writeText(b []byte) error {
 	return c.writeFrame(outboundFrame{payload: b, replay: true})
 }
 
+// tryWriteText 推事件用：不等待，队列堆满时返回 errQueueFull（调用方会断开这个连接），
+// 避免一个处理慢的框架让所有连接的事件推送都卡住
+func (c *wsConn) tryWriteText(b []byte) error {
+	select {
+	case <-c.closeCh:
+		return errConnClosed
+	default:
+	}
+	select {
+	case c.writeCh <- outboundFrame{payload: b, replay: true}:
+		return nil
+	default:
+		return errQueueFull
+	}
+}
+
 // writeFrame 将一帧投递到写队列；连接已关闭则返回 errConnClosed
 func (c *wsConn) writeFrame(frame outboundFrame) error {
 	select {
@@ -104,8 +137,15 @@ func (c *wsConn) close() error {
 func (c *wsConn) handleRequest(payload []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			filelog.Errorf("[onebot] 处理动作请求时发生 panic: %v", r)
-			_ = c.close()
+			// 只让这一个请求失败：回一条错误响应，连接保持不断（不影响框架其他正在进行的请求）
+			filelog.Errorf("[onebot] 处理动作请求时发生 panic: %v\n请求：%s\n%s", r, truncateForLog(payload, 500), debug.Stack())
+			ret := failed(1500, "goqbot 处理这个请求时出错，详情见 goqbot 日志")
+			if echo := gjson.GetBytes(payload, "echo"); echo.Exists() {
+				ret["echo"] = json.RawMessage(echo.Raw)
+			}
+			if b, err := json.Marshal(ret); err == nil {
+				_ = c.writeFrame(outboundFrame{payload: b})
+			}
 		}
 	}()
 	resp := c.caller.handleScopedRequest(payload, c.scope)
@@ -193,10 +233,15 @@ func (s *WSServer) Start() error {
 	s.listener = listener
 	s.mu.Unlock()
 	log.Printf("[onebot] 正向 WS 服务器已启动: %s", listener.Addr())
+	if s.obCfg.AccessToken == "" && !isLoopback(listener.Addr()) {
+		filelog.Warnf("[onebot] 正向 WS %s 没有设置 access_token，同一网络里的任何人都能连上来控制机器人。建议设置口令，或者把地址改成 127.0.0.1", listener.Addr())
+	}
 
 	go s.heartbeatLoop()
 	go func() {
-		err := http.Serve(listener, mux)
+		// 握手请求头 10 秒内没发完就断开，避免慢速连接一直占着
+		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		err := srv.Serve(listener)
 		select {
 		case <-s.stop:
 		default:
@@ -270,6 +315,20 @@ func (s *WSServer) heartbeatLoop() {
 	}
 }
 
+// isLoopback 监听地址是不是只有本机能连（127.0.0.1、::1）
+func isLoopback(addr net.Addr) bool {
+	ta, ok := addr.(*net.TCPAddr)
+	return ok && ta.IP.IsLoopback()
+}
+
+// truncateForLog 日志里只记请求的前 n 个字节（请求里可能带很大的 base64 图片）
+func truncateForLog(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "…"
+}
+
 // checkAuth 校验下游鉴权：token 为空放行，否则比对 Authorization 头或 access_token 查询参数
 func checkAuth(r *http.Request, token string) int {
 	if token == "" {
@@ -281,10 +340,49 @@ func checkAuth(r *http.Request, token string) int {
 	} else if _, after, ok := strings.Cut(auth, " "); ok {
 		auth = after
 	}
-	if auth != token {
+	if subtle.ConstantTimeCompare([]byte(auth), []byte(token)) != 1 {
 		return http.StatusUnauthorized
 	}
 	return http.StatusOK
+}
+
+// allowOrigin 浏览器里的网页连 WS 时会带 Origin 头。没设口令时只放行本机打开的网页，
+// 否则用户在浏览器里打开的任何网站都能悄悄连上本机的 goqbot、以机器人身份发消息。
+// 框架程序（NoneBot 等）不带 Origin，不受影响；设了口令时由口令保护，也放行
+func allowOrigin(r *http.Request, token string) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" || token != "" {
+		return true
+	}
+	if origin == "null" {
+		return true // 本地打开的 HTML 文件
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "file" {
+		return true
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// precheck 鉴权和来源检查，不通过时写好响应并返回 false
+func (s *WSServer) precheck(w http.ResponseWriter, r *http.Request) bool {
+	if status := checkAuth(r, s.obCfg.AccessToken); status != http.StatusOK {
+		w.WriteHeader(status)
+		return false
+	}
+	if !allowOrigin(r, s.obCfg.AccessToken) {
+		filelog.Warnf("[onebot] 拒绝了来自网页 %s 的 WS 连接：没设置 access_token 时只允许本机网页连接，需要从其他网页连接请先设置口令", r.Header.Get("Origin"))
+		w.WriteHeader(http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // scope 经本监听连入的下游所拥有的权限
@@ -312,8 +410,7 @@ func clientLabel(r *http.Request) string {
 
 // handleEvent 处理 /event 端点：升级、握手并登记为事件推送连接（只推不收）
 func (s *WSServer) handleEvent(w http.ResponseWriter, r *http.Request) {
-	if status := checkAuth(r, s.obCfg.AccessToken); status != http.StatusOK {
-		w.WriteHeader(status)
+	if !s.precheck(w, r) {
 		return
 	}
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -332,8 +429,7 @@ func (s *WSServer) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 // handleAPI 处理 /api 端点：升级后只接收并处理动作请求
 func (s *WSServer) handleAPI(w http.ResponseWriter, r *http.Request) {
-	if status := checkAuth(r, s.obCfg.AccessToken); status != http.StatusOK {
-		w.WriteHeader(status)
+	if !s.precheck(w, r) {
 		return
 	}
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -351,8 +447,7 @@ func (s *WSServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 // handleAny 处理 / 通用端点：收发合一，既登记为事件连接又监听动作请求
 func (s *WSServer) handleAny(w http.ResponseWriter, r *http.Request) {
-	if status := checkAuth(r, s.obCfg.AccessToken); status != http.StatusOK {
-		w.WriteHeader(status)
+	if !s.precheck(w, r) {
 		return
 	}
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -379,7 +474,10 @@ func (s *WSServer) onEventPush(ev *Event) int {
 	j := 0
 	for i := 0; i < len(s.eventCon); i++ {
 		conn := s.eventCon[i]
-		if err := conn.writeText(ev.Raw); err != nil {
+		if err := conn.tryWriteText(ev.Raw); err != nil {
+			if errors.Is(err, errQueueFull) {
+				filelog.Warnf("[onebot] 正向 WS 连接 %s 处理太慢，%v，已断开（框架会自动重连）", s.cfg.Address, err)
+			}
 			_ = conn.close()
 			delete(s.conns, conn)
 			continue

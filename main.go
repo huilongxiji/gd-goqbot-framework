@@ -33,7 +33,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.9"
+	AppVersion = "1.14.10"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -240,6 +240,7 @@ func run(configPath, exeDir string) (restart bool) {
 
 	// 启动 QQ 上游连接
 	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
+	caller.SetReadyFunc(qqClient.Online)
 	if err := qqClient.Start(ctx); err != nil {
 		filelog.Fatalf("启动 QQ 客户端失败: %v", err)
 	}

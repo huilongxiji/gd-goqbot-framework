@@ -219,8 +219,8 @@ func (c *WSClient) onEventPush(ev *Event) int {
 		if conn == nil {
 			return
 		}
-		if err := conn.writeText(ev.Raw); err != nil {
-			filelog.Warnf("[onebot] 向反向 WS %s 推送事件失败: %v", typ, err)
+		if err := conn.tryWriteText(ev.Raw); err != nil {
+			filelog.Warnf("[onebot] 向反向 WS %s 推送事件失败: %v，已断开（会自动重连）", typ, err)
 			_ = conn.close()
 			return
 		}

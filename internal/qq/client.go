@@ -537,3 +537,10 @@ func (c *Client) Ready() bool {
 	defer c.mu.RUnlock()
 	return c.ready
 }
+
+// Online 当前是否连着 QQ：完成过 READY，并且 WebSocket 连接还在（断线重连期间为 false）
+func (c *Client) Online() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ready && c.wsClient != nil
+}
