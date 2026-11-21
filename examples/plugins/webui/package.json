@@ -1,0 +1,7 @@
+{
+  "name": "webui",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "description": "goqbot 网页版：按群和用户查看聊天消息，管理连接、插件、日志、配置和更新"
+}

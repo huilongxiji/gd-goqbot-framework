@@ -28,7 +28,18 @@ type Config struct {
 	IDMap   IDMapConfig   `yaml:"idmap"`
 	Log     LogConfig     `yaml:"log"`
 	Plugins PluginsConfig `yaml:"plugins"`
+	WebUI   WebUIConfig   `yaml:"webui"`
 }
+
+// WebUIConfig 网页管理面板（plugins/webui 插件）的开关、监听地址和端口
+type WebUIConfig struct {
+	Enabled *bool  `yaml:"enabled"` // true=启用；没写或 false=不启动 webui 插件（默认关闭）
+	Host    string `yaml:"host"`    // 监听地址，默认 127.0.0.1（只能在本机打开）
+	Port    int    `yaml:"port"`    // 端口，默认 7965
+}
+
+// IsEnabled 是否启用 WebUI：只有明确写了 enabled: true 才启用，默认关闭
+func (w WebUIConfig) IsEnabled() bool { return w.Enabled != nil && *w.Enabled }
 
 // PluginsConfig 插件配置。插件放进插件目录即可载入，开关等可选设置写在各插件文件夹的 plugin.yml 中。
 type PluginsConfig struct {
@@ -313,6 +324,13 @@ func (c *Config) applyDefaults() {
 	if c.Plugins.Path == "" {
 		c.Plugins.Path = "plugins"
 	}
+	c.WebUI.Host = strings.TrimSpace(c.WebUI.Host)
+	if c.WebUI.Host == "" {
+		c.WebUI.Host = "127.0.0.1"
+	}
+	if c.WebUI.Port == 0 {
+		c.WebUI.Port = 7965
+	}
 	for i := range c.OneBot.Servers {
 		if rev := c.OneBot.Servers[i].WSReverse; rev != nil && rev.ReconnectInterval == 0 {
 			rev.ReconnectInterval = 3000
@@ -362,6 +380,12 @@ func (c *Config) Validate() error {
 	}
 	if mb := c.IDMap.MaxSizeMBOrDefault(); mb != 0 && (mb < 16 || mb > 1024*1024) {
 		return fmt.Errorf("idmap.max_size_mb 要填 0（不限制）或 16 到 1048576 之间的数，当前为 %d", mb)
+	}
+	if c.WebUI.Port < 1 || c.WebUI.Port > 65535 {
+		return fmt.Errorf("webui.port 要在 1 到 65535 之间，当前为 %d", c.WebUI.Port)
+	}
+	if strings.ContainsAny(c.WebUI.Host, " \t/") {
+		return fmt.Errorf("webui.host 只填地址，不带端口和 http://，例如 127.0.0.1 或 0.0.0.0，当前为 %q", c.WebUI.Host)
 	}
 	switch c.QQ.IPRejectAction {
 	case "stop", "retry", "exit":
