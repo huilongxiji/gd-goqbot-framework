@@ -613,6 +613,20 @@ const RESTART_LABELS = {
   idmap: "ID 对照表", log: "日志", plugins: "插件",
 };
 
+/** 字节数换成 MB 文字 */
+function mb(n) {
+  if (typeof n !== "number") return "—";
+  if (n < 1048576) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0)} MB`;
+}
+
+/** ID 对照表现在的大小 */
+function idmapUsage(st) {
+  if (!st) return "";
+  if (!st.persistent) return "现在是纯内存模式，没有文件。";
+  return `现在文件 ${mb(st.file_bytes)}，存着 ${Number(st.messages ?? 0).toLocaleString("zh-CN")} 条消息记录、${Number(st.ids ?? 0).toLocaleString("zh-CN")} 个用户和群的 ID。`;
+}
+
 export function renderConfig(root) {
   const box = h("div", { class: "settings" }, h("p", { class: "muted" }, "正在读取…"));
   const bar = h("div", { class: "save-bar", hidden: true });
@@ -632,8 +646,10 @@ export function renderConfig(root) {
     try {
       const r = await api("GET", "/api/settings");
       orig = r.goqbot;
-      form = structuredClone(r.goqbot);
-      origWeb = { host: r.webui.host, port: r.webui.port, token: "", commands: r.commands };
+      // 配置文件里没写的项按 goqbot 的默认值显示
+      for (const [path, def] of IDMAP_DEFAULTS) if (get(orig, path) === undefined) set(orig, path, def);
+      form = structuredClone(orig);
+      origWeb = { host: r.webui.host, port: r.webui.port, token: "", commands: r.commands, history: r.history };
       web = structuredClone(origWeb);
       render(r);
     } catch (e) {
@@ -644,7 +660,9 @@ export function renderConfig(root) {
   // ---------- 改动检测 ----------
   const FIELDS = ["qq.app_id", "qq.client_secret", "qq.token", "qq.uin", "qq.use_uin", "qq.sandbox", "qq.shard_count", "qq.shard_id",
     "qq.mention_mode", "qq.ip_reject_action", "qq.ip_reject_retry_interval", "qq.developer_openid", "qq.text_intent",
-    "onebot.message_format", "onebot.debug", "onebot.downtime_message", "idmap.disabled", "idmap.path", "log.enabled", "log.path", "plugins.path", "plugins.node"];
+    "onebot.message_format", "onebot.debug", "onebot.downtime_message", "idmap.disabled", "idmap.path", "idmap.keep_days", "idmap.max_size_mb",
+    "log.enabled", "log.path", "plugins.path", "plugins.node"];
+  const IDMAP_DEFAULTS = [["idmap.keep_days", 3], ["idmap.max_size_mb", 1024]];
   function goqbotChanges() {
     const out = {};
     for (const f of FIELDS) {
@@ -661,6 +679,7 @@ export function renderConfig(root) {
     if (web.host !== origWeb.host || Number(web.port) !== origWeb.port) { out.host = web.host; out.port = Number(web.port); }
     if (web.token.trim()) out.token = web.token.trim();
     if (JSON.stringify(web.commands) !== JSON.stringify(origWeb.commands)) out.commands = web.commands;
+    if (JSON.stringify(web.history) !== JSON.stringify(origWeb.history)) out.history = web.history;
     return out;
   }
   function changed() {
@@ -784,6 +803,10 @@ export function renderConfig(root) {
         h("div", { class: "form-grid" },
           swc("保存 ID 对照表", "关闭后只存在内存里，重启后无法撤回旧消息、查回用户", "idmap.disabled", { invert: true }),
           field("ID 对照表文件", text("idmap.path", { placeholder: "idmap.db" })),
+          field("消息记录保留天数", num("idmap.keep_days", { min: 0, max: 36500 }),
+            "撤回消息、引用旧消息时要用到；0 = 不按天数删除。重启 goqbot 后生效"),
+          field("ID 对照表大小上限（MB）", num("idmap.max_size_mb", { min: 0 }),
+            `0 = 不限制，最小 16；超出时从最早的消息记录删起，用户的 ID 对照不会删。重启 goqbot 后生效。${idmapUsage(r.usage?.idmap)}`),
           swc("写日志文件", "按天写入日志目录；关闭后只在终端显示", "log.enabled", { def: true }),
           field("日志目录", text("log.path", { placeholder: "logs" })))),
       section("插件", "一般不用改。",
@@ -795,6 +818,11 @@ export function renderConfig(root) {
           switchCard("查看运行状态", "回复 goqbot 的运行平台和运行时长", cmd.enabled, (v) => { cmd.enabled = v; changed(); }),
           field("触发指令", keyword, "完整发送这几个字才会触发，不区分大小写"),
           h("div", { class: "full cmd-demo" }, h("small", { class: "muted" }, "回复示例"), preview))),
+      section("聊天记录", "群聊、私聊页面保存的聊天记录和图片，保存后立即生效。",
+        h("div", { class: "form-grid" },
+          field("保留天数", histNum("keep_days", 36500), "超过天数的聊天记录和缓存的图片会删掉；0 = 一直保留"),
+          field("聊天记录大小上限（MB）", histNum("max_mb", 1048576), `0 = 不限制；超出时从最早的一天删起。现在占用 ${mb(r.usage?.chat_bytes)}`),
+          field("图片缓存大小上限（MB）", histNum("media_max_mb", 1048576), `0 = 不限制；超出时先删最早下载的。现在占用 ${mb(r.usage?.media_bytes)}`))),
       section("WebUI", "这个管理页面本身的设置。",
         h("div", { class: "form-grid" },
           field("监听地址", h("input", { type: "text", value: web.host, spellcheck: "false", oninput: (e) => { web.host = e.target.value.trim(); changed(); } }),
@@ -805,9 +833,20 @@ export function renderConfig(root) {
     changed();
   }
 
+  /** 聊天记录保留设置的数字输入框 */
+  function histNum(key, max) {
+    return h("input", { type: "number", min: 0, max, value: web.history?.[key] ?? 0,
+      oninput: (e) => { const v = Number(e.target.value); if (Number.isInteger(v) && v >= 0) { web.history = { ...web.history, [key]: v }; changed(); } } });
+  }
+
   async function save() {
     if (form.qq.use_uin && !(form.qq.uin > 0)) {
       fill(result, h("p", { class: "form-error" }, "ID 模式选了「使用 QQ 号」，请先填写正确的机器人 QQ 号"));
+      return;
+    }
+    const maxMB = form.idmap?.max_size_mb;
+    if (maxMB !== 0 && maxMB < 16) {
+      fill(result, h("p", { class: "form-error" }, "ID 对照表大小上限要填 0（不限制）或至少 16 MB"));
       return;
     }
     const gv = goqbotChanges();

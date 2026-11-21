@@ -2,9 +2,12 @@
 // 私聊以用户为单位（private:<user_id>），群聊以群为单位（group:<group_id>）。
 //
 // 文件都在 plugin-data/webui/chat/ 下：
-//   chats.json          会话列表（名称、备注、最后一条消息、未读数）
-//   <会话>.jsonl         这个会话的消息，一行一条，只追加；超过上限时裁掉最早的一半
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+//   chats.json                  会话列表（名称、备注、最后一条消息、未读数）
+//   <会话>/<年-月-日>.jsonl       这个会话当天的消息，一行一条，只追加
+//
+// 按天分文件：超过保留天数时直接删掉那几天的文件；总大小超过上限时从最早的一天删起。
+// 旧版本是每个会话一个 <会话>.jsonl，启动时会自动拆成按天的文件。
+import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { OneBotEvent } from "../../goqbot.js";
 import type { MediaCache } from "./media.ts";
@@ -84,7 +87,84 @@ export interface Chat {
   seq: number; // 最后一条消息的序号
 }
 
-const FILE_LIMIT = 8 * 1024 * 1024; // 单个会话文件超过 8 MB 时裁掉最早的一半
+/** 聊天记录的保留设置 */
+export interface HistoryLimits {
+  keepDays: number; // 保留天数，0=不按天数删除
+  maxBytes: number; // 聊天记录总大小上限（字节），0=不限制
+}
+
+const DAY_FILE_RE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+
+/** 本地时间的日期 年-月-日 */
+function dayOf(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** 从文件末尾往前一行一行读（不把整个文件读进内存），fn 返回 false 时停下 */
+async function readLinesReverse(file: string, fn: (line: string) => boolean): Promise<void> {
+  let fh;
+  try {
+    fh = await open(file, "r");
+  } catch {
+    return;
+  }
+  try {
+    let pos = (await fh.stat()).size;
+    let rest = Buffer.alloc(0);
+    while (pos > 0) {
+      const len = Math.min(64 * 1024, pos);
+      pos -= len;
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, pos);
+      const data = rest.length ? Buffer.concat([buf, rest]) : buf;
+      let end = data.length;
+      for (let i = data.length - 1; i >= 0; i--) {
+        if (data[i] === 10) {
+          if (i + 1 < end && !fn(data.toString("utf8", i + 1, end))) {
+            return;
+          }
+          end = i;
+        }
+      }
+      rest = data.subarray(0, end);
+    }
+    if (rest.length) {
+      fn(rest.toString("utf8"));
+    }
+  } finally {
+    await fh.close();
+  }
+}
+
+/** 文件第一行（不读整个文件） */
+async function firstLine(file: string): Promise<string> {
+  let fh;
+  try {
+    fh = await open(file, "r");
+  } catch {
+    return "";
+  }
+  try {
+    const parts: Buffer[] = [];
+    for (let pos = 0; pos < 8 * 1024 * 1024; pos += 64 * 1024) {
+      const buf = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      const nl = buf.subarray(0, bytesRead).indexOf(10);
+      if (nl >= 0) {
+        parts.push(buf.subarray(0, nl));
+        break;
+      }
+      parts.push(buf.subarray(0, bytesRead));
+      if (bytesRead < buf.length) {
+        break;
+      }
+    }
+    return Buffer.concat(parts).toString("utf8");
+  } finally {
+    await fh.close();
+  }
+}
 
 /** 把 CQ 码字符串转成消息段 */
 export function parseCQ(text: string): Segment[] {
@@ -221,7 +301,15 @@ export class ChatStore {
   readonly dir: string;
   private chats = new Map<string, Chat>();
   private saveTimer: NodeJS.Timeout | undefined;
-  private writing = new Map<string, Promise<void>>(); // 每个会话的写入按顺序进行
+  private writing = new Map<string, Promise<unknown>>(); // 每个会话的读写按顺序进行
+  private limits: HistoryLimits = { keepDays: 0, maxBytes: 0 };
+  private totalBytes = 0; // 聊天记录总大小（启动和每次清理时重新统计，中间按写入的字节累加）
+  private firstSeq = new Map<string, number>(); // 每个按天文件第一条消息的序号，翻历史时跳过整天用
+  private migrated = new Set<string>(); // 已经检查过旧版文件的会话
+  private maintaining: Promise<void> | undefined;
+  private lastMaintain = 0;
+  private maintainDay = "";
+  private maintainTimer: NodeJS.Timeout | undefined;
   private listeners = new Set<(ev: { chat: Chat; message: ChatMessage }) => void>();
   private renameListeners = new Set<(from: string, to: string) => void>();
   private media: MediaCache | undefined;
@@ -235,8 +323,32 @@ export class ChatStore {
     this.dir = join(dataDir, "chat");
   }
 
+  /** 设置聊天记录的保留天数和总大小上限，立即按新设置清理一次 */
+  setLimits(limits: HistoryLimits): Promise<void> {
+    this.limits = { keepDays: Math.max(0, Math.floor(limits.keepDays) || 0), maxBytes: Math.max(0, Math.floor(limits.maxBytes) || 0) };
+    return this.maintain();
+  }
+
+  /** 聊天记录现在占的空间（字节） */
+  usage(): number {
+    return this.totalBytes;
+  }
+
+  /** 停止定时清理（插件退出时） */
+  stop(): void {
+    clearInterval(this.maintainTimer);
+  }
+
   async load(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
+    // 每 10 分钟看一次：日期变了按保留天数清理，或者总大小超了上限
+    this.maintainTimer = setInterval(() => {
+      const over = this.limits.maxBytes > 0 && this.totalBytes > this.limits.maxBytes;
+      if (over || dayOf(Date.now()) !== this.maintainDay) {
+        void this.maintain();
+      }
+    }, 10 * 60 * 1000);
+    this.maintainTimer.unref?.();
     try {
       const list = JSON.parse(await readFile(join(this.dir, "chats.json"), "utf8")) as Chat[];
       for (const c of list) {
@@ -367,11 +479,14 @@ export class ChatStore {
     legacy.key = key;
     legacy.id = peer;
     this.chats.set(key, legacy);
-    try {
-      await rename(this.fileOf(legacyKey), this.fileOf(key));
-    } catch {
-      // 旧会话没有聊天记录文件
+    for (const [from, to] of [[this.dirOf(legacyKey), this.dirOf(key)], [this.legacyFileOf(legacyKey), this.legacyFileOf(key)]]) {
+      try {
+        await rename(from, to);
+      } catch {
+        // 旧会话没有聊天记录
+      }
     }
+    this.migrated.delete(legacyKey);
     this.scheduleSave();
     for (const fn of this.renameListeners) {
       fn(legacyKey, key);
@@ -383,8 +498,67 @@ export class ChatStore {
     this.renameListeners.add(fn);
   }
 
-  private fileOf(key: string): string {
-    return join(this.dir, key.replace(":", "-") + ".jsonl");
+  /** 会话的聊天记录文件夹 */
+  private dirOf(key: string): string {
+    return join(this.dir, key.replace(":", "-"));
+  }
+
+  /** 旧版本的单个聊天记录文件 */
+  private legacyFileOf(key: string): string {
+    return this.dirOf(key) + ".jsonl";
+  }
+
+  /** 同一个会话的读写按顺序进行 */
+  private queue<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.writing.get(key) ?? Promise.resolve();
+    const next = prev.then(fn);
+    const done = next.catch(() => {});
+    this.writing.set(key, done);
+    // 做完后如果没有排在后面的任务，就从表里去掉，会话很多时不留一堆已完成的任务
+    void done.then(() => {
+      if (this.writing.get(key) === done) {
+        this.writing.delete(key);
+      }
+    });
+    return next;
+  }
+
+  /** 旧版本的 <会话>.jsonl 拆成按天的文件（每个会话只检查一次）。要在这个会话的队列里调用 */
+  private async migrateFile(key: string): Promise<void> {
+    if (this.migrated.has(key)) {
+      return;
+    }
+    this.migrated.add(key);
+    const legacy = this.legacyFileOf(key);
+    let text: string;
+    try {
+      text = await readFile(legacy, "utf8");
+    } catch {
+      return;
+    }
+    const days = new Map<string, string[]>();
+    for (const line of text.split("\n")) {
+      if (!line) {
+        continue;
+      }
+      let day = "";
+      try {
+        const m = JSON.parse(line) as ChatMessage;
+        day = dayOf(m.recv_ms || m.time * 1000 || Date.now());
+      } catch {
+        continue; // 跳过写坏的行
+      }
+      if (!days.has(day)) {
+        days.set(day, []);
+      }
+      days.get(day)!.push(line);
+    }
+    const dir = this.dirOf(key);
+    await mkdir(dir, { recursive: true });
+    for (const day of [...days.keys()].sort()) {
+      await appendFile(join(dir, `${day}.jsonl`), days.get(day)!.join("\n") + "\n");
+    }
+    await rm(legacy, { force: true });
   }
 
   /**
@@ -441,50 +615,167 @@ export class ChatStore {
   }
 
   private append(key: string, msg: ChatMessage): Promise<void> {
-    const prev = this.writing.get(key) ?? Promise.resolve();
-    const next = prev.then(async () => {
-      const file = this.fileOf(key);
-      await appendFile(file, JSON.stringify(msg) + "\n");
-      const st = await stat(file);
-      if (st.size > FILE_LIMIT) {
-        const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
-        const keep = lines.slice(Math.floor(lines.length / 2));
-        await writeFile(file + ".tmp", keep.join("\n") + "\n");
-        await rename(file + ".tmp", file);
+    return this.queue(key, async () => {
+      await this.migrateFile(key);
+      const dir = this.dirOf(key);
+      await mkdir(dir, { recursive: true });
+      const line = JSON.stringify(msg) + "\n";
+      await appendFile(join(dir, `${dayOf(msg.recv_ms || Date.now())}.jsonl`), line);
+      this.totalBytes += Buffer.byteLength(line);
+      // 超过总大小上限时清理（最多一分钟一次）
+      if (this.limits.maxBytes > 0 && this.totalBytes > this.limits.maxBytes && Date.now() - this.lastMaintain > 60_000) {
+        void this.maintain();
       }
     });
-    const done = next.catch(() => {});
-    this.writing.set(key, done);
-    return next;
   }
 
-  /** 读取消息：before 为序号，返回比它早的最多 limit 条（按时间正序） */
+  /**
+   * 按设置清理聊天记录：删掉超过保留天数的按天文件；总大小超过上限时从最早的一天删起，删到上限的 90%。
+   * 顺便把旧版本的单个文件拆成按天的文件，并重新统计总大小
+   */
+  maintain(): Promise<void> {
+    if (this.maintaining) {
+      return this.maintaining;
+    }
+    this.lastMaintain = Date.now();
+    // 清理出错（例如 Windows 上文件正被打开删不掉）不影响运行，下次再试
+    this.maintaining = this.doMaintain()
+      .catch(() => {})
+      .finally(() => {
+        this.maintaining = undefined;
+      });
+    return this.maintaining;
+  }
+
+  private async doMaintain(): Promise<void> {
+    const now = Date.now();
+    const cutoff = this.limits.keepDays > 0 ? dayOf(now - this.limits.keepDays * 86400_000) : "";
+    let entries;
+    try {
+      entries = await readdir(this.dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const legacyRe = /^(private|group)-(.+)\.jsonl$/;
+    for (const e of entries) {
+      const m = e.isFile() ? legacyRe.exec(e.name) : null;
+      if (m) {
+        const key = `${m[1]}:${m[2]}`;
+        await this.queue(key, () => this.migrateFile(key)).catch(() => {});
+      }
+    }
+    const files: { path: string; day: string; size: number }[] = [];
+    let total = 0;
+    for (const e of await readdir(this.dir, { withFileTypes: true })) {
+      if (!e.isDirectory()) {
+        continue;
+      }
+      const dir = join(this.dir, e.name);
+      let names: string[];
+      try {
+        names = await readdir(dir);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const m = DAY_FILE_RE.exec(name);
+        if (!m) {
+          continue;
+        }
+        const path = join(dir, name);
+        if (cutoff && m[1] < cutoff) {
+          try {
+            await rm(path, { force: true });
+            this.firstSeq.delete(path);
+            continue;
+          } catch {
+            // 删不掉（例如正被打开），按还在算，下次再删
+          }
+        }
+        try {
+          const st = await stat(path);
+          files.push({ path, day: m[1], size: st.size });
+          total += st.size;
+        } catch {
+          // 文件刚被删掉
+        }
+      }
+    }
+    if (this.limits.maxBytes > 0 && total > this.limits.maxBytes) {
+      const target = this.limits.maxBytes * 0.9;
+      files.sort((a, b) => a.day.localeCompare(b.day) || b.size - a.size);
+      for (const f of files) {
+        if (total <= target) {
+          break;
+        }
+        try {
+          await rm(f.path, { force: true });
+          this.firstSeq.delete(f.path);
+          total -= f.size;
+        } catch {
+          // 删不掉就跳过
+        }
+      }
+    }
+    this.totalBytes = total;
+    this.maintainDay = dayOf(now);
+  }
+
+  /** 读取消息：before 为序号，返回比它早的最多 limit 条（按时间正序）。从最新的一天往前、每个文件从末尾往前读 */
   async messages(key: string, before: number, limit: number): Promise<{ messages: ChatMessage[]; more: boolean }> {
     if (!this.chats.has(key)) {
       return { messages: [], more: false };
     }
-    await this.writing.get(key);
-    let text: string;
-    try {
-      text = await readFile(this.fileOf(key), "utf8");
-    } catch {
-      return { messages: [], more: false };
-    }
-    const all: ChatMessage[] = [];
-    for (const line of text.split("\n")) {
-      if (!line) {
-        continue;
-      }
+    return this.queue(key, async () => {
+      await this.migrateFile(key);
+      const dir = this.dirOf(key);
+      let names: string[];
       try {
-        const m = JSON.parse(line) as ChatMessage;
-        if (!before || m.seq < before) {
-          all.push(m);
-        }
+        names = (await readdir(dir)).filter((n) => DAY_FILE_RE.test(n)).sort().reverse();
       } catch {
-        // 跳过写坏的行
+        return { messages: [], more: false };
       }
+      const got: ChatMessage[] = [];
+      for (const name of names) {
+        if (got.length > limit) {
+          break;
+        }
+        const path = join(dir, name);
+        // 这一天的第一条都不比 before 早，整天跳过
+        if (before && (await this.firstSeqOf(path)) >= before) {
+          continue;
+        }
+        await readLinesReverse(path, (line) => {
+          try {
+            const m = JSON.parse(line) as ChatMessage;
+            if (!before || m.seq < before) {
+              got.push(m);
+            }
+          } catch {
+            // 跳过写坏的行
+          }
+          return got.length <= limit;
+        });
+      }
+      const more = got.length > limit;
+      return { messages: got.slice(0, limit).reverse(), more };
+    });
+  }
+
+  /** 按天文件第一条消息的序号（第一行写下后不会变，算一次就记住） */
+  private async firstSeqOf(path: string): Promise<number> {
+    const cached = this.firstSeq.get(path);
+    if (cached !== undefined) {
+      return cached;
     }
-    return { messages: all.slice(-limit), more: all.length > limit };
+    let seq = 0;
+    try {
+      seq = Number((JSON.parse(await firstLine(path)) as ChatMessage).seq) || 0;
+    } catch {
+      return 0; // 读不到时不跳过
+    }
+    this.firstSeq.set(path, seq);
+    return seq;
   }
 
   markRead(key: string): void {
@@ -502,9 +793,15 @@ export class ChatStore {
     }
     this.chats.delete(key);
     this.scheduleSave();
-    await this.writing.get(key);
-    this.writing.delete(key);
-    await rm(this.fileOf(key), { force: true });
+    await this.queue(key, async () => {
+      await rm(this.dirOf(key), { recursive: true, force: true });
+      await rm(this.legacyFileOf(key), { force: true });
+    }).catch(() => {});
+    for (const path of [...this.firstSeq.keys()]) {
+      if (path.startsWith(this.dirOf(key) + "/") || path.startsWith(this.dirOf(key) + "\\")) {
+        this.firstSeq.delete(path);
+      }
+    }
     return true;
   }
 
@@ -531,10 +828,11 @@ export class ChatStore {
     if (this.saveTimer) {
       return;
     }
+    // 会话列表整个写一遍（会话多时有好几 MB），消息多时最多 5 秒写一次；退出前 onShutdown 会再保存一次
     this.saveTimer = setTimeout(() => {
       this.saveTimer = undefined;
       void this.save();
-    }, 1000);
+    }, 5000);
   }
 
   async save(): Promise<void> {

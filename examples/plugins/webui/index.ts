@@ -22,6 +22,33 @@ interface Settings {
   token: string;
   github_proxy: string; // 下载更新时加在 GitHub 地址前的代理，空=直连
   commands: Commands;
+  history: History;
+}
+
+/** 聊天记录和图片缓存的保留设置 */
+interface History {
+  keep_days: number; // 聊天记录（和缓存的图片）保留天数，0=不按天数删除
+  max_mb: number; // 聊天记录总大小上限（MB），0=不限制
+  media_max_mb: number; // 图片缓存总大小上限（MB），0=不限制
+}
+
+const DEFAULT_HISTORY: History = { keep_days: 0, max_mb: 2048, media_max_mb: 1024 };
+
+/** 读取保存的保留设置，不合法的项用默认值 */
+function readHistory(v: unknown): History {
+  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const int = (x: unknown, def: number, max: number) => (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= max ? (x as number) : def);
+  return {
+    keep_days: int(o.keep_days, DEFAULT_HISTORY.keep_days, 36500),
+    max_mb: int(o.max_mb, DEFAULT_HISTORY.max_mb, 1024 * 1024),
+    media_max_mb: int(o.media_max_mb, DEFAULT_HISTORY.media_max_mb, 1024 * 1024),
+  };
+}
+
+/** 按保留设置清理聊天记录和图片缓存 */
+function applyHistory(h: History): void {
+  void store.setLimits({ keepDays: h.keep_days, maxBytes: h.max_mb * 1024 * 1024 }).catch(() => {});
+  void media.setLimits(h.media_max_mb * 1024 * 1024, h.keep_days).catch(() => {});
 }
 
 /** 内置指令 */
@@ -79,7 +106,7 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       throw e;
     }
-    const settings: Settings = { host: "127.0.0.1", port: 6099, token: randomBytes(12).toString("base64url"), github_proxy: "", commands: readCommands(undefined) };
+    const settings: Settings = { host: "127.0.0.1", port: 6099, token: randomBytes(12).toString("base64url"), github_proxy: "", commands: readCommands(undefined), history: readHistory(undefined) };
     await writeFile(file, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
     return { settings, created: true };
   }
@@ -99,6 +126,7 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
       token: saved.token,
       github_proxy: typeof saved.github_proxy === "string" ? saved.github_proxy : "",
       commands: readCommands(saved.commands),
+      history: readHistory(saved.history),
     },
     created: false,
   };
@@ -329,11 +357,14 @@ const GOQBOT_FIELDS: Record<string, "string" | "bool" | "int" | "strings"> = {
   "qq.ip_reject_action": "string",
   "qq.ip_reject_retry_interval": "int",
   "qq.text_intent": "strings",
+  "qq.developer_openid": "string",
   "onebot.message_format": "string",
   "onebot.debug": "bool",
   "onebot.downtime_message": "string",
   "idmap.disabled": "bool",
   "idmap.path": "string",
+  "idmap.keep_days": "int",
+  "idmap.max_size_mb": "int",
   "log.enabled": "bool",
   "log.path": "string",
   "plugins.path": "string",
@@ -667,6 +698,7 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
     // ---------- 图形化配置 ----------
     case "GET /api/settings": {
       const cfg = await call<{ data: Record<string, any>; path: string }>(ctx, "host.config.get");
+      const info = await call<{ idmap?: Record<string, unknown> }>(ctx, "host.info").catch(() => ({}) as { idmap?: Record<string, unknown> });
       const data = cfg.data ?? {};
       const onebot = { ...(data.onebot ?? {}) };
       delete onebot.servers;
@@ -675,6 +707,8 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
         goqbot: { qq: data.qq ?? {}, onebot, idmap: data.idmap ?? {}, log: data.log ?? {}, plugins: data.plugins ?? {} },
         webui: { host: settings.host, port: settings.port },
         commands: settings.commands,
+        history: settings.history,
+        usage: { chat_bytes: store.usage(), media_bytes: media.usage(), idmap: info.idmap ?? null },
         preview: await statusText(ctx),
       });
     }
@@ -712,8 +746,23 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       if (body.commands !== undefined) {
         settings.commands = readCommands(body.commands);
       }
+      if (body.history !== undefined) {
+        const h = body.history ?? {};
+        const check = (v: unknown, name: string, max: number) => {
+          if (!Number.isInteger(v) || (v as number) < 0 || (v as number) > max) {
+            throw new HttpError(400, `${name}要填 0 到 ${max} 之间的整数`);
+          }
+          return v as number;
+        };
+        settings.history = {
+          keep_days: check(h.keep_days, "聊天记录保留天数", 36500),
+          max_mb: check(h.max_mb, "聊天记录大小上限", 1024 * 1024),
+          media_max_mb: check(h.media_max_mb, "图片缓存大小上限", 1024 * 1024),
+        };
+        applyHistory(settings.history); // 立即生效
+      }
       await saveSettings(ctx, settings);
-      return send(res, 200, { restart_needed: restartNeeded, commands: settings.commands });
+      return send(res, 200, { restart_needed: restartNeeded, commands: settings.commands, history: settings.history });
     }
 
     // ---------- 更新 ----------
@@ -867,6 +916,7 @@ const plugin: Plugin = {
       media = new MediaCache(ctx.dataDir);
       await media.init();
       store.setMedia(media);
+      applyHistory(settings.history); // 后台按保留设置清理（旧版聊天记录也在这时拆成按天的文件）
     } catch (e) {
       ctx.log.error("WebUI 没有启动：", (e as Error).message);
       return;
@@ -980,6 +1030,7 @@ const plugin: Plugin = {
     for (const res of streams) {
       res.end();
     }
+    store?.stop();
     await store?.save().catch(() => {});
     server?.close();
     server?.closeAllConnections();

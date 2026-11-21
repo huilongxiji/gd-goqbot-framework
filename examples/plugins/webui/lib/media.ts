@@ -4,14 +4,13 @@
 // 文件名用图片内容的 md5（QQ 给的 file / filename 字段就是它），拿不到时用去掉 rkey 的地址算 sha1；
 // 页面里用 /media/<文件名>?s=<签名> 访问（<img> 带不了登录口令）。签名用的密钥随机生成，存在 media/.key，
 // 和登录口令无关，所以改口令后已保存的图片地址照样能用。
-// 缓存超过 1 GB 时，按最后修改时间删掉最早的，降到 800 MB。
+// 缓存超过上限（默认 1 GB，可在设置里改）时，按最后修改时间删掉最早的，降到上限的 80%；
+// 设置了聊天记录保留天数时，超过天数的图片也会删掉。
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const MAX_FILE = 20 * 1024 * 1024; // 单张图片上限
-const MAX_TOTAL = 1024 * 1024 * 1024; // 缓存总大小上限
-const PRUNE_TO = 800 * 1024 * 1024;
 const NAME_RE = /^[0-9a-f]{32,40}$/;
 
 /** 按文件头判断图片类型，返回 content-type；不是图片时为空 */
@@ -32,6 +31,21 @@ export class MediaCache {
   private secret: Buffer = randomBytes(32);
   private pending = new Map<string, Promise<void>>();
   private sinceprune = 0;
+  private maxBytes = 1024 * 1024 * 1024; // 缓存总大小上限，0=不限制
+  private keepDays = 0; // 保留天数，0=不按天数删除
+  private total = 0; // 上次清理时统计的总大小，加上之后下载的
+
+  /** 设置缓存上限和保留天数，立即按新设置清理一次 */
+  setLimits(maxBytes: number, keepDays: number): Promise<void> {
+    this.maxBytes = Math.max(0, Math.floor(maxBytes) || 0);
+    this.keepDays = Math.max(0, Math.floor(keepDays) || 0);
+    return this.prune();
+  }
+
+  /** 图片缓存现在占的空间（字节） */
+  usage(): number {
+    return this.total;
+  }
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, "media");
@@ -48,6 +62,8 @@ export class MediaCache {
       await writeFile(keyFile, this.secret, { mode: 0o600 });
     }
     void this.prune().catch(() => {});
+    // 每 6 小时检查一次，按保留天数删掉旧图片（下载很少时也能按时清理）
+    setInterval(() => void this.prune().catch(() => {}), 6 * 3600_000).unref?.();
   }
 
   /** 图片的缓存文件名：优先用 QQ 给的 md5，否则用去掉 rkey 的地址算 sha1 */
@@ -155,14 +171,16 @@ export class MediaCache {
     if (data.length > MAX_FILE || !imageType(data)) throw new Error("不是图片");
     await writeFile(file + ".part", data);
     await rename(file + ".part", file);
+    this.total += data.length;
     if (++this.sinceprune >= 100) {
       this.sinceprune = 0;
       void this.prune().catch(() => {});
     }
   }
 
-  /** 缓存超过上限时，按修改时间从旧到新删除 */
+  /** 删掉超过保留天数的；缓存超过上限时，按修改时间从旧到新删除 */
   private async prune(): Promise<void> {
+    const cutoff = this.keepDays > 0 ? Date.now() - this.keepDays * 86400_000 : 0;
     const files: { path: string; size: number; time: number }[] = [];
     let total = 0;
     for (const name of await readdir(this.dir)) {
@@ -171,16 +189,22 @@ export class MediaCache {
       try {
         const st = await stat(path);
         if (!st.isFile()) continue;
+        if (cutoff && st.mtimeMs < cutoff) {
+          await unlink(path);
+          continue;
+        }
         files.push({ path, size: st.size, time: st.mtimeMs });
         total += st.size;
       } catch {
         // 文件刚被删掉
       }
     }
-    if (total <= MAX_TOTAL) return;
+    this.total = total;
+    if (!this.maxBytes || total <= this.maxBytes) return;
+    const target = this.maxBytes * 0.8;
     files.sort((a, b) => a.time - b.time);
     for (const f of files) {
-      if (total <= PRUNE_TO) break;
+      if (total <= target) break;
       try {
         await unlink(f.path);
         total -= f.size;
@@ -188,5 +212,6 @@ export class MediaCache {
         // 删不掉就跳过
       }
     }
+    this.total = total;
   }
 }
