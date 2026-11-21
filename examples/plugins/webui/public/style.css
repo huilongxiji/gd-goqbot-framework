@@ -477,6 +477,17 @@ textarea.code { width: 100%; min-height: calc(100vh - 290px); padding: 12px 14px
   -webkit-mask: radial-gradient(circle at 100% 100%, transparent 9px, #000 9.5px); mask: radial-gradient(circle at 100% 100%, transparent 9px, #000 9.5px);
 }
 
+/* 灰字提示（发消息失败等）：像 QQ 的系统提示一样居中显示在对应消息下面 */
+.sys-tip { align-self: center; display: flex; justify-content: center; max-width: min(560px, 92%); margin: 6px 0 2px; }
+.sys-tip button {
+  max-width: 100%; padding: 3px 12px; border: 0; border-radius: 999px; background: var(--pill); color: var(--pill-ink);
+  font: inherit; font-size: 12.5px; line-height: 1.5; text-align: center; cursor: pointer; overflow-wrap: anywhere;
+}
+.sys-tip button:hover { background: color-mix(in srgb, var(--pill) 80%, #000); }
+.sys-tip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sys-tip-time { margin-right: 6px; opacity: .75; font-variant-numeric: tabular-nums; }
+.sys-tip.failed button::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 6px 1px 0; border-radius: 50%; background: #ff6b6b; vertical-align: middle; }
+
 /* 一条新消息到来时淡入，只有这一处动效 */
 .msg.arrive { animation: arrive .28s ease-out; }
 @keyframes arrive { from { opacity: 0; transform: translateY(6px); } }

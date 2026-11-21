@@ -897,6 +897,14 @@ const plugin: Plugin = {
         }
       });
     });
+    // goqbot 发消息失败（或部分没生效）时的通知：在对应会话里显示一条灰字提示
+    await ctx.on(["notice.send_failed"], async (ev) => {
+      try {
+        await store.addNotice(ev);
+      } catch (e) {
+        ctx.log.error("保存发送失败提示出错：", (e as Error).message);
+      }
+    });
     await ctx.on(["message.*", "message_sent.*"], async (ev) => {
       try {
         await store.add(ev);

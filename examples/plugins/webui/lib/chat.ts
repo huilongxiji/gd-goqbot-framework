@@ -53,6 +53,19 @@ export interface ChatMessage {
   message: Segment[];
   raw: string;
   event?: OneBotEvent; // 收到的完整事件，供页面查看原始数据；旧记录没有
+  notice?: SendNotice; // 有这一项时是一条灰字提示（发消息失败），不是聊天消息
+  send_notes?: string[]; // 机器人发出的消息里没生效的部分（例如引用不了），页面在消息下面显示灰字提示
+}
+
+/** 灰字提示：goqbot 发消息失败 */
+export interface SendNotice {
+  level: "failed";
+  error: string; // 失败原因
+  notes: string[]; // 其他没生效的部分
+  action: string; // 发送用的动作名
+  reply_to: string; // 这次发送在回复哪条消息（reply 段里的 message_id），没有时为空
+  qq_msg_id: string; // 用到的被动凭证（对应收到的消息事件里的 qq_msg_id），没有时为空
+  preview: string; // 想发的内容（摘要）
 }
 
 /** 会话列表里的一项 */
@@ -314,6 +327,9 @@ export class ChatStore {
     if (sender.bot === true && !sent) {
       msg.bot = true;
     }
+    if (sent && Array.isArray(ev.send_notes) && ev.send_notes.length) {
+      msg.send_notes = ev.send_notes.map(String);
+    }
     chat.last_time = msg.time;
     chat.last_text = summary(segs, Number(ev.qq_message_type) === 103);
     chat.last_sender = sent ? "我" : nickname;
@@ -369,6 +385,59 @@ export class ChatStore {
 
   private fileOf(key: string): string {
     return join(this.dir, key.replace(":", "-") + ".jsonl");
+  }
+
+  /**
+   * 记下一条发送失败的灰字提示（goqbot 的 notice.send_failed 事件）：放在对应会话里，不算未读，也不改会话列表的预览。
+   * 会话还不存在时不记（例如往一个从没收到过消息的群发消息）
+   */
+  async addNotice(ev: OneBotEvent): Promise<void> {
+    if (ev.post_type !== "notice" || ev.notice_type !== "send_failed") {
+      return;
+    }
+    const type = ev.chat_type === "group" ? "group" : ev.chat_type === "private" ? "private" : undefined;
+    const peer = idOf(type === "group" ? ev.group_id : ev.user_id);
+    if (!type || !peer || peer === "0") {
+      return;
+    }
+    const key = `${type}:${peer}`;
+    const chat = this.chats.get(key);
+    if (!chat) {
+      return;
+    }
+    const raw = typeof ev.raw_message === "string" ? ev.raw_message : "";
+    const segs = toSegments(ev.message, raw);
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    const msg: ChatMessage = {
+      seq: ++chat.seq,
+      id: "",
+      time: Number(ev.time) || Math.floor(Date.now() / 1000),
+      recv_ms: Date.now(),
+      self: true,
+      user_id: "",
+      nickname: "",
+      message: [],
+      raw: "",
+      event: ev,
+      notice: {
+        level: "failed",
+        error: str(ev.error),
+        notes: Array.isArray(ev.notes) ? ev.notes.map(String) : [],
+        action: str(ev.action),
+        reply_to: ev.reply_to ? idOf(ev.reply_to) : "",
+        qq_msg_id: str(ev.qq_msg_id),
+        preview: segs.length ? summary(segs, false) : raw,
+      },
+    };
+    this.scheduleSave();
+    await this.append(key, msg);
+    for (const fn of this.listeners) {
+      try {
+        fn({ chat, message: msg });
+      } catch {
+        // 页面连接出错不影响保存
+      }
+    }
   }
 
   private append(key: string, msg: ChatMessage): Promise<void> {

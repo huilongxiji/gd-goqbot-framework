@@ -523,16 +523,65 @@ function renderMessages() {
   if (view.more) nodes.push(h("p", { class: "msgs-hint" }, "向上滚动加载更早的消息"));
   else if (view.messages.length) nodes.push(h("p", { class: "msgs-hint" }, "没有更早的消息了"));
   else nodes.push(h("p", { class: "msgs-hint" }, "这个会话还没有消息"));
+  // 灰字提示放在它对应的那条消息下面；对应的消息不在已加载的记录里时，按时间放在原位
+  const anchored = new Map();
+  const moved = new Set();
+  for (const m of view.messages) {
+    if (!m.notice) continue;
+    const a = noticeAnchor(m);
+    if (!a) continue;
+    if (!anchored.has(a.seq)) anchored.set(a.seq, []);
+    anchored.get(a.seq).push(m);
+    moved.add(m.seq);
+  }
   let prev = null;
   for (const m of view.messages) {
+    if (moved.has(m.seq)) continue;
     if (!prev || dayLabel(prev.time) !== dayLabel(m.time)) nodes.push(h("div", { class: "day" }, h("span", null, dayLabel(m.time))));
     nodes.push(messageNode(m));
+    if (m.send_notes?.length) nodes.push(warnNode(m));
+    for (const t of anchored.get(m.seq) ?? []) {
+      const node = messageNode(t);
+      node.dataset.anchor = m.seq;
+      nodes.push(node);
+    }
     prev = m;
   }
   fill(view.scroller, ...nodes);
 }
 
+/** 发送失败的灰字提示对应的那条消息：先按 reply 段里的消息编号找，再按用到的被动凭证（收到的消息的 qq_msg_id）找 */
+function noticeAnchor(m) {
+  const n = m.notice;
+  if (!n) return null;
+  if (n.reply_to) {
+    const t = view.messages.find((x) => !x.notice && x.seq < m.seq && String(x.id) === String(n.reply_to));
+    if (t) return t;
+  }
+  if (n.qq_msg_id) {
+    const t = view.messages.findLast((x) => !x.notice && !x.self && x.seq < m.seq && x.event?.qq_msg_id === n.qq_msg_id);
+    if (t) return t;
+  }
+  return null;
+}
+
 function appendMessage(m, live) {
+  if (m.notice) {
+    // 实时收到的灰字提示：插到对应消息（以及它下面已有的提示）后面
+    const a = noticeAnchor(m);
+    const target = a && view.scroller.querySelector(`.msg[data-seq="${a.seq}"]`);
+    if (target) {
+      let after = target;
+      while (after.nextElementSibling?.classList.contains("sys-tip") && after.nextElementSibling.dataset.anchor === String(a.seq)) after = after.nextElementSibling;
+      const nearBottom = view.scroller.scrollHeight - view.scroller.scrollTop - view.scroller.clientHeight < 120;
+      const node = messageNode(m);
+      node.dataset.anchor = a.seq;
+      if (live) node.classList.add("arrive");
+      after.after(node);
+      if (nearBottom && !node.nextElementSibling) view.scroller.scrollTop = view.scroller.scrollHeight;
+      return;
+    }
+  }
   const list = view.messages;
   const prev = list[list.length - 2];
   const nearBottom = view.scroller.scrollHeight - view.scroller.scrollTop - view.scroller.clientHeight < 120;
@@ -541,6 +590,7 @@ function appendMessage(m, live) {
   const node = messageNode(m);
   if (live) node.classList.add("arrive");
   view.scroller.append(node);
+  if (m.send_notes?.length) view.scroller.append(warnNode(m));
   if (nearBottom || m.self) view.scroller.scrollTop = view.scroller.scrollHeight;
 }
 
@@ -613,7 +663,46 @@ function showRaw(m) {
     h("pre", { class: "raw-json" }, highlightJSON(text))), { wide: true });
 }
 
+/** 灰字提示：goqbot 发消息失败。点一下查看完整的错误信息 */
+function noticeNode(m) {
+  const n = m.notice;
+  const detail = [
+    `失败原因：${n.error}`,
+    n.notes.length ? `其他问题：${n.notes.join("；")}` : "",
+    n.preview ? `想发的内容：${n.preview}` : "",
+    "点击查看完整信息",
+  ].filter(Boolean).join("\n");
+  return h("div", { class: "sys-tip failed", dataset: { seq: m.seq } },
+    h("button", { type: "button", title: detail, onclick: () => showRaw(m) },
+      h("span", { class: "sys-tip-time" }, hhmm(m.time)), `机器人的消息没有发出去：${friendlySendError(n.error)}`));
+}
+
+/** 灰字提示：机器人的消息发出去了，但有一部分没生效（例如引用不了），显示在那条消息下面 */
+function warnNode(m) {
+  return h("div", { class: "sys-tip warning", dataset: { anchor: m.seq } },
+    h("button", { type: "button", title: "点击查看这条消息的原始数据", onclick: () => showRaw(m) },
+      `消息已发出，但有部分没生效：${m.send_notes.join("；")}`));
+}
+
+/** 把发送失败的原因整理得好读一些：官方接口的报错只留说明和错误码 */
+function friendlySendError(err) {
+  let s = String(err ?? "").trim();
+  const code = /"(?:err_)?code"\s*:\s*(\d{4,})/.exec(s)?.[1];
+  const msg = /"message"\s*:\s*"([^"]+)"/.exec(s)?.[1];
+  if (code === "40034005") return "被动回复凭证已过期（错误码 40034005）";
+  if (msg) s = code ? `${msg}（错误码 ${code}）` : msg;
+  else s = s.replace(/,?\s*traceID:\S*/i, "").replace(/^code:\d+,\s*text:/, "");
+  if (/无可用被动凭证/.test(s)) return "没有能回复的消息，且设置了只发被动消息";
+  return s.length > 120 ? s.slice(0, 118) + "…" : s;
+}
+
+function hhmm(sec) {
+  const d = new Date(sec * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 function messageNode(m) {
+  if (m.notice) return noticeNode(m);
   const c = chatState.chats.get(view.current);
   const name = m.self ? chatState.botName : m.nickname || `用户 ${m.user_id}`;
   const role = m.role === "owner" ? "群主" : m.role === "admin" ? "管理员" : "";
