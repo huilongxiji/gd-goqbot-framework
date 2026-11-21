@@ -232,7 +232,7 @@ func (s *WSServer) Start() error {
 	s.mu.Lock()
 	s.listener = listener
 	s.mu.Unlock()
-	log.Printf("[onebot] 正向 WS 服务器已启动: %s", listener.Addr())
+	log.Printf("[onebot] 正向 WS 已开始监听 %s", listener.Addr())
 	if s.obCfg.AccessToken == "" && !isLoopback(listener.Addr()) {
 		filelog.Warnf("[onebot] 正向 WS %s 没有设置 access_token，同一网络里的任何人都能连上来控制机器人。建议设置口令，或者把地址改成 127.0.0.1", listener.Addr())
 	}

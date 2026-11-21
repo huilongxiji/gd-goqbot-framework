@@ -107,15 +107,30 @@ func (c *WSClient) reconnectInterval() time.Duration {
 }
 
 // connectLoop 维护单个端点的连接：断开后按 reconnectInterval 重连，直到收到 stop
+// 连不上时只在第一次和之后每 5 分钟提醒一次，其余失败只在调试模式记录，避免每隔几秒刷屏
 func (c *WSClient) connectLoop(typ, addr string, conptr **wsConn, sendHandshake bool) {
+	fails := 0
+	var lastWarn time.Time
 	for {
 		select {
 		case <-c.stop:
 			return
 		default:
 		}
-		if err := c.connect(typ, addr, conptr, sendHandshake); err != nil {
-			filelog.Warnf("[onebot] 反向 WS %s 连接失败 %s: %v", typ, addr, err)
+		if err := c.connect(typ, addr, conptr, sendHandshake, fails); err != nil {
+			fails++
+			switch {
+			case fails == 1:
+				filelog.Warnf("[onebot] 反向 WS %s 连不上 %s：%v（每 %s 自动重试，框架启动后会自动连上）", typ, addr, err, c.reconnectInterval())
+				lastWarn = time.Now()
+			case time.Since(lastWarn) >= 5*time.Minute:
+				filelog.Warnf("[onebot] 反向 WS %s 仍然连不上 %s（已重试 %d 次）：%v", typ, addr, fails, err)
+				lastWarn = time.Now()
+			default:
+				filelog.Debugf("[onebot] 反向 WS %s 连接失败 %s: %v", typ, addr, err)
+			}
+		} else {
+			fails = 0
 		}
 		select {
 		case <-c.stop:
@@ -127,8 +142,8 @@ func (c *WSClient) connectLoop(typ, addr string, conptr **wsConn, sendHandshake 
 
 // connect 建立一次连接并阻塞监听：带鉴权头握手，可选发 lifecycle，重发失败缓存，
 // 按端点类型分流到 listenAPI/listenEvent
-func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool) error {
-	log.Printf("[onebot] 连接反向 WebSocket %s: %s", typ, addr)
+func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool, prevFails int) error {
+	filelog.Debugf("[onebot] 连接反向 WebSocket %s: %s", typ, addr)
 	header := http.Header{
 		"X-Client-Role": []string{typ},
 		"X-Self-ID":     []string{strconv.FormatInt(c.selfID, 10)},
@@ -147,7 +162,11 @@ func (c *WSClient) connect(typ, addr string, conptr **wsConn, sendHandshake bool
 			return err
 		}
 	}
-	log.Printf("[onebot] 反向 WS 连接成功 %s -> %s", typ, addr)
+	if prevFails > 0 {
+		log.Printf("[onebot] 反向 WS %s 已连接 %s（之前失败 %d 次）", typ, addr, prevFails)
+	} else {
+		log.Printf("[onebot] 反向 WS %s 已连接 %s", typ, addr)
+	}
 
 	wrapped := newWSConn(conn, c.caller, c.cacheFailure, requestScope{allowSensitivePlugins: c.cfg.AllowSensitivePlugins && c.obCfg.AccessToken != ""})
 	c.mu.Lock()

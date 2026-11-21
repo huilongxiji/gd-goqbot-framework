@@ -293,7 +293,7 @@ func (p *plugin) launch(ctx context.Context) (*instance, error) {
 
 	if !v2 {
 		p.m.clearClaims(p)
-		log.Printf("[plugins] %s 已就绪: %s v%s（协议 1），能力 %d 个，下游通过 call_plugin 调用", p.cfg.Name, h.Name, h.Version, len(h.Capabilities))
+		log.Printf("[plugins] %s 已就绪（协议 1 v%s），能力 %d 个，下游通过 call_plugin 调用", p.cfg.Name, h.Version, len(h.Capabilities))
 		return inst, nil
 	}
 
@@ -397,7 +397,12 @@ func (p *plugin) logReady(h hello) {
 	if p.cfg.Kind == KindJS {
 		kind = "JS / TS 插件"
 	}
-	log.Printf("[plugins] %s 已就绪: %s v%s（%s），注册动作 %s；可调用 %s", p.cfg.Name, h.Name, h.Version, kind, actionText, allowedText)
+	if len(actions) > 0 {
+		log.Printf("[plugins] %s 已就绪（%s v%s），注册动作 %s", p.cfg.Name, kind, h.Version, actionText)
+	} else {
+		log.Printf("[plugins] %s 已就绪（%s v%s）", p.cfg.Name, kind, h.Version)
+	}
+	filelog.Debugf("[plugins] %s 程序名 %s，可调用 %s", p.cfg.Name, h.Name, allowedText)
 	if sensitive := p.m.sensitiveGranted(p); len(sensitive) > 0 {
 		filelog.Warnf("[plugins] %s 获得敏感能力：%s", p.cfg.Name, strings.Join(sensitive, ", "))
 	}

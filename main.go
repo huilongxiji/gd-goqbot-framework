@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -33,7 +34,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.11"
+	AppVersion = "1.14.12"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -68,7 +69,7 @@ func main() {
 	// 配置文件不存在则按模板生成，提示用户填写后重启
 	if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
 		if werr := os.WriteFile(*configPath, configTemplate, 0o644); werr != nil {
-			filelog.Fatalf("未找到配置文件且自动创建失败: %v", werr)
+			filelog.Fatalf("[goqbot] 未找到配置文件且自动创建失败: %v", werr)
 		}
 		fmt.Printf("未找到配置文件，已在同级目录生成模板：\n  %s\n请填写 app_id / client_secret 等字段后重新启动本程序。\n按回车键退出...", *configPath)
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
@@ -91,10 +92,25 @@ func main() {
 	if run(*configPath, exeDir) {
 		// 插件请求了重启（host.restart / 修改配置 / 更新程序）：资源已全部释放，用同样的参数重新运行
 		if err := hostctl.ExecSelf(); err != nil {
-			fmt.Fprintf(os.Stderr, "重启失败: %v\n", err)
+			filelog.Errorf("[goqbot] 重启失败: %v", err)
 			os.Exit(1)
 		}
 	}
+}
+
+// countServers 统计开启的正向、反向 WS 连接数，以及停用的连接数
+func countServers(ob config.OneBotConfig) (forward, reverse, disabled int) {
+	for _, s := range ob.Servers {
+		switch {
+		case s.WS != nil && !s.WS.Disabled:
+			forward++
+		case s.WSReverse != nil && !s.WSReverse.Disabled:
+			reverse++
+		default:
+			disabled++
+		}
+	}
+	return
 }
 
 // run 装配并运行全部组件，直到收到退出信号或重启请求；返回 true 表示需要重启。
@@ -102,10 +118,10 @@ func main() {
 func run(configPath, exeDir string) (restart bool) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		filelog.Fatalf("加载配置失败: %v", err)
+		filelog.Fatalf("[goqbot] 加载配置失败: %v", err)
 	}
 	if err := cfg.Validate(); err != nil {
-		filelog.Fatalf("配置无效: %v", err)
+		filelog.Fatalf("[goqbot] 配置无效: %v", err)
 	}
 
 	logDir := cfg.Log.Path
@@ -113,15 +129,21 @@ func run(configPath, exeDir string) (restart bool) {
 		logDir = filepath.Join(exeDir, logDir)
 	}
 	if err := filelog.Init(cfg.Log.FileEnabled(), logDir); err != nil {
-		filelog.Fatalf("初始化文件日志失败: %v", err)
+		filelog.Fatalf("[goqbot] 初始化文件日志失败: %v", err)
 	}
 	defer func() {
 		if err := filelog.Close(); err != nil {
-			filelog.Fatalf("关闭文件日志失败: %v", err)
+			filelog.Fatalf("[goqbot] 关闭文件日志失败: %v", err)
 		}
 	}()
 	log.SetFlags(0)
 	log.SetOutput(filelog.StdLogWriter())
+	filelog.SetDebug(cfg.OneBot.Debug)
+	log.Printf("[goqbot] %s %s 正在启动（%s-%s）", AppName, AppVersion, runtime.GOOS, runtime.GOARCH)
+	if cfg.OneBot.Debug {
+		log.Printf("[goqbot] 调试模式已开启（onebot.debug），会输出全部调试信息")
+	}
+	filelog.Debugf("[goqbot] 配置文件 %s，日志目录 %s", configPath, logDir)
 
 	selfID := cfg.QQ.SelfID
 	appID := cfg.QQ.AppID
@@ -130,7 +152,7 @@ func run(configPath, exeDir string) (restart bool) {
 	var ids *idmap.Store
 	if cfg.IDMap.Disabled {
 		ids = idmap.New()
-		log.Println("idmap: 纯内存模式（不持久化，重启后 message_id/反查丢失）")
+		filelog.Warnf("[idmap] ID 对照表只存在内存里（idmap.disabled 为 true），重启后无法再撤回、引用以前的消息")
 	} else {
 		p := cfg.IDMap.Path
 		if !filepath.IsAbs(p) {
@@ -143,7 +165,7 @@ func run(configPath, exeDir string) (restart bool) {
 		maxMB := cfg.IDMap.MaxSizeMBOrDefault()
 		ids, err = idmap.Open(p, idmap.Options{KeepDays: keepDays, MaxBytes: int64(maxMB) << 20})
 		if err != nil {
-			filelog.Fatalf("打开 idmap 失败: %v", err)
+			filelog.Fatalf("[idmap] 打开 ID 对照表失败: %v", err)
 		}
 		keep, limit := fmt.Sprintf("消息记录保留 %d 天", keepDays), fmt.Sprintf("文件上限 %d MB", maxMB)
 		if keepDays == 0 {
@@ -152,11 +174,12 @@ func run(configPath, exeDir string) (restart bool) {
 		if maxMB == 0 {
 			limit = "文件大小不限制"
 		}
-		log.Printf("idmap: 持久化已启用 -> %s（%s，%s）", p, keep, limit)
+		log.Printf("[idmap] ID 对照表 %s（%s，%s）", cfg.IDMap.Path, keep, limit)
+		filelog.Debugf("[idmap] 文件位置 %s", p)
 	}
 	defer func() {
 		if err := ids.Close(); err != nil {
-			filelog.Fatalf("关闭 idmap 失败: %v", err)
+			filelog.Fatalf("[idmap] 关闭 ID 对照表失败: %v", err)
 		}
 	}()
 	bus := onebot.NewEventBus()
@@ -186,27 +209,33 @@ func run(configPath, exeDir string) (restart bool) {
 	}
 	// JS / TS 插件：数据目录 plugin-data/ 在可执行文件同级；内置启动器写到 plugin-data/.goqbot/；Node 按 plugins.node > runtime/ > PATH 查找
 	dataRoot := filepath.Join(exeDir, "plugin-data")
+	// WebUI 默认关闭，config.yml 里 webui.enabled 为 true 才启动；插件文件夹里的 plugin.yml 写了 enabled: false 时同样不启动
 	discoverOpts := plugins.DiscoverOptions{DataRoot: dataRoot}
-	nodeVersion := ""
-	if runner, werr := plugins.WriteRunner(filepath.Join(dataRoot, ".goqbot")); werr != nil {
-		discoverOpts.NodeErr = fmt.Sprintf("写出内置启动器失败: %v", werr)
-	} else if node, nerr := plugins.FindNode(exeDir, cfg.Plugins.Node); nerr != nil {
-		discoverOpts.NodeErr = nerr.Error()
-	} else {
-		discoverOpts.Node, discoverOpts.RunnerPath, nodeVersion = node.Path, runner, node.Version
+	if !cfg.WebUI.IsEnabled() {
+		discoverOpts.Disabled = map[string]string{"webui": "config.yml 里 webui.enabled 不是 true"}
+	}
+	// Node 只在有要运行的 JS / TS 插件时才去找（WebUI 没开、也没有其他开启的 JS / TS 插件时不会运行 Node）
+	nodeText := "" // 插件概况里显示的 Node 版本
+	discoverOpts.ResolveNode = func() (string, string, error) {
+		runner, werr := plugins.WriteRunner(filepath.Join(dataRoot, ".goqbot"))
+		if werr != nil {
+			return "", "", fmt.Errorf("写出内置启动器失败: %v", werr)
+		}
+		node, nerr := plugins.FindNode(exeDir, cfg.Plugins.Node)
+		if nerr != nil {
+			return "", "", nerr
+		}
+		nodeText = "（Node " + node.Version + "）"
+		filelog.Debugf("[plugins] JS / TS 插件使用 Node %s（%s）", node.Version, node.Path)
+		return node.Path, runner, nil
 	}
 	pluginConfigs, skipped, perr := plugins.Discover(pluginDir, discoverOpts)
-	// WebUI 默认关闭，config.yml 里 webui.enabled 为 true 才启动；插件文件夹里的 plugin.yml 写了 enabled: false 时同样不启动
-	for i := range pluginConfigs {
-		if pluginConfigs[i].Name == "webui" && pluginConfigs[i].Enabled && !cfg.WebUI.IsEnabled() {
-			pluginConfigs[i].Enabled = false
-			log.Printf("[plugins] WebUI 没有开启：要使用网页管理面板，把 config.yml 里 webui 的 enabled 改成 true 后重启 goqbot")
-		}
-	}
-	for _, pc := range pluginConfigs {
-		if pc.Kind == plugins.KindJS && pc.Enabled && discoverOpts.Node != "" {
-			log.Printf("[plugins] JS / TS 插件使用 Node %s（%s）", nodeVersion, discoverOpts.Node)
-			break
+	if !cfg.WebUI.IsEnabled() {
+		for _, pc := range pluginConfigs {
+			if pc.Name == "webui" {
+				log.Printf("[plugins] WebUI 未开启（需要时把 config.yml 里 webui 的 enabled 改成 true）")
+				break
+			}
 		}
 	}
 	if perr != nil {
@@ -237,12 +266,19 @@ func run(configPath, exeDir string) (restart bool) {
 
 	// 启动 OneBot 下游连接。之后改了配置里的下游连接会立即按差异更新，不用重启
 	conns := onebot.NewConnections(selfID, bus, caller)
+	if fw, rev, off := countServers(cfg.OneBot); fw+rev > 0 {
+		text := fmt.Sprintf("[onebot] 下游连接 %d 条：正向 WS %d 条、反向 WS %d 条", fw+rev, fw, rev)
+		if off > 0 {
+			text += fmt.Sprintf("，另有 %d 条已停用", off)
+		}
+		log.Print(text)
+	}
 	conns.Apply(cfg.OneBot)
 	if !cfg.OneBot.HasEnabledServer() {
 		if cfg.WebUI.IsEnabled() {
-			log.Printf("[onebot] 没有开启的下游连接：可以在 WebUI 的「连接」页开启或添加，或修改 config.yml 的 onebot.servers")
+			filelog.Warnf("[onebot] 没有开启的下游连接：可以在 WebUI 的「连接」页开启或添加，或修改 config.yml 的 onebot.servers")
 		} else {
-			log.Printf("[onebot] 没有开启的下游连接：请修改 config.yml 的 onebot.servers")
+			filelog.Warnf("[onebot] 没有开启的下游连接：请修改 config.yml 的 onebot.servers")
 		}
 	}
 
@@ -253,7 +289,7 @@ func run(configPath, exeDir string) (restart bool) {
 	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
 	caller.SetReadyFunc(qqClient.Online)
 	if err := qqClient.Start(ctx); err != nil {
-		filelog.Fatalf("启动 QQ 客户端失败: %v", err)
+		filelog.Fatalf("[qq] 启动 QQ 连接失败: %v", err)
 	}
 	// 插件可调用的运行管理能力（host.*）
 	pluginManager.SetHost(hostctl.New(hostctl.Options{
@@ -281,21 +317,24 @@ func run(configPath, exeDir string) (restart bool) {
 	defer pluginManager.Close()
 	if n := pluginManager.EnabledCount(); n > 0 {
 		pluginManager.Start(ctx)
-		log.Printf("[plugins] 插件目录 %s: 共 %d 个插件，已开启 %d 个，正在后台启动", pluginDir, len(pluginConfigs), n)
+		log.Printf("[plugins] 共 %d 个插件，已开启 %d 个，正在后台启动%s", len(pluginConfigs), n, nodeText)
+	} else if len(pluginConfigs) > 0 {
+		log.Printf("[plugins] 共 %d 个插件，都没有开启", len(pluginConfigs))
 	}
+	filelog.Debugf("[plugins] 插件目录 %s", pluginDir)
 
-	log.Printf("%s %s 已启动，等待连接...", AppName, AppVersion)
+	log.Printf("[goqbot] %s %s 已启动，等待连接...", AppName, AppVersion)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 	select {
 	case <-sig:
-		log.Println("收到退出信号，正在关闭...")
+		log.Println("[goqbot] 收到退出信号，正在关闭...")
 	case <-qqClient.Fatal():
-		log.Println("IP 被拒且策略为 exit，正在关闭...")
+		log.Println("[goqbot] IP 被拒且策略为 exit，正在关闭...")
 	case reason := <-restartCh:
-		log.Printf("正在重启 goqbot（%s）...", reason)
+		log.Printf("[goqbot] 正在重启（%s）...", reason)
 		restart = true
 		// 先关插件，再断开下游与 QQ 连接、释放监听端口，新进程才能重新监听、打开数据库
 		pluginManager.Close()

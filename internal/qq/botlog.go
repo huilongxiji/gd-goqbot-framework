@@ -37,14 +37,22 @@ func isHeartbeat(msg string) bool {
 
 // emit 输出统一格式：[Level] 2006-01-02 15:04:05 [botgo] msg
 // 统一写到 stderr（与 app 标准 log、prettylog 保持同一输出流，避免 stdout/stderr 混用）。
+// 普通模式下 botgo 只输出警告和错误（终端和日志文件都是）；它的连接过程、接口请求、心跳等
+// 原始记录只在调试模式输出，连接结果由 goqbot 自己的 [qq] 日志汇总说明
 func (l *botLogger) emit(level, msg string) {
-	line := filelog.FormatBotgo(level, msg)
-	if l.debug || (level != "Debug" && !isHeartbeat(msg)) {
-		_, _ = os.Stderr.WriteString(line)
+	if !l.debug && (level == "Debug" || level == "Info" || isHeartbeat(msg) || isBenign(msg)) {
+		return
 	}
+	line := filelog.FormatBotgo(level, msg)
+	_, _ = os.Stderr.WriteString(line)
 	if filelog.Enabled() {
 		filelog.WriteFile([]byte(line))
 	}
+}
+
+// isBenign 退出时 botgo 报的正常结束提示（例如 context canceled），普通模式下不显示
+func isBenign(msg string) bool {
+	return strings.Contains(msg, "context canceled")
 }
 
 // Debug、Info、Warn、Error 及对应的 f 格式化版本实现 botgo log.Logger 接口，统一经 emit 输出

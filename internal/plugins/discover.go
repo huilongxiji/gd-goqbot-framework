@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -144,10 +145,16 @@ func ensureExecutable(path string) error {
 
 // DiscoverOptions 扫描插件目录时需要的环境信息
 type DiscoverOptions struct {
-	Node       string // 运行 JS / TS 插件的 Node 绝对路径；空=不可用
+	Node       string // 运行 JS / TS 插件的 Node 绝对路径；空=不可用（设置了 ResolveNode 时不用）
 	NodeErr    string // Node 不可用的原因（Node 为空时用于提示）
 	RunnerPath string // 内置启动器的路径
 	DataRoot   string // 插件数据目录的根（plugin-data/），每个插件的数据目录为 DataRoot/<插件名>
+
+	// ResolveNode 找 Node、写出内置启动器。只在扫描到需要运行的（已开启的）JS / TS 插件时才调用，最多一次；
+	// 没有要运行的 JS / TS 插件时不会去找 Node，也不会运行 node --version
+	ResolveNode func() (node, runner string, err error)
+	// Disabled 由 goqbot 的配置关掉的插件（插件名 → 原因），例如 config.yml 里 webui.enabled 为 false 时的 webui
+	Disabled map[string]string
 }
 
 // Discover 扫描插件目录，按插件名排序返回。目录不存在时自动创建并返回空列表。
@@ -161,6 +168,28 @@ type DiscoverOptions struct {
 // 识别不出来的条目被跳过，原因通过 skipped 返回供启动日志提示；配置写错或文件冲突的插件
 // 仍会返回（带错误状态），以便在 get_plugin_list 中看到。
 func Discover(dir string, opts DiscoverOptions) (configs []Config, skipped []string, err error) {
+	// resolveNode 第一次需要时才找 Node，结果记住给后面的插件用
+	var (
+		nodeDone          bool
+		nodePath, nodeRun string
+		nodeErr           error
+	)
+	resolveNode := func() (string, string, error) {
+		if !nodeDone {
+			nodeDone = true
+			switch {
+			case opts.ResolveNode != nil:
+				nodePath, nodeRun, nodeErr = opts.ResolveNode()
+			case opts.Node == "":
+				nodeErr = errors.New(opts.NodeErr)
+			case opts.RunnerPath == "":
+				nodeErr = errors.New("内置启动器不可用")
+			default:
+				nodePath, nodeRun = opts.Node, opts.RunnerPath
+			}
+		}
+		return nodePath, nodeRun, nodeErr
+	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, err
@@ -272,12 +301,8 @@ func Discover(dir string, opts DiscoverOptions) (configs []Config, skipped []str
 		case jsEntry != "" && c.file != "":
 			cfg.loadErr = fmt.Errorf("%w: 文件夹 %s/ 是 JS / TS 插件，插件目录下又有同名的可执行文件 %s，请移走其中一个", ErrInvalidConfig, name, filepath.Base(c.file))
 		case jsEntry != "":
-			if opts.Node == "" {
-				skipped = append(skipped, fmt.Sprintf("跳过 %s: 这是 JS / TS 插件，无法运行：%s", name, opts.NodeErr))
-				continue
-			}
+			// Node 等确认插件开启后再找（见下面），没开启的 JS / TS 插件不需要 Node
 			cfg.Kind = KindJS
-			cfg.Command = opts.Node
 			cfg.Entry = jsEntry
 		case c.file != "":
 			cfg.Command = c.file
@@ -299,12 +324,18 @@ func Discover(dir string, opts DiscoverOptions) (configs []Config, skipped []str
 		if cfg.loadErr == nil {
 			applyManifest(&cfg, m)
 		}
-		if cfg.Kind == KindJS && cfg.loadErr == nil {
-			// JS / TS 插件：node <内置启动器> <入口文件>（plugin.yml 的 args 只配合 command 使用）
-			if opts.RunnerPath == "" {
-				cfg.loadErr = fmt.Errorf("%w: 内置启动器不可用", ErrInvalidConfig)
+		if _, off := opts.Disabled[name]; off {
+			cfg.Enabled = false
+		}
+		if cfg.Kind == KindJS && cfg.Entry != "" && cfg.loadErr == nil && cfg.Enabled {
+			// 已开启的 JS / TS 插件：node <内置启动器> <入口文件>（plugin.yml 的 args 只配合 command 使用）
+			node, runner, nerr := resolveNode()
+			if nerr != nil {
+				skipped = append(skipped, fmt.Sprintf("跳过 %s: 这是 JS / TS 插件，无法运行：%v", name, nerr))
+				continue
 			}
-			cfg.Args = []string{opts.RunnerPath, cfg.Entry}
+			cfg.Command = node
+			cfg.Args = []string{runner, cfg.Entry}
 		}
 		if cfg.loadErr != nil {
 			cfg.Enabled = false

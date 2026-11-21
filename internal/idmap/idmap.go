@@ -236,9 +236,9 @@ func Open(path string, opts ...Options) (*Store, error) {
 	if s.shouldCompact() {
 		before, _ := fileSize(path)
 		if err := s.compact(path); err != nil {
-			log.Printf("idmap: 整理 %s 失败（不影响使用）：%v", path, err)
+			log.Printf("[idmap] 整理 %s 失败（不影响使用）：%v", path, err)
 		} else if after, ok := fileSize(path); ok {
-			log.Printf("idmap: 已整理 %s：%s → %s", path, sizeText(before), sizeText(after))
+			log.Printf("[idmap] 已整理 %s：%s → %s", path, sizeText(before), sizeText(after))
 		}
 		if s.db == nil {
 			// 整理失败且原文件也打不开
@@ -984,7 +984,7 @@ func (s *Store) pruneToSize() {
 		return nil
 	})
 	if keys == 0 {
-		log.Printf("idmap: 没有可删的消息记录，但 ID 对照本身已超过大小上限 %s", sizeText(s.opt.MaxBytes))
+		log.Printf("[idmap] 没有可删的消息记录，但 ID 对照本身已超过大小上限 %s", sizeText(s.opt.MaxBytes))
 		return
 	}
 	per := bytes / int64(keys)
@@ -1003,7 +1003,7 @@ func (s *Store) pruneToSize() {
 		}
 		deleted += n
 	}
-	log.Printf("idmap: 数据超过大小上限 %s，已删除最早的 %d 条消息记录", sizeText(s.opt.MaxBytes), deleted)
+	log.Printf("[idmap] 数据超过大小上限 %s，已删除最早的 %d 条消息记录", sizeText(s.opt.MaxBytes), deleted)
 }
 
 // pruneBefore 删掉时间早于 cutoff（unix 秒）的消息元信息，每批 5000 条

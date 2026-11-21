@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -110,6 +111,22 @@ func emitLevel(level, msg string) {
 	line := FormatLine(level, strings.TrimSuffix(msg, "\n"))
 	_, _ = os.Stderr.WriteString(line)
 	WriteFile([]byte(line))
+}
+
+// debugOn 是否为调试模式（config.yml 的 onebot.debug）
+var debugOn atomic.Bool
+
+// SetDebug 设置是否为调试模式：调试模式下 Debugf 的内容才会输出（终端和日志文件都是）
+func SetDebug(on bool) { debugOn.Store(on) }
+
+// DebugOn 当前是否为调试模式
+func DebugOn() bool { return debugOn.Load() }
+
+// Debugf 只在调试模式输出的详细信息；普通模式下终端和日志文件都不记录
+func Debugf(format string, v ...interface{}) {
+	if debugOn.Load() {
+		emitLevel("Debug", fmt.Sprintf(format, v...))
+	}
 }
 
 // Infof 输出 Info 级别日志（等价于标准 log.Printf，但级别显式）。

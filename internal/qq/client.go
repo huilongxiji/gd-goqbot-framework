@@ -5,6 +5,7 @@ package qq
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -45,6 +46,29 @@ type Client struct {
 	wsClient   websocket.WebSocket // 当前存活的 WS 连接（供 onIPReject 关闭）
 	ipRejected bool                // stop 策略：永久停止重连
 	lastIPLog  time.Time           // 日志节流：避免 retry 下刷屏
+	gw         gatewayInfo         // 最近一次查到的接入点信息，连上时汇总显示
+}
+
+// gatewayInfo /gateway/bot 返回的接入点、建议分片数和连接次数（WS 连接频控）
+type gatewayInfo struct {
+	shards         uint32 // QQ 建议的分片数
+	remaining      uint32 // 剩余可用的连接次数
+	total          uint32 // 连接次数总额
+	resetAfter     uint32 // 多少秒后重置
+	maxConcurrency uint32 // 最大并发
+}
+
+// humanSeconds 秒数换成「N 天」「N 小时」「N 分钟」
+func humanSeconds(s uint32) string {
+	switch {
+	case s >= 86400:
+		return fmt.Sprintf("%d 天", s/86400)
+	case s >= 3600:
+		return fmt.Sprintf("%d 小时", s/3600)
+	case s >= 60:
+		return fmt.Sprintf("%d 分钟", s/60)
+	}
+	return fmt.Sprintf("%d 秒", s)
 }
 
 // NewClient 创建 QQ 客户端
@@ -77,7 +101,7 @@ func (c *Client) Fatal() <-chan struct{} {
 // Start 启动 QQ 连接（非阻塞）
 func (c *Client) Start(ctx context.Context) error {
 	if c.cfg.Disabled || c.cfg.AppID == "" || c.cfg.AppSecret() == "" {
-		log.Println("[qq] 未配置 app_id/client_secret 或已 disabled，跳过 QQ 连接")
+		filelog.Warnf("[qq] 没有填写 qq.app_id / qq.client_secret（或 qq.disabled 为 true），不连接 QQ")
 		return nil
 	}
 
@@ -144,8 +168,9 @@ func (c *Client) Start(ctx context.Context) error {
 	})
 
 	intent := c.registerHandlers()
-	log.Printf("[qq] 订阅 intent=%d (shard %d/%d)", intent, c.cfg.ShardID, c.cfg.ShardCount)
-	log.Printf("[qq] IP 白名单被拒策略: %s，重试间隔 %d 秒", c.action, int(c.retryInterval/time.Second))
+	filelog.Debugf("[qq] 订阅 intent=%d (shard %d/%d)", intent, c.cfg.ShardID, c.cfg.ShardCount)
+	filelog.Debugf("[qq] IP 白名单被拒策略: %s，重试间隔 %d 秒", c.action, int(c.retryInterval/time.Second))
+	log.Printf("[qq] 正在连接 QQ（分片 %d/%d）...", c.cfg.ShardID+1, c.cfg.ShardCount)
 
 	go c.runShard(runCtx, api, tokenSource, intent)
 	return nil
@@ -246,10 +271,8 @@ func (c *Client) registerHandlers() dto.Intent {
 		if c.conv != nil {
 			c.conv.SetBotIdentity(data.User.ID, data.User.Username)
 		}
-		log.Printf("[qq] ====== QQ 连接成功 ======")
-		log.Printf("[qq] 机器人: %s  self_id: %d  openid: %s", data.User.Username, c.cfg.SelfID, data.User.ID)
-		log.Printf("[qq] 分片: [%d/%d]  session_id: %s", c.cfg.ShardID, c.cfg.ShardCount, data.SessionID)
-		log.Printf("[qq] =========================")
+		c.logConnected(data.User.Username)
+		filelog.Debugf("[qq] 机器人 openid %s，session_id %s", data.User.ID, data.SessionID)
 	})
 	errNotify := event.ErrorNotifyHandler(func(err error) {
 		filelog.Errorf("[qq] WebSocket 错误: %v", err)
@@ -426,11 +449,17 @@ func (c *Client) runShard(ctx context.Context, api openapi.OpenAPI, ts oauth2.To
 			continue
 		}
 		gatewayWait = gatewayRetryMin
+		c.mu.Lock()
+		c.gw = gatewayInfo{
+			shards: wsAP.Shards, remaining: wsAP.SessionStartLimit.Remaining, total: wsAP.SessionStartLimit.Total,
+			resetAfter: wsAP.SessionStartLimit.ResetAfter, maxConcurrency: wsAP.SessionStartLimit.MaxConcurrency,
+		}
+		c.mu.Unlock()
+		filelog.Debugf("[qq] WebSocket 接入点: url=%s shards=%d", wsAP.URL, wsAP.Shards)
+		filelog.Debugf("[qq] WS 连接频控(/gateway/bot): 剩余 %d/%d 次, %d 秒后重置, 最大并发 %d",
+			wsAP.SessionStartLimit.Remaining, wsAP.SessionStartLimit.Total,
+			wsAP.SessionStartLimit.ResetAfter, wsAP.SessionStartLimit.MaxConcurrency)
 		if !sessionReady {
-			log.Printf("[qq] WebSocket 接入点: url=%s shards=%d", wsAP.URL, wsAP.Shards)
-			log.Printf("[qq] WS 连接频控(/gateway/bot): 剩余 %d/%d 次, %d 秒后重置, 最大并发 %d",
-				wsAP.SessionStartLimit.Remaining, wsAP.SessionStartLimit.Total,
-				wsAP.SessionStartLimit.ResetAfter, wsAP.SessionStartLimit.MaxConcurrency)
 			session = dto.Session{
 				URL:         wsAP.URL,
 				TokenSource: ts,
@@ -529,6 +558,25 @@ func (c *Client) BotName() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.botName
+}
+
+// logConnected 连上 QQ 时的一行概况：机器人、分片、连接次数；分片不够或连接次数快用完时另外警告
+func (c *Client) logConnected(botName string) {
+	c.mu.RLock()
+	gw := c.gw
+	c.mu.RUnlock()
+	quota := ""
+	if gw.total > 0 {
+		quota = fmt.Sprintf("，连接次数剩余 %d/%d（%s后重置）", gw.remaining, gw.total, humanSeconds(gw.resetAfter))
+	}
+	log.Printf("[qq] 已连接 QQ：机器人「%s」，self_id %d，分片 %d/%d%s",
+		botName, c.cfg.SelfID, c.cfg.ShardID+1, c.cfg.ShardCount, quota)
+	if gw.shards > c.cfg.ShardCount {
+		filelog.Warnf("[qq] QQ 建议使用 %d 个分片，当前只配置了 %d 个（qq.shard_count），机器人所在的群较多时可能收不全消息", gw.shards, c.cfg.ShardCount)
+	}
+	if gw.total > 0 && gw.remaining*10 < gw.total {
+		filelog.Warnf("[qq] QQ 连接次数只剩 %d/%d，%s后重置；用完后在重置前无法再连上 QQ，请避免频繁重启", gw.remaining, gw.total, humanSeconds(gw.resetAfter))
+	}
 }
 
 // Ready 是否已完成 READY
