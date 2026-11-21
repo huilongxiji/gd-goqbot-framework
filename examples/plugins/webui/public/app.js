@@ -1,5 +1,5 @@
 // 入口：登录、侧栏导航、路由、实时推送、重启等待
-import { h, $, icon, api, auth, toast, openStream, setUnauthorizedHandler } from "./core.js";
+import { h, $, icon, api, auth, toast, openStream, setUnauthorizedHandler, setMustChangeHandler, tokenRules, tokenProblem } from "./core.js";
 import { chatState, loadChats, onMessage, onChat, onChatRemoved, onChatRenamed, renderChatPage, selectChat, unreadOf } from "./chat.js";
 import { renderOverview, renderConnections, renderPlugins, renderLogs, renderConfig, renderUpdate, setRestartFlow } from "./admin.js";
 
@@ -47,6 +47,7 @@ function showLogin(message = "") {
   stopStream();
   stopPage();
   $("#app").hidden = true;
+  $("#setpass").hidden = true;
   $("#login").hidden = false;
   $("#login-error").textContent = message;
   $("#login-token").focus();
@@ -57,15 +58,67 @@ setUnauthorizedHandler(() => {
   showLogin("登录已失效，请重新输入口令");
 });
 
+// ---------- 第一次登录：设置新口令 ----------
+
+function showSetPass() {
+  loggedIn = false;
+  stopStream();
+  stopPage();
+  $("#app").hidden = true;
+  $("#login").hidden = true;
+  $("#setpass").hidden = false;
+  $("#setpass-new").value = "";
+  $("#setpass-again").value = "";
+  $("#setpass-error").textContent = "";
+  renderRules();
+  $("#setpass-new").focus();
+}
+setMustChangeHandler(showSetPass);
+
+function renderRules() {
+  const t = $("#setpass-new").value;
+  $("#setpass-rules").replaceChildren(...tokenRules(t).map(([label, ok]) =>
+    h("li", { class: ok ? "ok" : "" }, h("span", { class: "pw-mark", "aria-hidden": "true" }, ok ? "✓" : "·"), label, h("span", { class: "sr-only" }, ok ? "（已满足）" : "（未满足）"))));
+}
+$("#setpass-new").addEventListener("input", renderRules);
+$("#setpass-show").addEventListener("change", (e) => {
+  for (const id of ["#setpass-new", "#setpass-again"]) $(id).type = e.target.checked ? "text" : "password";
+});
+$("#setpass-logout").addEventListener("click", () => { auth.set(""); showLogin(); });
+$("#setpass-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const t = $("#setpass-new").value;
+  const err = $("#setpass-error");
+  const problem = tokenProblem(t);
+  if (problem) { err.textContent = problem; return; }
+  if (t !== $("#setpass-again").value) { err.textContent = "两次输入的口令不一样"; return; }
+  try {
+    await api("POST", "/api/password", { token: t });
+  } catch (e2) {
+    err.textContent = e2.message;
+    return;
+  }
+  auth.set(t);
+  $("#setpass").hidden = true;
+  toast("新口令已保存，以后用它登录");
+  start();
+});
+
+/** 登录成功后：还在用初始口令就先去改口令 */
+function afterLogin(r) {
+  if (r?.must_change) showSetPass();
+  else start();
+}
+
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const t = $("#login-token").value.trim();
   if (!t) return;
   auth.set(t);
   try {
-    await api("POST", "/api/login", undefined, { silent401: true });
+    const r = await api("POST", "/api/login", undefined, { silent401: true });
     $("#login-token").value = "";
-    start();
+    afterLogin(r);
   } catch (err) {
     auth.set("");
     $("#login-error").textContent = err.message;
@@ -162,7 +215,7 @@ async function start() {
     chatState.botName = r.info?.qq?.bot_name || "机器人";
     await loadChats();
   } catch (e) {
-    if (e.status === 401) return;
+    if (e.status === 401 || e.status === 403) return;
     toast(e.message, "error");
   }
   stopStream();
@@ -212,7 +265,7 @@ function takeTokenFromHash() {
 
 function tryLogin() {
   if (!auth.get()) { showLogin(); return; }
-  api("POST", "/api/login", undefined, { silent401: true }).then(start, (e) => {
+  api("POST", "/api/login", undefined, { silent401: true }).then(afterLogin, (e) => {
     if (e.status === 401) { auth.set(""); showLogin("口令不正确"); }
     else showLogin(e.message);
   });

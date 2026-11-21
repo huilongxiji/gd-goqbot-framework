@@ -8,7 +8,7 @@
 // 页面是 public/ 下的原生 HTML / CSS / JS，不依赖任何 npm 包，放进 plugins/ 即可运行。
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { extname, join, resolve, sep } from "node:path";
 import type { Context, GoqbotError, OneBotEvent, Plugin } from "../goqbot.js";
 import { ChatStore, idOf, type ChatType } from "./lib/chat.ts";
@@ -20,6 +20,7 @@ interface Settings {
   host: string;
   port: number;
   token: string;
+  must_change_token: boolean; // true = 还在用自动生成的初始口令，登录后要先改口令才能用
   github_proxy: string; // 下载更新时加在 GitHub 地址前的代理，空=直连
   commands: Commands;
   history: History;
@@ -106,7 +107,7 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       throw e;
     }
-    const settings: Settings = { host: "127.0.0.1", port: 6099, token: randomBytes(12).toString("base64url"), github_proxy: "", commands: readCommands(undefined), history: readHistory(undefined) };
+    const settings: Settings = { host: "127.0.0.1", port: 6099, token: strongToken(), must_change_token: true, github_proxy: "", commands: readCommands(undefined), history: readHistory(undefined) };
     await writeFile(file, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
     return { settings, created: true };
   }
@@ -124,6 +125,7 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
       host: typeof saved.host === "string" && saved.host !== "" ? saved.host : "127.0.0.1",
       port: Number.isInteger(saved.port) ? Number(saved.port) : 6099,
       token: saved.token,
+      must_change_token: saved.must_change_token === true,
       github_proxy: typeof saved.github_proxy === "string" ? saved.github_proxy : "",
       commands: readCommands(saved.commands),
       history: readHistory(saved.history),
@@ -134,6 +136,52 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
 
 async function saveSettings(ctx: Context, settings: Settings): Promise<void> {
   await writeFile(join(ctx.dataDir, "config.json"), JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+}
+
+/** 生成初始口令：20 位，大写、小写、数字、特殊字符各至少一个（去掉了容易看错的 I O l 0 1） */
+const TOKEN_SETS = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789", "!@#$%^&*-_=+?"];
+function strongToken(len = 20): string {
+  const all = TOKEN_SETS.join("");
+  const pick = (set: string) => set[randomInt(set.length)];
+  const chars = TOKEN_SETS.map(pick); // 每类先放一个，保证都有
+  while (chars.length < len) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i--) { // 打乱顺序
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+/** 检查用户设置的新口令；不合格时返回给页面看的说明 */
+function tokenProblem(t: string): string {
+  const missing: string[] = [];
+  if (t.length < 8) missing.push("至少 8 位");
+  if (!/[A-Z]/.test(t)) missing.push("大写字母");
+  if (!/[a-z]/.test(t)) missing.push("小写字母");
+  if (!/[!-\/:-@\[-`{-~]/.test(t)) missing.push("特殊字符（如 !@#$%）");
+  if (missing.length) return "登录口令要求至少 8 位，并包含大写字母、小写字母和特殊字符。还缺：" + missing.join("、");
+  if (t.length > 128) return "登录口令最多 128 位";
+  if (/\s/.test(t)) return "登录口令不能包含空格";
+  return "";
+}
+
+/** 换成新口令：校验、保存，并断开用旧口令打开的实时推送（其他已登录的页面需要重新登录） */
+async function changeToken(ctx: Context, raw: unknown): Promise<void> {
+  const token = String(raw ?? "");
+  const problem = tokenProblem(token);
+  if (problem) {
+    throw new HttpError(400, problem);
+  }
+  if (tokenMatches(token, settings.token)) {
+    throw new HttpError(400, "新口令不能和现在的口令一样");
+  }
+  settings.token = token; // 立即生效
+  settings.must_change_token = false;
+  await saveSettings(ctx, settings);
+  for (const res of streams) {
+    res.end();
+  }
+  streams.clear();
 }
 
 /** 定长比较口令，避免按耗时猜测 */
@@ -737,11 +785,7 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
         settings.port = port;
       }
       if (body.token !== undefined) {
-        const token = String(body.token).trim();
-        if (token.length < 8) {
-          throw new HttpError(400, "登录口令至少要 8 个字符");
-        }
-        settings.token = token; // 立即生效
+        await changeToken(ctx, body.token);
       }
       if (body.commands !== undefined) {
         settings.commands = readCommands(body.commands);
@@ -991,7 +1035,16 @@ const plugin: Plugin = {
         }
         failures.delete(ip);
         if (url.pathname === "/api/login") {
+          return send(res, 200, { must_change: settings.must_change_token });
+        }
+        if (url.pathname === "/api/password" && req.method === "POST") {
+          const body = await readJSON(req);
+          await changeToken(ctx, body.token);
           return send(res, 200, {});
+        }
+        if (settings.must_change_token) {
+          // 还在用自动生成的初始口令：先改口令，其他功能都不开放
+          return send(res, 403, { error: "请先修改登录口令", must_change: true });
         }
         await handleApi(ctx, req, res, url);
       } catch (e) {
@@ -1019,9 +1072,16 @@ const plugin: Plugin = {
     server.listen(settings.port, settings.host, () => {
       const shown = settings.host === "0.0.0.0" || settings.host === "::" ? "127.0.0.1" : settings.host;
       ctx.log.info(`WebUI 已启动：http://${shown}:${settings.port}`);
-      if (created) {
-        ctx.log.info(`首次登录请打开：http://${shown}:${settings.port}/#token=${settings.token}`);
-        ctx.log.info(`登录口令、监听地址和端口保存在 ${join(ctx.dataDir, "config.json")}，可以自行修改后重启 goqbot`);
+      if (settings.must_change_token) {
+        // 初始口令改掉之前，每次启动都打印一遍，方便找回
+        const line = "=".repeat(56);
+        ctx.log.info(line);
+        ctx.log.info(created ? "WebUI 已生成初始登录口令：" : "WebUI 还在使用初始登录口令，请尽快登录修改：");
+        ctx.log.info(`  口令：${settings.token}`);
+        ctx.log.info(`  登录链接：http://${shown}:${settings.port}/#token=${encodeURIComponent(settings.token)}`);
+        ctx.log.info("  第一次登录后需要设置新口令：至少 8 位，包含大写字母、小写字母和特殊字符");
+        ctx.log.info(`  口令也保存在 ${join(ctx.dataDir, "config.json")}`);
+        ctx.log.info(line);
       }
     });
   },

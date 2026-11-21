@@ -93,6 +93,27 @@ export class ApiError extends Error {
 
 let onUnauthorized = () => {};
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+let onMustChange = () => {};
+/** 还在用初始口令时（接口返回 must_change），转到修改口令页面 */
+export function setMustChangeHandler(fn) { onMustChange = fn; }
+
+/** 登录口令的要求，和后端一致；返回每一条要求是否满足 */
+export function tokenRules(t) {
+  return [
+    ["至少 8 位", t.length >= 8],
+    ["包含大写字母", /[A-Z]/.test(t)],
+    ["包含小写字母", /[a-z]/.test(t)],
+    ["包含特殊字符，如 !@#$%", /[!-\/:-@\[-`{-~]/.test(t)],
+  ];
+}
+/** 口令不合格时返回说明，合格返回空字符串 */
+export function tokenProblem(t) {
+  const missing = tokenRules(t).filter(([, ok]) => !ok).map(([label]) => label);
+  if (missing.length) return "口令还不符合要求：" + missing.join("、");
+  if (t.length > 128) return "口令最多 128 位";
+  if (/\s/.test(t)) return "口令不能包含空格";
+  return "";
+}
 
 export async function api(method, path, body, { raw = false, silent401 = false } = {}) {
   const headers = { authorization: "Bearer " + token() };
@@ -115,6 +136,7 @@ export async function api(method, path, body, { raw = false, silent401 = false }
   try { data = await res.json(); } catch { /* 空响应 */ }
   if (!res.ok) {
     if (res.status === 401 && !silent401) onUnauthorized();
+    if (res.status === 403 && data.must_change) onMustChange();
     throw new ApiError(res.status, data.error || `请求失败（HTTP ${res.status}）`);
   }
   return data;
@@ -131,6 +153,7 @@ export function openStream(handlers, onState) {
       try {
         const res = await fetch("/api/stream", { headers: { authorization: "Bearer " + token() }, signal: ctrl.signal });
         if (res.status === 401) { onUnauthorized(); return; }
+        if (res.status === 403) { onMustChange(); return; }
         if (!res.ok || !res.body) throw new Error();
         onState(true);
         wait = 1000;

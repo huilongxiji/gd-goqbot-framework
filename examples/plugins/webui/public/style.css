@@ -117,6 +117,13 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .login-box { width: min(380px, 100%); display: grid; gap: 16px; padding: 32px; background: var(--surface); border-radius: 18px; box-shadow: 0 10px 40px rgba(16, 35, 47, .18); }
 .login-brand { display: flex; align-items: center; gap: 10px; font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
 .login-box code { font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.pw-rules { list-style: none; margin: -6px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.pw-rules li { display: flex; align-items: center; gap: 8px; }
+.pw-rules li.ok { color: var(--ok); }
+.pw-mark { width: 16px; height: 16px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--surface-2); font-size: 11px; font-weight: 700; }
+.pw-rules li.ok .pw-mark { background: var(--ok-soft); }
+.pw-show { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: -6px; }
+.btn.ghost.wide { margin-top: -8px; }
 
 .brand-mark {
   display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
@@ -783,3 +790,4 @@ a.seg-ark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .private-reply textarea { width: 100%; min-height: 96px; resize: vertical; font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ink); }
 .private-reply-quote { margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 6px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .private-reply-quote b { color: var(--ink); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

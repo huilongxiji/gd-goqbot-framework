@@ -23,6 +23,26 @@
     </form>
   </main>
 
+  <main id="setpass" class="login" hidden>
+    <form id="setpass-form" class="login-box" novalidate>
+      <div class="login-brand"><span class="brand-mark" aria-hidden="true">g</span>设置登录口令</div>
+      <p class="muted">现在用的是 goqbot 第一次启动时自动生成的口令。请设置一个你自己的口令，以后用它登录。</p>
+      <label class="field">
+        <span>新口令</span>
+        <input id="setpass-new" type="password" autocomplete="new-password" spellcheck="false" maxlength="128" required>
+      </label>
+      <ul id="setpass-rules" class="pw-rules" aria-live="polite"></ul>
+      <label class="field">
+        <span>再输入一次</span>
+        <input id="setpass-again" type="password" autocomplete="new-password" spellcheck="false" maxlength="128" required>
+      </label>
+      <label class="pw-show"><input id="setpass-show" type="checkbox"> 显示口令</label>
+      <p id="setpass-error" class="form-error" role="alert"></p>
+      <button class="btn primary wide" type="submit">保存新口令</button>
+      <button id="setpass-logout" class="btn ghost wide" type="button">退出</button>
+    </form>
+  </main>
+
   <div id="app" class="app" hidden>
     <nav id="rail" class="rail" aria-label="主导航"></nav>
     <main id="view" class="view" tabindex="-1"></main>

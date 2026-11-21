@@ -1,5 +1,5 @@
 // 管理页面：概览、连接、插件、日志、配置文件、更新
-import { h, $, fill, icon, api, auth, toast, openDialog, confirmDialog, duration, bytes } from "./core.js";
+import { h, $, fill, icon, api, auth, toast, openDialog, confirmDialog, duration, bytes, tokenProblem } from "./core.js";
 
 /** 由 app.js 注入：重启 goqbot 并等它回来 */
 let restartFlow = async () => {};
@@ -828,7 +828,7 @@ export function renderConfig(root) {
           field("监听地址", h("input", { type: "text", value: web.host, spellcheck: "false", oninput: (e) => { web.host = e.target.value.trim(); changed(); } }),
             "127.0.0.1 = 只能在本机打开；0.0.0.0 = 其他设备也能打开"),
           field("端口", h("input", { type: "number", min: 1, max: 65535, value: web.port, oninput: (e) => { web.port = e.target.value; changed(); } }), "地址和端口重启 goqbot 后生效"),
-          field("新的登录口令", tokenInput, "至少 8 个字符，保存后立即生效", true))),
+          field("新的登录口令", tokenInput, "至少 8 位，包含大写字母、小写字母和特殊字符（如 !@#$%）。保存后立即生效，其他已登录的页面需要重新登录", true))),
       h("p", { class: "muted small" }, `配置文件：${r.path}`));
     changed();
   }
@@ -851,6 +851,10 @@ export function renderConfig(root) {
     }
     const gv = goqbotChanges();
     const wv = webChanges();
+    if (wv.token && tokenProblem(wv.token)) {
+      fill(result, h("p", { class: "form-error" }, "新的登录口令" + tokenProblem(wv.token).replace(/^口令/, "")));
+      return;
+    }
     fill(result);
     const notes = [];
     try {
