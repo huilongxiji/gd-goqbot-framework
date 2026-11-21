@@ -2,6 +2,7 @@ package onebot
 
 import (
 	"context"
+	"time"
 
 	"goqbot/internal/botgo/dto"
 	"goqbot/internal/botgo/dto/keyboard"
@@ -58,7 +59,7 @@ type SendNote struct {
 
 // OutMessage 已解析、openid 已就绪的发送请求，Parts 保持 OneBot 段的原始顺序
 type OutMessage struct {
-	MsgID    string      // 被动回复目标 QQ msg_id，可空；用于占用被动回复窗口（5 分钟时效）
+	MsgID    string      // 被动回复目标 QQ msg_id，可空；用于占用被动回复窗口（群聊、私聊都是 60 分钟）
 	EventID  string      // 被动回复目标 event_id（互动事件），可空；与 MsgID 二选一，都空=主动消息
 	RefMsgID string      // 引用回复目标 QQ msg_id，可空；置入 message_reference 渲染「引用」气泡
 	IsWakeup bool        // 单聊互动召回消息：与 MsgID/EventID 互斥，仅 C2C 生效
@@ -67,6 +68,20 @@ type OutMessage struct {
 	StreamRemainLen int
 	Parts           []MessagePart
 	Notes           []SendNote // 仅日志：reply 等随消息发送的动作说明
+	// reply 段命中的原消息（场景、群、发送者），发送前用来核对被动 msg_id 能不能用在这个会话
+	reply *replyTarget
+	// reply 段里的 message_id（不论是否命中缓存），发送失败时告诉插件这是在回复哪条消息
+	replyID int64
+}
+
+// replyTarget reply 段引用的那条消息的来源
+type replyTarget struct {
+	scene       string // group / c2c
+	groupOpenID string
+	userOpenID  string
+	msgID       string    // 原消息的 QQ msg_id
+	at          time.Time // 原消息收到的时间
+	outbound    bool      // 机器人自己发的消息，不能当被动凭证
 }
 
 // HasContent 是否有可发送内容。流式末帧可能没有文本，只要带了 Stream 也算有内容。
@@ -89,6 +104,8 @@ type MessageSender interface {
 
 	// GetGroupInfo 获取群基本信息（白名单）
 	GetGroupInfo(ctx context.Context, groupOpenID string) (*GroupInfo, error)
+	// GetUserInfo 获取用户信息（/v2/users/{user_openid}/info），返回官方响应的全部字段
+	GetUserInfo(ctx context.Context, userOpenID string) (map[string]any, error)
 	// GetGroupBotState 获取机器人群内状态（白名单）
 	GetGroupBotState(ctx context.Context, groupOpenID string) (*GroupBotState, error)
 	// GetGroupMembers 获取群成员列表（白名单；每次最多 30 条，cursor 分页）

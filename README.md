@@ -93,7 +93,7 @@ onebot:
         access-token: ""    # 建议设置，框架那边填同一个值
 ```
 
-模板里的两条示例连接默认是关闭的（`disabled: true`），每条连接的开关、口令、心跳都单独设置。
+模板里的两条示例连接默认是关闭的（`disabled: true`），每条连接的开关、口令、心跳都单独设置。用完整包时也可以不改配置，启动后在 WebUI 的「连接」页打开或新建，保存后立即生效。
 
 **4. 再次启动**：看到 `goqbot x.y.z 已启动，等待连接...` 就说明成功了。框架那边怎么设置，请看上面 [支持的框架](#-支持的框架) 里对应的教程。
 
@@ -111,6 +111,19 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 ```
 
 </details>
+
+## 🔌 自带的插件
+
+完整包解压后，`plugins/` 文件夹里已经放好了两个插件，源代码都在仓库的 [`examples/plugins/`](examples/plugins)：
+
+| 插件 | 默认 | 作用 |
+|---|---|---|
+| [`webui`](examples/plugins/webui) | **开启** | 网页管理面板：按群、按用户收发消息（右键消息可以艾特、回复、撤回、禁言、复读），管理连接、插件与权限、日志、配置和更新，内置 `#gq` 运行状态指令。第一次启动时终端里会打印自动生成的初始口令和登录链接，登录后需要先设置自己的口令，默认地址 `http://127.0.0.1:6099` |
+| [`hello_ts`](examples/plugins/hello_ts) | **关闭** | 写插件用的最小示例（TypeScript），只供参考，不影响机器人 |
+
+- **开关插件**：插件文件夹里的 `plugin.yml` 写 `enabled: true` 或 `enabled: false`，重启 goqbot 后生效。`hello_ts` 自带的 `plugin.yml` 是 `false`；`webui` 没有这个文件，表示开启，不想用就新建一个写上 `enabled: false`。
+- **精简包和自己编译**不带插件，也没有 Node。需要 WebUI 时，把 `examples/plugins/webui` 复制到 goqbot 旁边的 `plugins/` 里，并准备好 Node 22.18 或更高版本（推荐 Node 26）。
+- 写插件可以参考最小示例 [`hello_ts`](examples/plugins/hello_ts) 和类型说明 [`goqbot.d.ts`](examples/plugins/goqbot.d.ts)。
 
 ## 📦 功能一览
 
@@ -134,7 +147,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 
 | 分类 | 动作 |
 |---|---|
-| 基础信息 | `get_login_info` · `get_status` · `get_version_info` · `get_gateway` · `get_openid` · `get_c2c_msg_state` |
+| 基础信息 | `get_login_info` · `get_status` · `get_version_info` · `get_gateway` · `get_openid` · `get_user_info` · `get_message_quota` · `get_c2c_msg_state` |
 | 发送消息 | `send_msg` · `send_group_msg` · `send_private_msg` · `send_group_active_msg` · `send_private_active_msg` |
 | 消息管理 | `delete_msg` · `get_msg` · `get_forward_msg` · `put_interaction` |
 | 群聊管理 | `get_group_info` · `get_group_bot_state` · `get_group_member_list` · `get_group_member_info` · `get_group_join_requests` · `set_group_add_request` · `set_group_ban` · `get_group_ban` |
@@ -160,6 +173,20 @@ await matcher.send(MessageSegment.image("https://example.com/cat.png"))
 ```
 
 更多写法（Markdown 按钮、流式消息、素材引用等）见 [NoneBot2 接入](https://huilongxiji.github.io/gd-goqbot-docs/guide/nonebot)。仓库里的 [`nb_plugins_demo/goqbot_test`](nb_plugins_demo/goqbot_test) 是一个覆盖全部功能的 NoneBot2 测试插件，可以直接拿来对照。
+
+## 🔒 连接安全
+
+goqbot 能以机器人身份发消息、撤回、禁言，所以默认会**自动拒绝来路不明的连接**：
+
+- **浏览器网页的连接**：浏览器里的网页连 WebSocket 时，会自动带上它来自哪个网站（`Origin`），网页自己改不了。连接**没有设置口令**时，goqbot 只允许本机打开的网页（`localhost`、`127.0.0.1`、本地 HTML 文件）连接，其他网站一律拒绝（HTTP 403），日志里会提示「拒绝了来自网页 … 的 WS 连接」。这样，你在浏览器里随手打开的网站就没法悄悄连上本机的 goqbot。
+- **框架程序**：NoneBot、AstrBot 等框架不是网页，不带来源信息，不受上面这条限制。
+- **设置了口令的连接**：口令正确就放行，不管来自哪里。插件的敏感能力（如获取 Cookie）也只开放给设置了口令的连接。
+- **监听在 `0.0.0.0` 又没设口令**：同一网络里的任何人都能连上来，启动时日志会警告。只给本机的框架用时，把地址改成 `127.0.0.1:6700`。
+- **WebUI**：第一次启动自动生成强口令，登录后必须改成自己的口令（至少 8 位，包含大写字母、小写字母和特殊字符）。WebUI 不通过 WebSocket 连 goqbot，不受上面的来源规则影响。
+
+> 用部署在其他网站上的网页版客户端（比如 Stapxs QQ Lite）连接 goqbot 时，请先在 WebUI 的「连接」页给这条连接设置口令，客户端里填同一个值。在本机运行的网页客户端（`localhost` 打开）不受影响。
+
+详见 [连接说明](https://huilongxiji.github.io/gd-goqbot-docs/guide/connect)。
 
 ## ❓ 常见问题
 
@@ -194,6 +221,13 @@ await matcher.send(MessageSegment.image("https://example.com/cat.png"))
 <summary><b>框架里看到的 user_id / group_id 不是真实 QQ 号？</b></summary>
 
 QQ 官方机器人拿不到真实 QQ 号和群号，只有 openid。goqbot 会把 openid 稳定地映射成数字 ID，在所有框架里都一样，但不等于真实号码；同一个人在群聊和私聊里的 ID 也不同。
+
+</details>
+
+<details>
+<summary><b>网页版客户端连不上，日志提示「拒绝了来自网页 … 的 WS 连接」？</b></summary>
+
+这条连接没有设置口令，而客户端是从其他网站打开的，goqbot 会把它当成来路不明的连接拒绝（见 [连接安全](#-连接安全)）。在 WebUI 的「连接」页给这条连接设置口令，客户端里填同一个值即可；或者在本机运行客户端，用 `localhost` 打开。
 
 </details>
 

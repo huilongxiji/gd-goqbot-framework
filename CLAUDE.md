@@ -30,7 +30,7 @@
 
 **不改版本号** —— 不影响 goqbot 程序本身的改动：
 - 只改 `README.md`、`docs/`、注释
-- 只改 `nb_plugins_demo/`、`plugins_demo/` 示例插件、`dist/build.sh`、`dist/package.sh`、`.gitignore`、IDE 配置
+- 只改 `nb_plugins_demo/`、`examples/` 示例插件、`dist/build.sh`、`dist/package.sh`、`.gitignore`、IDE 配置
 - 只改测试代码
 
 ### 执行规则
@@ -57,14 +57,14 @@ AI 可以运行只读命令查看状态，例如 `git status`、`git diff`、`gi
 | 其他 | 示例插件、构建脚本、配置文件等不影响程序的改动（不改版本号） | `其他 更新 nonebot2 测试插件` |
 
 - 不要用「更新」「添加」「完善」「优化」开头，按含义归到上表的前缀里。
-- 一次提交改了版本号时，在提交说明末尾带上新版本，例如 `新增卡片消息 (1.11.0)`。
+- 提交说明末尾不要带版本号，版本只体现在 `main.go` 的 `AppVersion` 和 tag 上。
 - 同一次提交里既有新增又有修改时，用「新增」开头，按主要内容写一句，次要内容用顿号或逗号接在后面。
 
 AI 完成任务后，给出提交命令。`git add` 只列出本次改动的文件，不要用 `git add -A` / `git add .`（仓库里有 `.claude/`、`__pycache__/` 等不该提交的未跟踪文件）。例如：
 
 ```bash
 git add main.go internal/onebot/api.go internal/qq/sender.go
-git commit -m "新增卡片消息 (1.11.0)"
+git commit -m "新增卡片消息"
 ```
 
 ## 三、上传与 tag 规范

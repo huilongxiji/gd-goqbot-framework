@@ -109,7 +109,7 @@ func init() {
 	defineHost("events.emit", "向所有下游框架和订阅了的其他插件发出自定义事件", false,
 		`{"type":"object","properties":{"event":{"type":"string"},"data":{"type":"object"}},"required":["event"],"additionalProperties":false}`,
 		(*Manager).hostEmit)
-	defineHost("host.info", "goqbot 版本、运行时长、QQ 连接状态、下游连接（每条含 index、running、error）、插件概况", false,
+	defineHost("host.info", "goqbot 版本、运行时长、QQ 连接状态、下游连接（每条含 index、running、error）、插件概况、idmap 情况（文件大小、消息记录条数等）", false,
 		`{"type":"object","additionalProperties":false}`,
 		func(m *Manager, _ context.Context, _ *plugin, args json.RawMessage) (any, error) {
 			if err := decodeArgs(args, &struct{}{}); err != nil {

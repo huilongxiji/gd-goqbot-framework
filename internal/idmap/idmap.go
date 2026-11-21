@@ -4,10 +4,14 @@
 package idmap
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,32 +32,55 @@ const (
 	SceneC2C Scene = "c2c"
 )
 
-// 被动回复有效期（保守取值，留出网络余量）
+// 被动回复有效期与每条消息可回复次数（官方规则）：
+// 群聊、私聊的被动回复都是 60 分钟；群消息每条最多回复 5 次（机器人开发者是该群群主或管理员时 50 次），
+// 私聊消息每条最多回复 4 次。群消息也可以私聊回复它的发送者，次数和群内回复共用
 const (
 	// GroupPassiveTTL 群被动回复有效期
-	GroupPassiveTTL = 5 * time.Minute
+	GroupPassiveTTL = 60 * time.Minute
 	// C2CPassiveTTL 单聊被动回复有效期
 	C2CPassiveTTL = 60 * time.Minute
+
+	// GroupPassiveReplies 群消息每条可被动回复次数
+	GroupPassiveReplies = 5
+	// GroupPassiveRepliesBoost 机器人开发者是群主或管理员时，群消息每条可被动回复次数提升到 50
+	GroupPassiveRepliesBoost = 50
+	// C2CPassiveReplies 单聊消息每条可被动回复次数
+	C2CPassiveReplies = 4
 )
 
-// 后台清理（janitor）参数：控制长期运行时内存内几个只增不减的 sync.Map。
-// 说明：id2open/open2id/c2cState 属身份/状态映射，语义上需长期驻留，不做清理；
-// 这里只回收具有时效性的 msg2meta / lazy / seqCounter / joinReq。
+// 后台清理（janitor）参数：控制长期运行时内存和 idmap.db 的大小。
+//   - msg2meta / lazy / seqCounter / joinReq：有时效，按时间和条数上限回收
+//   - id2open / open2id：持久化模式下只是 db 的缓存，超过上限时淘汰一部分（用到时再从 db 读回）；
+//     纯内存模式下它们是唯一的记录，不清理
+//   - activeCount：每天的主动消息计数，过了当天就回收
+//   - db 里的消息元信息按 Options.KeepDays 保留天数、Options.MaxBytes 文件大小上限清理，idmap.db 不再无限增长
+//
+// 除了定时清理，新增条目每到 sweepEvery 条也会提前清理一次，避免消息很多时在两次定时清理之间涨得太高。
 const (
 	// janitorInterval 后台清理扫描周期
 	janitorInterval = 5 * time.Minute
+	// sweepEvery 新增这么多条目后提前清理一次
+	sweepEvery = 10000
 	// msgMetaTTL 内存中消息元信息保留时长（超时后从内存淘汰；持久化模式下仍可回落 db 重载）
 	msgMetaTTL = 2 * time.Hour
 	// msgMetaCap 内存中消息元信息条数硬上限（超出按时间淘汰最旧）
-	msgMetaCap = 50000
+	msgMetaCap = 30000
 	// lazyCap 被动回复凭证条数硬上限
-	lazyCap = 100000
+	lazyCap = 30000
 	// seqTTL msg_seq 计数器空闲保留时长（被动窗口过后即可回收）
 	seqTTL = C2CPassiveTTL
 	// seqCap msg_seq 计数器条数硬上限
-	seqCap = 100000
+	seqCap = 30000
 	// joinReqTTL 入群申请上下文兜底保留时长（正常审批后即删除，此为未处理时的回收阈值）
 	joinReqTTL = 24 * time.Hour
+	// idCacheCap 持久化模式下内存里最多缓存多少个 openid（超出时淘汰到 idCacheKeep，用到时从 db 读回）
+	idCacheCap  = 30000
+	idCacheKeep = 20000
+	// dbPruneInterval 多久清理一次 db 里过期的消息元信息（以及检查文件大小上限）
+	dbPruneInterval = time.Hour
+	// freeOSAfter 一次清理回收的条目超过这个数时，把空出来的内存还给系统
+	freeOSAfter = 20000
 )
 
 // seqEntry msg_seq 计数器条目，带最近使用时间以支持空闲回收
@@ -73,16 +100,16 @@ type MsgMeta struct {
 	Outbound    bool // true=本程序发出的消息，不能当作被动 msg_id
 }
 
-// PassiveOK 是否还能当作被动回复凭证（入站且未过窗口）
-func (m MsgMeta) PassiveOK() bool {
-	if m.Outbound || m.MsgID == "" {
+// PassiveOK 这条消息现在还能不能当被动回复凭证（用户发来的消息，且还在有效期内）
+func (s *Store) PassiveOK(m MsgMeta) bool {
+	if m.Outbound || m.MsgID == "" || m.Time.IsZero() {
 		return false
 	}
-	ttl := GroupPassiveTTL
-	if m.Scene == SceneC2C {
-		ttl = C2CPassiveTTL
+	ttl := C2CPassiveTTL
+	if m.Scene != SceneC2C {
+		ttl = GroupPassiveTTL
 	}
-	return !m.Time.IsZero() && time.Since(m.Time) < ttl
+	return time.Since(m.Time) < ttl
 }
 
 type lazyEntry struct {
@@ -97,6 +124,8 @@ var (
 	bucketMsgMeta  = []byte("msgmeta")  // <int64 message_id> -> json(MsgMeta)
 	bucketC2CState = []byte("c2cstate") // openid -> json(C2CMsgState)
 	bucketMediaImg = []byte("mediaimg") // image_id -> json(MediaImageRecord)
+	bucketMsgTime  = []byte("msgtime")  // <8 字节 unix 秒><message_id 十进制> -> 空：按时间清理 msgmeta 用的索引
+	bucketInfo     = []byte("info")     // 内部标记，例如 msgtime 索引是否已为旧数据补建
 )
 
 // MediaImageRecord 框架上传过的素材图片记录（官方接口不返回 md5/sha1，需本地记账才能按内容查重）。
@@ -141,32 +170,93 @@ type Store struct {
 	lazy       sync.Map // string(key) -> *lazyEntry
 	seqCounter sync.Map // string(msgID) -> *seqEntry
 
+	groupBoost  sync.Map // string(group_openid) -> bool：机器人开发者在这个群是群主或管理员
+	activeCount sync.Map // string("g:"/"c:" + openid) -> *activeEntry：今天已发的主动消息条数（仅内存）
+
 	db *bolt.DB // nil = 纯内存模式
+	opt Options // 持久化模式的清理设置
+
+	statsMu    sync.Mutex     // 保护 statsCache
+	statsAt    time.Time      // statsCache 的计算时间
+	statsCache map[string]any // Stats 的结果缓存 30 秒（数条数要遍历整个 bucket）
 
 	stopOnce sync.Once     // 保证 janitor 仅停止一次
 	stopCh   chan struct{} // 关闭时通知 janitor 退出
+	kick     chan struct{} // 新增条目达到 sweepEvery 时通知 janitor 提前清理
+	inserts  atomic.Int64  // 上次清理以来新增的条目数（近似值）
+}
+
+// noteInsert 记一条新增条目，攒够 sweepEvery 条时让 janitor 提前清理
+func (s *Store) noteInsert() {
+	if s.inserts.Add(1) < sweepEvery {
+		return
+	}
+	s.inserts.Store(0)
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
 }
 
 // New 创建纯内存映射存储（不持久化）
 func New() *Store {
-	s := &Store{stopCh: make(chan struct{})}
+	s := &Store{stopCh: make(chan struct{}), kick: make(chan struct{}, 1)}
 	s.startJanitor()
 	return s
 }
 
+// Options 持久化模式的清理设置
+type Options struct {
+	// KeepDays 消息记录保留天数，0=不按天数删除
+	KeepDays int
+	// MaxBytes idmap.db 文件大小上限（字节），0=不限制。超出时从最早的消息记录删起；
+	// 删掉后空出来的空间会被新数据复用，启动时空闲空间多的话会整理一次让文件变小
+	MaxBytes int64
+}
+
 // Open 创建带 bbolt 持久化的映射存储；文件不存在则创建，存在则直接加载。
-func Open(path string) (*Store, error) {
+func Open(path string, opts ...Options) (*Store, error) {
+	var opt Options
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
 	}
+	db, err := openDB(path)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{db: db, opt: opt, stopCh: make(chan struct{}), kick: make(chan struct{}, 1)}
+	// 启动时先按设置清理一遍；空出来的空间很多时整理文件，让它真正变小
+	s.indexOldMsgMeta()
+	s.pruneDB(time.Now())
+	if s.shouldCompact() {
+		before, _ := fileSize(path)
+		if err := s.compact(path); err != nil {
+			log.Printf("idmap: 整理 %s 失败（不影响使用）：%v", path, err)
+		} else if after, ok := fileSize(path); ok {
+			log.Printf("idmap: 已整理 %s：%s → %s", path, sizeText(before), sizeText(after))
+		}
+		if s.db == nil {
+			// 整理失败且原文件也打不开
+			return nil, fmt.Errorf("整理后重新打开 %s 失败", path)
+		}
+	}
+	s.startJanitor()
+	return s, nil
+}
+
+// openDB 打开 bbolt 文件并建好需要的 bucket
+func openDB(path string) (*bolt.DB, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
 		return nil, err
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketIDs, bucketMsgMeta, bucketC2CState, bucketMediaImg} {
+		for _, b := range [][]byte{bucketIDs, bucketMsgMeta, bucketC2CState, bucketMediaImg, bucketMsgTime, bucketInfo} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -176,9 +266,110 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, stopCh: make(chan struct{})}
-	s.startJanitor()
-	return s, nil
+	return db, nil
+}
+
+func fileSize(path string) (int64, bool) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	return st.Size(), true
+}
+
+func sizeText(n int64) string {
+	return fmt.Sprintf("%.1f MB", float64(n)/1024/1024)
+}
+
+// dbSizes 返回 idmap.db 文件大小和其中实际存着数据的大小（文件大小减去空闲页）
+func (s *Store) dbSizes() (file, used int64) {
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		file = tx.Size()
+		return nil
+	})
+	st := s.db.Stats()
+	free := int64(st.FreePageN+st.PendingPageN) * int64(s.db.Info().PageSize)
+	used = file - free
+	if used < 0 {
+		used = 0
+	}
+	return file, used
+}
+
+// shouldCompact 空闲空间超过一半（且文件不算太小），或者文件超过了大小上限、又有不少空闲空间时，值得整理一次
+func (s *Store) shouldCompact() bool {
+	file, used := s.dbSizes()
+	free := file - used
+	if file >= 32<<20 && free*2 > file {
+		return true
+	}
+	return s.opt.MaxBytes > 0 && file > s.opt.MaxBytes && free*4 > file
+}
+
+// compact 把 db 整理成一个新文件（只拷贝有数据的部分）再换掉原文件。只在启动时、janitor 还没运行时调用
+func (s *Store) compact(path string) error {
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	s.db = nil
+	tmp := path + ".compact"
+	_ = os.Remove(tmp)
+	err := func() error {
+		src, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 3 * time.Second, ReadOnly: true})
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		dst, err := bolt.Open(tmp, 0o600, &bolt.Options{Timeout: 3 * time.Second})
+		if err != nil {
+			return err
+		}
+		if err := bolt.Compact(dst, src, 64<<20); err != nil {
+			_ = dst.Close()
+			return err
+		}
+		return dst.Close()
+	}()
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	// 不论整理成没成功，都重新打开（失败时打开的是原文件）
+	db, oerr := openDB(path)
+	if oerr != nil {
+		return fmt.Errorf("%v；重新打开也失败：%v", err, oerr)
+	}
+	s.db = db
+	return err
+}
+
+// Stats 给管理页面看的 idmap 情况。数条数要遍历整个 bucket，结果缓存 30 秒
+func (s *Store) Stats() map[string]any {
+	out := map[string]any{"persistent": s.db != nil}
+	if s.db == nil {
+		return out
+	}
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	if s.statsCache != nil && time.Since(s.statsAt) < 30*time.Second {
+		return s.statsCache
+	}
+	defer func() {
+		s.statsCache, s.statsAt = out, time.Now()
+	}()
+	file, used := s.dbSizes()
+	out["file_bytes"] = file
+	out["used_bytes"] = used
+	out["keep_days"] = s.opt.KeepDays
+	out["max_bytes"] = s.opt.MaxBytes
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		out["messages"] = tx.Bucket(bucketMsgMeta).Stats().KeyN
+		out["ids"] = tx.Bucket(bucketIDs).Stats().KeyN
+		return nil
+	})
+	return out
 }
 
 // Close 停止后台清理并关闭底层 db（纯内存模式仅停止 janitor）
@@ -214,12 +405,22 @@ func (s *Store) ID(openid string) int64 {
 	if id == 0 {
 		id = 1
 	}
-	s.open2id.Store(openid, id)
+	if _, loaded := s.open2id.LoadOrStore(openid, id); !loaded {
+		s.noteInsert()
+	}
 	s.id2open.Store(id, openid)
 	if s.db != nil {
-		_ = s.db.Update(func(tx *bolt.Tx) error {
-			return tx.Bucket(bucketIDs).Put(idKey(id), []byte(openid))
+		// 内存缓存被淘汰后再次用到：db 里已经有了就不用再写
+		var saved bool
+		_ = s.db.View(func(tx *bolt.Tx) error {
+			saved = string(tx.Bucket(bucketIDs).Get(idKey(id))) == openid
+			return nil
 		})
+		if !saved {
+			_ = s.db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket(bucketIDs).Put(idKey(id), []byte(openid))
+			})
+		}
 	}
 	return id
 }
@@ -259,15 +460,27 @@ func (s *Store) AllocMsgID(meta MsgMeta) int64 {
 	if meta.Time.IsZero() {
 		meta.Time = time.Now()
 	}
-	s.msg2meta.Store(id, meta)
+	if _, loaded := s.msg2meta.Swap(id, meta); !loaded {
+		s.noteInsert()
+	}
 	if s.db != nil {
 		if b, err := json.Marshal(meta); err == nil {
 			_ = s.db.Update(func(tx *bolt.Tx) error {
-				return tx.Bucket(bucketMsgMeta).Put(idKey(id), b)
+				if err := tx.Bucket(bucketMsgMeta).Put(idKey(id), b); err != nil {
+					return err
+				}
+				return tx.Bucket(bucketMsgTime).Put(msgTimeKey(meta.Time, idKey(id)), nil)
 			})
 		}
 	}
 	return id
+}
+
+// msgTimeKey msgtime 索引的 key：8 字节时间在前，按时间顺序排列，清理时从头删到过期时间即可；后面是 msgmeta 的 key
+func msgTimeKey(t time.Time, metaKey []byte) []byte {
+	k := make([]byte, 8, 8+len(metaKey))
+	binary.BigEndian.PutUint64(k, uint64(t.Unix()))
+	return append(k, metaKey...)
 }
 
 // Msg 反查 message_id 的元信息（内存未命中时回落 db）
@@ -316,9 +529,13 @@ func (s *Store) storeLazyGroup(groupOpenID, userOpenID, id, kind string) {
 		return
 	}
 	now := time.Now()
-	s.lazy.Store("g:"+groupOpenID, &lazyEntry{id, kind, now})
+	if _, loaded := s.lazy.Swap("g:"+groupOpenID, &lazyEntry{id, kind, now}); !loaded {
+		s.noteInsert()
+	}
 	if userOpenID != "" {
-		s.lazy.Store("gu:"+groupOpenID+":"+userOpenID, &lazyEntry{id, kind, now})
+		if _, loaded := s.lazy.Swap("gu:"+groupOpenID+":"+userOpenID, &lazyEntry{id, kind, now}); !loaded {
+			s.noteInsert()
+		}
 	}
 }
 
@@ -337,7 +554,9 @@ func (s *Store) storeLazyC2C(userOpenID, id, kind string) {
 	if userOpenID == "" || id == "" {
 		return
 	}
-	s.lazy.Store("c:"+userOpenID, &lazyEntry{id, kind, time.Now()})
+	if _, loaded := s.lazy.Swap("c:"+userOpenID, &lazyEntry{id, kind, time.Now()}); !loaded {
+		s.noteInsert()
+	}
 }
 
 // loadLazy 读取并校验某 key 的被动凭证，超过 ttl 视为过期失效
@@ -363,6 +582,110 @@ func (s *Store) LazyGroup(groupOpenID, userOpenID string) (string, string, bool)
 	return s.loadLazy("g:"+groupOpenID, GroupPassiveTTL)
 }
 
+// SetGroupBoost 记下机器人开发者在这个群是不是群主或管理员（影响每条群消息可被动回复的次数）
+func (s *Store) SetGroupBoost(groupOpenID string, boosted bool) {
+	if groupOpenID == "" {
+		return
+	}
+	if boosted {
+		s.groupBoost.Store(groupOpenID, true)
+	} else {
+		s.groupBoost.Delete(groupOpenID)
+	}
+}
+
+// GroupBoosted 机器人开发者在这个群是不是群主或管理员
+func (s *Store) GroupBoosted(groupOpenID string) bool {
+	_, ok := s.groupBoost.Load(groupOpenID)
+	return ok
+}
+
+// PassiveState 被动回复凭证的状态
+type PassiveState struct {
+	Available   bool      // 凭证还在有效期内
+	Kind        string    // msg / event
+	ReceivedAt  time.Time // 凭证对应的消息（事件）收到的时间
+	ExpiresAt   time.Time // 过期时间
+	TTL         time.Duration
+	RepliesUsed int // 这条凭证已经被动回复的次数
+	RepliesMax  int // 每条凭证最多可回复次数
+	Boosted     bool
+}
+
+// GroupPassiveState 群最近一条被动凭证（群维度）的状态；没有收到过消息时 ReceivedAt 为零值
+func (s *Store) GroupPassiveState(groupOpenID string) PassiveState {
+	st := PassiveState{TTL: GroupPassiveTTL, RepliesMax: GroupPassiveReplies, Boosted: s.GroupBoosted(groupOpenID)}
+	if st.Boosted {
+		st.RepliesMax = GroupPassiveRepliesBoost
+	}
+	s.fillPassive(&st, "g:"+groupOpenID)
+	return st
+}
+
+// C2CPassiveState 单聊最近一条被动凭证的状态
+func (s *Store) C2CPassiveState(userOpenID string) PassiveState {
+	st := PassiveState{TTL: C2CPassiveTTL, RepliesMax: C2CPassiveReplies}
+	s.fillPassive(&st, "c:"+userOpenID)
+	return st
+}
+
+func (s *Store) fillPassive(st *PassiveState, key string) {
+	v, ok := s.lazy.Load(key)
+	if !ok {
+		return
+	}
+	e := v.(*lazyEntry)
+	st.Kind = e.kind
+	st.ReceivedAt = e.at
+	st.ExpiresAt = e.at.Add(st.TTL)
+	st.RepliesUsed = s.SeqCount(e.msgID)
+	st.Available = time.Now().Before(st.ExpiresAt) && st.RepliesUsed < st.RepliesMax
+}
+
+// SeqCount 某个 msg_id / event_id 已经分配过的 msg_seq 个数（即已被动回复的次数）
+func (s *Store) SeqCount(msgID string) int {
+	v, ok := s.seqCounter.Load(msgID)
+	if !ok {
+		return 0
+	}
+	return int(atomic.LoadInt32(&v.(*seqEntry).n))
+}
+
+// activeEntry 某个会话今天的主动消息计数
+type activeEntry struct {
+	mu  sync.Mutex
+	day string
+	n   int
+}
+
+// AddActive 记一条成功发出的主动消息；scene 为 group / c2c
+func (s *Store) AddActive(scene Scene, openid string) {
+	e := s.activeEntry(scene, openid)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	today := time.Now().Format("2006-01-02")
+	if e.day != today {
+		e.day, e.n = today, 0
+	}
+	e.n++
+}
+
+// ActiveToday 今天已经发出的主动消息条数（goqbot 重启后从 0 重新计数）
+func (s *Store) ActiveToday(scene Scene, openid string) int {
+	e := s.activeEntry(scene, openid)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.day != time.Now().Format("2006-01-02") {
+		return 0
+	}
+	return e.n
+}
+
+func (s *Store) activeEntry(scene Scene, openid string) *activeEntry {
+	v, _ := s.activeCount.LoadOrStore(string(scene)+":"+openid, &activeEntry{})
+	return v.(*activeEntry)
+}
+
 // LazyC2C 取单聊被动回复目标凭证；返回 (id, kind)
 func (s *Store) LazyC2C(userOpenID string) (string, string, bool) {
 	return s.loadLazy("c:"+userOpenID, C2CPassiveTTL)
@@ -370,7 +693,10 @@ func (s *Store) LazyC2C(userOpenID string) (string, string, bool) {
 
 // NextSeq 针对某个 msg_id 取下一个序号（从 1 开始），用于 msg_seq 去重
 func (s *Store) NextSeq(msgID string) uint32 {
-	v, _ := s.seqCounter.LoadOrStore(msgID, &seqEntry{})
+	v, loaded := s.seqCounter.LoadOrStore(msgID, &seqEntry{})
+	if !loaded {
+		s.noteInsert()
+	}
 	e := v.(*seqEntry)
 	atomic.StoreInt64(&e.last, time.Now().UnixNano())
 	return uint32(atomic.AddInt32(&e.n, 1))
@@ -539,23 +865,242 @@ func (s *Store) startJanitor() {
 	go func() {
 		t := time.NewTicker(janitorInterval)
 		defer t.Stop()
+		lastPrune := time.Now()
+		var lastFree time.Time
 		for {
+			var now time.Time
 			select {
 			case <-s.stopCh:
 				return
-			case now := <-t.C:
-				s.sweepMsgMeta(now)
-				s.sweepLazy(now)
-				s.sweepSeq(now)
-				s.sweepJoinReq(now)
+			case now = <-t.C:
+			case <-s.kick:
+				now = time.Now()
+			}
+			s.inserts.Store(0)
+			removed := s.sweepMsgMeta(now) + s.sweepLazy(now) + s.sweepSeq(now) + s.sweepJoinReq(now) + s.sweepIDs() + s.sweepActive(now)
+			if s.db != nil && now.Sub(lastPrune) >= dbPruneInterval {
+				lastPrune = now
+				s.pruneDB(now)
+			}
+			// 一次回收了很多条目时，把空出来的内存还给系统（最多 5 分钟一次）
+			if removed >= freeOSAfter && now.Sub(lastFree) >= janitorInterval {
+				lastFree = now
+				debug.FreeOSMemory()
 			}
 		}
 	}()
 }
 
+// sweepIDs 持久化模式下，内存里缓存的 openid 超过上限时淘汰一部分（用到时 ID / OpenID 会从 db 读回）。
+// 纯内存模式下这是唯一的记录，不清理。返回淘汰的条数
+func (s *Store) sweepIDs() int {
+	if s.db == nil {
+		return 0
+	}
+	count := func(m *sync.Map) int {
+		n := 0
+		m.Range(func(_, _ any) bool {
+			n++
+			return true
+		})
+		return n
+	}
+	removed := 0
+	if n := count(&s.open2id); n > idCacheCap {
+		s.open2id.Range(func(k, v any) bool {
+			if n <= idCacheKeep {
+				return false
+			}
+			s.open2id.Delete(k)
+			s.id2open.Delete(v)
+			n--
+			removed++
+			return true
+		})
+	}
+	// id2open 里还可能有只被 OpenID 读回的条目，也按上限收一下
+	if n := count(&s.id2open); n > idCacheCap {
+		s.id2open.Range(func(k, v any) bool {
+			if n <= idCacheKeep {
+				return false
+			}
+			s.id2open.Delete(k)
+			s.open2id.Delete(v)
+			n--
+			removed++
+			return true
+		})
+	}
+	return removed
+}
+
+// sweepActive 回收不是今天的主动消息计数。返回回收的条数
+func (s *Store) sweepActive(now time.Time) int {
+	today := now.Format("2006-01-02")
+	removed := 0
+	s.activeCount.Range(func(k, v any) bool {
+		e := v.(*activeEntry)
+		e.mu.Lock()
+		stale := e.day != today
+		e.mu.Unlock()
+		if stale {
+			s.activeCount.Delete(k)
+			removed++
+		}
+		return true
+	})
+	return removed
+}
+
+// pruneDB 按设置清理 db 里的消息元信息：先删超过保留天数的，再看文件大小上限，超出时从最早的删起
+func (s *Store) pruneDB(now time.Time) {
+	if s.opt.KeepDays > 0 {
+		s.pruneBefore(uint64(now.Add(-time.Duration(s.opt.KeepDays) * 24 * time.Hour).Unix()))
+	}
+	if s.opt.MaxBytes > 0 {
+		s.pruneToSize()
+	}
+}
+
+// pruneToSize 存着的数据超过大小上限时，从最早的消息记录删起，删到上限的 90% 左右。
+// 删除后数据页不会马上合并，不能边删边看文件里的数据量，所以先按每条消息记录平均占多少空间算出要删几条
+func (s *Store) pruneToSize() {
+	_, used := s.dbSizes()
+	if used <= s.opt.MaxBytes {
+		return
+	}
+	// 按两个 bucket 实际占的页数算（页往往只填了一半左右，按页里的数据量算会删多）
+	var keys int
+	var bytes int64
+	page := int64(s.db.Info().PageSize)
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		for _, name := range [][]byte{bucketMsgMeta, bucketMsgTime} {
+			st := tx.Bucket(name).Stats()
+			bytes += int64(st.LeafPageN+st.LeafOverflowN+st.BranchPageN+st.BranchOverflowN) * page
+			if string(name) == string(bucketMsgMeta) {
+				keys = st.KeyN
+			}
+		}
+		return nil
+	})
+	if keys == 0 {
+		log.Printf("idmap: 没有可删的消息记录，但 ID 对照本身已超过大小上限 %s", sizeText(s.opt.MaxBytes))
+		return
+	}
+	per := bytes / int64(keys)
+	if per <= 0 {
+		per = 1
+	}
+	need := int((used - s.opt.MaxBytes/10*9 + per - 1) / per)
+	if need > keys {
+		need = keys
+	}
+	deleted := 0
+	for deleted < need {
+		n := s.deleteOldest(^uint64(0), min(5000, need-deleted))
+		if n == 0 {
+			break
+		}
+		deleted += n
+	}
+	log.Printf("idmap: 数据超过大小上限 %s，已删除最早的 %d 条消息记录", sizeText(s.opt.MaxBytes), deleted)
+}
+
+// pruneBefore 删掉时间早于 cutoff（unix 秒）的消息元信息，每批 5000 条
+func (s *Store) pruneBefore(cutoff uint64) {
+	for s.deleteOldest(cutoff, 5000) == 5000 {
+	}
+}
+
+// deleteOldest 按 msgtime 索引从最早的删起，最多删 limit 条时间早于 cutoff 的，返回删掉的条数
+func (s *Store) deleteOldest(cutoff uint64, limit int) int {
+	var keys [][]byte
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucketMsgTime).Cursor()
+		for k, _ := c.First(); k != nil && len(keys) < limit; k, _ = c.Next() {
+			if len(k) <= 8 || binary.BigEndian.Uint64(k[:8]) >= cutoff {
+				break
+			}
+			keys = append(keys, append([]byte(nil), k...))
+		}
+		return nil
+	})
+	if len(keys) == 0 {
+		return 0
+	}
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		idx, meta := tx.Bucket(bucketMsgTime), tx.Bucket(bucketMsgMeta)
+		for _, k := range keys {
+			if err := idx.Delete(k); err != nil {
+				return err
+			}
+			if err := meta.Delete(k[8:]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0
+	}
+	return len(keys)
+}
+
+// indexOldMsgMeta 给旧版本写进 db、还没有 msgtime 索引的消息元信息补建索引（只做一次）。
+// 已经超过保留时长的直接删掉
+func (s *Store) indexOldMsgMeta() {
+	done := false
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		done = tx.Bucket(bucketInfo).Get([]byte("msgtime_indexed")) != nil
+		return nil
+	})
+	if done {
+		return
+	}
+	var cutoff time.Time // 零值=不按天数删除
+	if s.opt.KeepDays > 0 {
+		cutoff = time.Now().Add(-time.Duration(s.opt.KeepDays) * 24 * time.Hour)
+	}
+	type item struct {
+		key  []byte
+		t    time.Time
+		drop bool
+	}
+	var items []item
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketMsgMeta).ForEach(func(k, v []byte) error {
+			var meta struct{ Time time.Time }
+			if json.Unmarshal(v, &meta) != nil || meta.Time.IsZero() {
+				items = append(items, item{key: append([]byte(nil), k...), drop: true})
+				return nil
+			}
+			items = append(items, item{key: append([]byte(nil), k...), t: meta.Time, drop: !cutoff.IsZero() && meta.Time.Before(cutoff)})
+			return nil
+		})
+	})
+	for start := 0; start < len(items); start += 5000 {
+		batch := items[start:min(start+5000, len(items))]
+		_ = s.db.Update(func(tx *bolt.Tx) error {
+			idx, meta := tx.Bucket(bucketMsgTime), tx.Bucket(bucketMsgMeta)
+			for _, it := range batch {
+				if it.drop {
+					_ = meta.Delete(it.key)
+					continue
+				}
+				_ = idx.Put(msgTimeKey(it.t, it.key), nil)
+			}
+			return nil
+		})
+	}
+	_ = s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketInfo).Put([]byte("msgtime_indexed"), []byte("1"))
+	})
+}
+
 // sweepMsgMeta 回收内存中过期的消息元信息，并在超出硬上限时淘汰最旧。
 // 注意：仅清理内存副本；持久化模式下 db 仍保留，后续 Msg() 可按需回落重载。
-func (s *Store) sweepMsgMeta(now time.Time) {
+func (s *Store) sweepMsgMeta(now time.Time) int {
+	removed := 0
 	type kt struct {
 		k int64
 		t time.Time
@@ -565,6 +1110,7 @@ func (s *Store) sweepMsgMeta(now time.Time) {
 		meta := v.(MsgMeta)
 		if msgMetaTTL > 0 && now.Sub(meta.Time) > msgMetaTTL {
 			s.msg2meta.Delete(k)
+			removed++
 			return true
 		}
 		kept = append(kept, kt{k.(int64), meta.Time})
@@ -574,12 +1120,15 @@ func (s *Store) sweepMsgMeta(now time.Time) {
 		sort.Slice(kept, func(i, j int) bool { return kept[i].t.Before(kept[j].t) })
 		for _, e := range kept[:len(kept)-msgMetaCap] {
 			s.msg2meta.Delete(e.k)
+			removed++
 		}
 	}
+	return removed
 }
 
 // sweepLazy 回收过期的被动回复凭证（按 key 前缀区分群/单聊 TTL），并在超限时淘汰最旧。
-func (s *Store) sweepLazy(now time.Time) {
+func (s *Store) sweepLazy(now time.Time) int {
+	removed := 0
 	type kt struct {
 		k string
 		t time.Time
@@ -594,6 +1143,7 @@ func (s *Store) sweepLazy(now time.Time) {
 		}
 		if ttl > 0 && now.Sub(e.at) > ttl {
 			s.lazy.Delete(k)
+			removed++
 			return true
 		}
 		kept = append(kept, kt{key, e.at})
@@ -603,12 +1153,15 @@ func (s *Store) sweepLazy(now time.Time) {
 		sort.Slice(kept, func(i, j int) bool { return kept[i].t.Before(kept[j].t) })
 		for _, e := range kept[:len(kept)-lazyCap] {
 			s.lazy.Delete(e.k)
+			removed++
 		}
 	}
+	return removed
 }
 
 // sweepSeq 回收空闲的 msg_seq 计数器，并在超限时淘汰最旧。
-func (s *Store) sweepSeq(now time.Time) {
+func (s *Store) sweepSeq(now time.Time) int {
+	removed := 0
 	type kt struct {
 		k string
 		t int64
@@ -620,6 +1173,7 @@ func (s *Store) sweepSeq(now time.Time) {
 		last := atomic.LoadInt64(&e.last)
 		if seqTTL > 0 && nowNano-last > int64(seqTTL) {
 			s.seqCounter.Delete(k)
+			removed++
 			return true
 		}
 		kept = append(kept, kt{k.(string), last})
@@ -629,17 +1183,22 @@ func (s *Store) sweepSeq(now time.Time) {
 		sort.Slice(kept, func(i, j int) bool { return kept[i].t < kept[j].t })
 		for _, e := range kept[:len(kept)-seqCap] {
 			s.seqCounter.Delete(e.k)
+			removed++
 		}
 	}
+	return removed
 }
 
 // sweepJoinReq 兜底回收长期未处理的入群申请上下文（正常审批后已由 DeleteJoinRequest 清除）。
-func (s *Store) sweepJoinReq(now time.Time) {
+func (s *Store) sweepJoinReq(now time.Time) int {
+	removed := 0
 	s.joinReq.Range(func(k, v any) bool {
 		m := v.(JoinRequestMeta)
 		if joinReqTTL > 0 && !m.at.IsZero() && now.Sub(m.at) > joinReqTTL {
 			s.joinReq.Delete(k)
+			removed++
 		}
 		return true
 	})
+	return removed
 }

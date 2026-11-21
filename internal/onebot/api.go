@@ -1,6 +1,7 @@
 package onebot
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -47,16 +48,18 @@ type Caller struct {
 	gateway    GatewayQuerier   // /gateway/bot 查询器，由 qq.Client 注入
 	debug      bool             // true=打印收到的动作日志
 	plugins    *plugins.Manager // 插件宿主，由 main 注入；未注入时插件动作返回不可用
+	ready      func() bool      // QQ 连接是否已就绪，由 main 注入；get_status 用
 
 	ids *idmap.Store // openid<->数字 id 映射，用于动作里的 id 反查
 
-	// get_msg 内存缓存（仅内存，不持久化）：message_id -> 事件快照
+	// get_msg 内存缓存（仅内存，不持久化）：message_id -> 事件快照。
+	// 存成紧凑的 JSON（比 map 省好几倍内存），内联的 base64:// 文件内容省略掉
 	cacheMu    sync.RWMutex
-	msgCache   map[int64]map[string]any
+	msgCache   map[int64][]byte
 	cacheOrder []int64 // 插入顺序，用于上限淘汰
 
-	// get_forward_msg 内存缓存：forward id (QQ msg_id) -> node 数组
-	fwdCache map[string][]map[string]any
+	// get_forward_msg 内存缓存：forward id (QQ msg_id) -> node 数组的 JSON
+	fwdCache map[string][]byte
 	fwdOrder []string
 }
 
@@ -69,14 +72,18 @@ func NewCaller(selfID int64, appID string, ids *idmap.Store, debug bool, appName
 		appVersion: appVersion,
 		ids:        ids,
 		debug:      debug,
-		msgCache:   make(map[int64]map[string]any),
-		fwdCache:   make(map[string][]map[string]any),
+		msgCache:   make(map[int64][]byte),
+		fwdCache:   make(map[string][]byte),
 	}
 }
 
 // CacheMsg 缓存一条已构造的消息事件快照，供 get_msg 取回（有界，FIFO 淘汰）
 func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 	if id == 0 || snap == nil {
+		return
+	}
+	b, err := json.Marshal(stripInlineBase64(snap))
+	if err != nil {
 		return
 	}
 	c.cacheMu.Lock()
@@ -89,12 +96,12 @@ func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 			delete(c.msgCache, oldest)
 		}
 	}
-	c.msgCache[id] = snap
+	c.msgCache[id] = b
 }
 
 // cacheOutbound 把刚发出去的消息写入 get_msg 缓存，字段对齐 OneBot v11 / go-cqhttp：
 // time / message_type / message_id / real_id / sender / message / raw_message，群另带 group / group_id。
-func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, messageType string, peerID int64, peerOpenID, groupOpenID string) {
+func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, messageType string, peerID int64, peerOpenID, groupOpenID string, notes []string) {
 	if mid == 0 {
 		return
 	}
@@ -130,7 +137,7 @@ func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, mess
 		}
 	}
 	c.CacheMsg(mid, snap)
-	c.reportSent(snap)
+	c.reportSent(snap, notes)
 }
 
 // outboundMessageField 把发送入参还原为 get_msg 的 message / raw_message。
@@ -162,6 +169,10 @@ func (c *Caller) CacheForward(id string, nodes []map[string]any) {
 	if id == "" || len(nodes) == 0 {
 		return
 	}
+	b, err := json.Marshal(stripInlineBase64(nodes))
+	if err != nil {
+		return
+	}
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 	if _, exists := c.fwdCache[id]; !exists {
@@ -172,19 +183,19 @@ func (c *Caller) CacheForward(id string, nodes []map[string]any) {
 			delete(c.fwdCache, oldest)
 		}
 	}
-	c.fwdCache[id] = nodes
+	c.fwdCache[id] = b
 }
 
-// getForward 按 forward id 取回缓存的节点数组
-func (c *Caller) getForward(id string) ([]map[string]any, bool) {
+// getForward 按 forward id 取回缓存的节点数组（JSON）
+func (c *Caller) getForward(id string) (json.RawMessage, bool) {
 	c.cacheMu.RLock()
 	defer c.cacheMu.RUnlock()
 	nodes, ok := c.fwdCache[id]
 	return nodes, ok
 }
 
-// getCachedMsg 按 message_id 取回缓存的事件快照
-func (c *Caller) getCachedMsg(id int64) (map[string]any, bool) {
+// getCachedMsg 按 message_id 取回缓存的事件快照（JSON）
+func (c *Caller) getCachedMsg(id int64) (json.RawMessage, bool) {
 	c.cacheMu.RLock()
 	defer c.cacheMu.RUnlock()
 	snap, ok := c.msgCache[id]
@@ -203,6 +214,24 @@ func (c *Caller) SetSender(s MessageSender) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sender = s
+}
+
+// SetReadyFunc 注入「QQ 连接是否已就绪」的查询，get_status 据此如实报告在线状态
+func (c *Caller) SetReadyFunc(f func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ready = f
+}
+
+// online QQ 连接是否已就绪；没注入查询时按发送通道是否存在判断
+func (c *Caller) online() bool {
+	c.mu.RLock()
+	f, s := c.ready, c.sender
+	c.mu.RUnlock()
+	if f != nil {
+		return f()
+	}
+	return s != nil
 }
 
 // SetGatewayQuerier 注入 /gateway/bot 查询实现（由 qq.Client 在建立 openapi 后调用）
@@ -273,7 +302,9 @@ func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope
 			"nickname": c.getNickname(),
 		})
 	case "get_status":
-		return ok(map[string]any{"online": true, "good": true})
+		// 如实报告：QQ 断线重连期间 online=false，框架可据此暂停发消息或提示
+		on := c.online()
+		return ok(map[string]any{"online": on, "good": on})
 	case "get_version_info":
 		return ok(map[string]any{
 			"app_name":    c.appName,
@@ -306,6 +337,10 @@ func (c *Caller) dispatch(action string, params gjson.Result, scope requestScope
 		return c.getGateway()
 	case "get_group_info":
 		return c.getGroupInfo(params)
+	case "get_user_info", "get_stranger_info":
+		return c.getUserInfo(params)
+	case "get_message_quota":
+		return c.getMessageQuota(params)
 	case "get_group_bot_state":
 		return c.getGroupBotState(params)
 	case "get_group_member_info":
@@ -389,11 +424,22 @@ func (c *Caller) getMsg(params gjson.Result) map[string]any {
 	if id == 0 {
 		return failed(1400, "缺少 message_id")
 	}
-	snap, found := c.getCachedMsg(id)
+	raw, found := c.getCachedMsg(id)
 	if !found {
 		return failed(1404, "消息不存在或未缓存")
 	}
+	var snap map[string]any
+	if err := decodeJSONNumber(raw, &snap); err != nil {
+		return failed(1500, "缓存的消息解析失败")
+	}
 	return ok(snap)
+}
+
+// decodeJSONNumber 解析 JSON，数字保留为 json.Number（19 位的编号不会丢精度）
+func decodeJSONNumber(raw []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	return d.Decode(v)
 }
 
 // getForwardMsg 按 forward id 取回合并转发节点（go-cqhttp/NoneBot 兼容 messages 字段）
@@ -409,14 +455,22 @@ func (c *Caller) getForwardMsg(params gjson.Result) map[string]any {
 	if !found || len(nodes) == 0 {
 		return failed(1404, "未知 forward id")
 	}
-	return ok(map[string]any{"messages": nodes})
+	var list []any
+	if err := decodeJSONNumber(nodes, &list); err != nil {
+		return failed(1500, "缓存的合并转发解析失败")
+	}
+	return ok(map[string]any{"messages": list})
 }
 
 // resolveGroupOpenID 从 group_id 反查群 openid
 func (c *Caller) resolveGroupOpenID(params gjson.Result) (string, map[string]any) {
+	// 也接受 group_openid：JS 等语言的数字精度只有 53 位，大的 group_id 传过来会变
+	if oid := params.Get("group_openid").String(); oid != "" {
+		return oid, nil
+	}
 	gid := params.Get("group_id").Int()
 	if gid == 0 {
-		return "", failed(1400, "缺少 group_id")
+		return "", failed(1400, "缺少 group_id 或 group_openid")
 	}
 	oid, ok := c.ids.OpenID(gid)
 	if !ok || oid == "" {
@@ -442,6 +496,9 @@ func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
 		return failed(1500, err.Error())
 	}
 	gid := params.Get("group_id").Int()
+	if gid == 0 {
+		gid = c.ids.ID(groupOpenID)
+	}
 	return ok(map[string]any{
 		"group_id":          gid,
 		"group_openid":      info.GroupOpenID,
@@ -453,6 +510,114 @@ func (c *Caller) getGroupInfo(params gjson.Result) map[string]any {
 		"member_count":      info.GroupMemberNum,
 		"max_member_count":  0,
 	})
+}
+
+// 主动消息每天的上限（官方规则：每个群 / 每个用户每天 1000 条）
+const activeDailyLimit = 1000
+
+// getMessageQuota 查询某个群或用户当前的发消息额度：
+// 被动回复（最近一条消息的凭证还剩多久、已回复几次、上限几次）和今天已发的主动消息条数。
+// 群传 group_openid 或 group_id；单聊传 user_openid 或 user_id。数据来自 goqbot 自己的记录，重启后主动计数从 0 开始。
+func (c *Caller) getMessageQuota(params gjson.Result) map[string]any {
+	var scene idmap.Scene
+	var openid string
+	var st idmap.PassiveState
+	if params.Get("group_openid").String() != "" || params.Get("group_id").Exists() {
+		oid, fail := c.resolveGroupOpenID(params)
+		if fail != nil {
+			return fail
+		}
+		scene, openid, st = idmap.SceneGroup, oid, c.ids.GroupPassiveState(oid)
+	} else {
+		oid := params.Get("user_openid").String()
+		if oid == "" {
+			uid := params.Get("user_id").Int()
+			if uid == 0 {
+				return failed(1400, "缺少 group_id / group_openid 或 user_id / user_openid")
+			}
+			found := false
+			if oid, found = c.ids.OpenID(uid); !found || oid == "" {
+				return failed(1404, "未知 user_id 或未收到过该用户消息")
+			}
+		}
+		scene, openid, st = idmap.SceneC2C, oid, c.ids.C2CPassiveState(oid)
+	}
+	unix := func(t time.Time) int64 {
+		if t.IsZero() {
+			return 0
+		}
+		return t.Unix()
+	}
+	sent := c.ids.ActiveToday(scene, openid)
+	return ok(map[string]any{
+		"scene": string(scene),
+		"passive": map[string]any{
+			"available":     st.Available,
+			"kind":          st.Kind,
+			"received_at":   unix(st.ReceivedAt),
+			"expires_at":    unix(st.ExpiresAt),
+			"ttl":           int(st.TTL.Seconds()),
+			"replies_used":  st.RepliesUsed,
+			"replies_limit": st.RepliesMax,
+			"boosted":       st.Boosted,
+		},
+		"active": map[string]any{
+			"sent_today":  sent,
+			"daily_limit": activeDailyLimit,
+			"remaining":   max(activeDailyLimit-sent, 0),
+		},
+	})
+}
+
+// getUserInfo 获取用户信息：调用 /v2/users/{user_openid}/info，返回官方响应的全部字段，
+// 并补上 user_id、user_openid，以及 OneBot get_stranger_info 约定的 nickname / sex / age。
+// 入参优先 user_openid，其次 user_id（需收到过这个用户的消息）。
+func (c *Caller) getUserInfo(params gjson.Result) map[string]any {
+	openid := params.Get("user_openid").String()
+	uid := params.Get("user_id").Int()
+	if openid == "" {
+		if uid == 0 {
+			return failed(1400, "缺少 user_id 或 user_openid")
+		}
+		oid, found := c.ids.OpenID(uid)
+		if !found || oid == "" {
+			return failed(1404, "未知 user_id 或未收到过该用户消息")
+		}
+		openid = oid
+	}
+	if uid == 0 {
+		uid = c.ids.ID(openid)
+	}
+	sender := c.getSender()
+	if sender == nil {
+		return failed(1404, "发送通道未就绪（QQ 连接尚未初始化）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	info, err := sender.GetUserInfo(ctx, openid)
+	if err != nil {
+		return failed(1500, err.Error())
+	}
+	data := make(map[string]any, len(info)+5)
+	for k, v := range info {
+		data[k] = v
+	}
+	data["user_id"] = uid
+	data["user_openid"] = openid
+	if _, has := data["nickname"]; !has {
+		if name, ok := info["username"].(string); ok {
+			data["nickname"] = name
+		} else {
+			data["nickname"] = ""
+		}
+	}
+	if _, has := data["sex"]; !has {
+		data["sex"] = "unknown"
+	}
+	if _, has := data["age"]; !has {
+		data["age"] = 0
+	}
+	return ok(data)
 }
 
 // getC2CMsgState 查询用户 C2C 主动消息推送开关（基于本地事件缓存，非官方接口）
@@ -1201,6 +1366,9 @@ func (c *Caller) logSend(action, sceneLabel string, sceneID int64, out *OutMessa
 		}
 	}
 	blk.Emit()
+	if err != nil {
+		c.reportSendFailed(sceneLabel, sceneID, action, out, params, err)
+	}
 }
 
 // toneForNote 发消息日志中嵌套说明的配色：失败用错误色，否则用发送色
@@ -1446,6 +1614,12 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 	}
 	out := c.parseMessage(params.Get("message"))
 	passiveOnly := !active && params.Get("passive_only").Bool()
+	if r := out.reply; r != nil && out.MsgID != "" && (r.scene != string(idmap.SceneGroup) || r.groupOpenID != groupOpenID) {
+		// 别的群或私聊里的消息不能当这个群的被动凭证
+		out.MsgID = ""
+		out.RefMsgID = ""
+		out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "引用的不是这个群的消息，不作被动回复，也不显示引用", Fail: true})
+	}
 	if active {
 		out.MsgID = "" // 强制主动：忽略 reply、不套 lazy
 	} else if out.MsgID == "" {
@@ -1477,10 +1651,13 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
+	if out.MsgID == "" && out.EventID == "" {
+		c.ids.AddActive(idmap.SceneGroup, groupOpenID)
+	}
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(), Outbound: true,
 	})
-	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "group", groupID, "", groupOpenID)
+	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "group", groupID, "", groupOpenID, failedNotes(out))
 	c.logSend(action, "群", groupID, out, params, qqMsgID, mid, start, nil)
 	return ok(map[string]any{"message_id": mid})
 }
@@ -1537,6 +1714,24 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("is_wakeup 与 passive_only 互斥"))
 		return failed(1400, "is_wakeup 与 passive_only 互斥")
 	}
+	// 群消息私聊回复：msg_id 可以用群消息的，但只能私聊回复这条群消息的发送者（要求是好友）。
+	// 有效时间与次数按群消息规则（60 分钟、5 次；开发者是群主或管理员时 50 次），和群内回复共用次数
+	if r := out.reply; r != nil && r.userOpenID != userOpenID {
+		if out.MsgID != "" || out.RefMsgID != "" {
+			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "引用的消息不是这个用户发的，私聊不能用它作被动回复", Fail: true})
+		}
+		out.MsgID = ""
+		out.RefMsgID = ""
+	} else if r != nil && r.scene == string(idmap.SceneGroup) {
+		out.RefMsgID = "" // 私聊里不能引用群消息，只用它的 msg_id
+		out.MsgID = ""
+		if !r.outbound && r.msgID != "" && !r.at.IsZero() && time.Since(r.at) < idmap.GroupPassiveTTL {
+			out.MsgID = r.msgID
+			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "群消息私聊回复：用该群消息的 msg_id 私聊回复发送者"})
+		} else {
+			out.Notes = append(out.Notes, SendNote{Title: "reply", Content: "群消息私聊回复：这条群消息已超过 60 分钟，不能再用", Fail: true})
+		}
+	}
 	// is_wakeup：单聊互动召回消息，与 msg_id/event_id 互斥，故强制走主动语义（不套被动凭证）
 	if wakeup {
 		out.IsWakeup = true
@@ -1573,10 +1768,13 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		return failed(1500, err.Error())
 	}
 	stats.RecordSent()
+	if out.MsgID == "" && out.EventID == "" && !out.IsWakeup {
+		c.ids.AddActive(idmap.SceneC2C, userOpenID)
+	}
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(), Outbound: true,
 	})
-	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "private", userID, userOpenID, "")
+	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "private", userID, userOpenID, "", failedNotes(out))
 	c.logSend(action, "私聊", userID, out, params, qqMsgID, mid, start, nil)
 	data := map[string]any{"message_id": mid}
 	if out.Stream != nil {
@@ -1792,11 +1990,13 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				})
 				break
 			}
+			out.replyID = rid
 			if meta, found := c.ids.Msg(rid); found && meta.MsgID != "" {
 				// 引用条用 REFIDX；被动 msg_id 只能用「用户入站且未过期」的凭证。
 				// 机器人自己发出的消息（Outbound）没有被动窗口，拿它当 msg_id 会 40034005「已过期」。
 				out.RefMsgID = meta.RefIdx
-				if meta.PassiveOK() {
+				out.reply = &replyTarget{scene: string(meta.Scene), groupOpenID: meta.GroupOpenID, userOpenID: meta.UserOpenID, msgID: meta.MsgID, at: meta.Time, outbound: meta.Outbound}
+				if c.ids.PassiveOK(meta) {
 					out.MsgID = meta.MsgID
 				}
 				note := SendNote{Title: "reply", ID: rid, Cached: true, Passive: out.MsgID != "", HasRef: meta.RefIdx != ""}
@@ -2090,7 +2290,7 @@ func (c *Caller) handleScopedRequest(payload []byte, scope requestScope) []byte 
 	}
 	ret := c.callScoped(action, params, scope)
 	if echo := j.Get("echo"); echo.Exists() {
-		ret["echo"] = echo.Value()
+		ret["echo"] = json.RawMessage(echo.Raw) // 原样返回，数字 echo 不丢精度
 	}
 	b, _ := json.Marshal(ret)
 	return b

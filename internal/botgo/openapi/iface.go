@@ -75,6 +75,8 @@ type MenuPanelAPI interface {
 type GroupManageAPI interface {
 	// GroupInfo 获取群基本信息（白名单）
 	GroupInfo(ctx context.Context, groupID string) (*dto.GroupInfo, error)
+	// UserInfo 获取用户信息 GET /v2/users/{user_openid}/info，按原样返回响应的全部字段
+	UserInfo(ctx context.Context, userID string) (map[string]any, error)
 	// GroupBotState 获取机器人群内状态（白名单）
 	GroupBotState(ctx context.Context, groupID string) (*dto.GroupBotState, error)
 	// GroupMembers 获取群成员列表（白名单；每次最多 30 条，cursor 分页）

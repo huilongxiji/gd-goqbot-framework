@@ -14,6 +14,7 @@ qq:
   mention_mode: strip              # 「@机器人」怎么上报：strip 去掉 / at 转成 at 段（多框架推荐）/ raw 保留原文
   ip_reject_action: "stop"         # IP 不在白名单（错误码 11298）时：stop 停止连接 / retry 定时重试 / exit 退出
   ip_reject_retry_interval: 60     # retry 的重试间隔（秒）
+  developer_openid: ""             # 机器人开发者（机器人账号的管理员）的 OpenID，可不填。开发者是群主或管理员的群，每条消息可被动回复 50 次（否则 5 次）
   text_intent:                     # 要接收的事件，去掉行首的 # 即可打开
     - "ReadyHandler"                 # 连接就绪（必须保留）
     - "ErrorNotifyHandler"           # 连接错误（必须保留）
@@ -54,6 +55,8 @@ onebot:
 idmap:
   path: "idmap.db"                 # ID 对照表，重启后仍能撤回消息、查回用户
   # disabled: true                 # 只存在内存里，重启后丢失
+  # keep_days: 3                   # 消息记录保留天数，默认 3；0=不按天数删除（用户的 ID 对照一直保留）
+  # max_size_mb: 1024              # 文件大小上限（MB），默认 1024；0=不限制。超出时从最早的消息记录删起
 
 log:
   enabled: true                    # 是否按天写日志文件

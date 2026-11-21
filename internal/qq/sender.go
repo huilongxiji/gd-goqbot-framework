@@ -698,6 +698,11 @@ func (s *sender) GetGroupInfo(ctx context.Context, groupOpenID string) (*onebot.
 	}, nil
 }
 
+// GetUserInfo 获取用户信息
+func (s *sender) GetUserInfo(ctx context.Context, userOpenID string) (map[string]any, error) {
+	return s.api.UserInfo(ctx, userOpenID)
+}
+
 // GetGroupBotState 获取机器人群内状态
 func (s *sender) GetGroupBotState(ctx context.Context, groupOpenID string) (*onebot.GroupBotState, error) {
 	st, err := s.api.GroupBotState(ctx, groupOpenID)

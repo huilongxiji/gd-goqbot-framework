@@ -33,7 +33,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.0"
+	AppVersion = "1.14.10"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -139,11 +139,20 @@ func run(configPath, exeDir string) (restart bool) {
 				p = filepath.Join(filepath.Dir(exe), p)
 			}
 		}
-		ids, err = idmap.Open(p)
+		keepDays := cfg.IDMap.KeepDaysOrDefault()
+		maxMB := cfg.IDMap.MaxSizeMBOrDefault()
+		ids, err = idmap.Open(p, idmap.Options{KeepDays: keepDays, MaxBytes: int64(maxMB) << 20})
 		if err != nil {
 			filelog.Fatalf("打开 idmap 失败: %v", err)
 		}
-		log.Printf("idmap: 持久化已启用 -> %s", p)
+		keep, limit := fmt.Sprintf("消息记录保留 %d 天", keepDays), fmt.Sprintf("文件上限 %d MB", maxMB)
+		if keepDays == 0 {
+			keep = "消息记录不按天数删除"
+		}
+		if maxMB == 0 {
+			limit = "文件大小不限制"
+		}
+		log.Printf("idmap: 持久化已启用 -> %s（%s，%s）", p, keep, limit)
 	}
 	defer func() {
 		if err := ids.Close(); err != nil {
@@ -153,6 +162,7 @@ func run(configPath, exeDir string) (restart bool) {
 	bus := onebot.NewEventBus()
 	caller := onebot.NewCaller(selfID, appID, ids, cfg.OneBot.Debug, AppName, AppVersion)
 	conv := onebot.NewConverter(ids, bus, func() int64 { return selfID }, cfg.QQ.ResolvedMentionMode(), cfg.OneBot.MessageFormat, cfg.OneBot.DowntimeMessage, caller)
+	conv.SetDeveloperOpenID(cfg.QQ.DeveloperOpenID)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -230,6 +240,7 @@ func run(configPath, exeDir string) (restart bool) {
 
 	// 启动 QQ 上游连接
 	qqClient := qq.NewClient(&cfg.QQ, ids, conv, caller, cfg.OneBot.Debug)
+	caller.SetReadyFunc(qqClient.Online)
 	if err := qqClient.Start(ctx); err != nil {
 		filelog.Fatalf("启动 QQ 客户端失败: %v", err)
 	}
@@ -246,6 +257,7 @@ func run(configPath, exeDir string) (restart bool) {
 		QQBotName:      qqClient.BotName,
 		Connections:    conns.Status,
 		Plugins:        pluginManager.List,
+		IDMap:          ids.Stats,
 		RequestRestart: requestRestart,
 		Running:        cfg,
 		ApplyOneBot: func(ob config.OneBotConfig) any {

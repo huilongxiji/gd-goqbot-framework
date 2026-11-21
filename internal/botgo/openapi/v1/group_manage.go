@@ -21,6 +21,21 @@ func (o *openAPI) GroupInfo(ctx context.Context, groupID string) (*dto.GroupInfo
 	return resp.Result().(*dto.GroupInfo), nil
 }
 
+// UserInfo 获取用户信息 GET /v2/users/{user_openid}/info。
+// 接口字段以官方返回为准，这里不做结构约定，按原样返回全部字段
+func (o *openAPI) UserInfo(ctx context.Context, userID string) (map[string]any, error) {
+	result := map[string]any{}
+	_, err := baseRequest(ctx,
+		o.request(ctx).
+			SetResult(&result).
+			SetPathParam("user_id", userID),
+		http.MethodGet, o.getURL(userInfoURI))
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GroupBotState 获取机器人群内状态（白名单，非白名单返回 11253）
 func (o *openAPI) GroupBotState(ctx context.Context, groupID string) (*dto.GroupBotState, error) {
 	resp, err := baseRequest(ctx,

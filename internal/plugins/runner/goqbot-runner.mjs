@@ -390,6 +390,18 @@ function handleResponse(msg) {
   }
 }
 
+/**
+ * 超过 JS 安全整数范围（2^53）的整数保留成字符串，避免丢精度。
+ * goqbot 的 group_id、user_id、message_id 等编号有 19 位，按数字解析最后几位会变；
+ * 字符串原样传回 goqbot 时也能正确识别。
+ */
+function keepBigInt(_key, value, context) {
+  if (typeof value === "number" && !Number.isSafeInteger(value) && /^-?\d+$/.test(context?.source ?? "")) {
+    return context.source;
+  }
+  return value;
+}
+
 if (!entry) {
   log("error", ["goqbot-runner 需要插件入口文件作为参数"], () => process.exit(1));
 } else {
@@ -400,7 +412,7 @@ if (!entry) {
     }
     let msg;
     try {
-      msg = JSON.parse(line);
+      msg = JSON.parse(line, keepBigInt);
     } catch {
       return;
     }

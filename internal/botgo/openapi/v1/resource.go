@@ -28,6 +28,7 @@ const (
 	groupRichMediaURI uri = "/v2/groups/{group_id}/files"
 
 	groupInfoURI                uri = "/v2/groups/{group_id}/info"                              // 获取群基本信息
+	userInfoURI                 uri = "/v2/users/{user_id}/info"                                // 获取用户信息
 	groupBotStateURI            uri = "/v2/groups/{group_id}/bot_state"                         // 获取机器人群内状态
 	groupMembersURI             uri = "/v2/groups/{group_id}/members"                           // 获取群成员列表
 	groupMemberURI              uri = "/v2/groups/{group_id}/members/{member_id}"               // 获取群成员信息

@@ -275,11 +275,22 @@ func (c *Client) listenMessageAndHandle() {
 			continue
 		}
 		// 解析具体事件，并投递给业务注册的 handler
-		if err := event.ParseAndHandle(payload); err != nil {
+		if err := c.handleOne(payload); err != nil {
 			log.Errorf("%s parseAndHandle failed, %v", c.session, err)
 		}
 	}
 	log.Infof("%s message queue is closed", c.session)
+}
+
+// handleOne 处理一条事件；处理出错崩溃时只跳过这一条，不断开连接（goqbot 修改）
+func (c *Client) handleOne(payload *dto.WSPayload) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			websocket.PanicHandler(r, c.session)
+			err = fmt.Errorf("处理事件 %s 时发生 panic，已跳过这条事件: %v", payload.Type, r)
+		}
+	}()
+	return event.ParseAndHandle(payload)
 }
 
 func (c *Client) saveSeq(seq uint32) {
