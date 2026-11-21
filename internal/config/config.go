@@ -35,7 +35,7 @@ type Config struct {
 type WebUIConfig struct {
 	Enabled *bool  `yaml:"enabled"` // true=启用；没写或 false=不启动 webui 插件（默认关闭）
 	Host    string `yaml:"host"`    // 监听地址，默认 127.0.0.1（只能在本机打开）
-	Port    int    `yaml:"port"`    // 端口，默认 6099
+	Port    int    `yaml:"port"`    // 端口，默认 7965
 }
 
 // IsEnabled 是否启用 WebUI：只有明确写了 enabled: true 才启用，默认关闭
@@ -329,7 +329,7 @@ func (c *Config) applyDefaults() {
 		c.WebUI.Host = "127.0.0.1"
 	}
 	if c.WebUI.Port == 0 {
-		c.WebUI.Port = 6099
+		c.WebUI.Port = 7965
 	}
 	for i := range c.OneBot.Servers {
 		if rev := c.OneBot.Servers[i].WSReverse; rev != nil && rev.ReconnectInterval == 0 {

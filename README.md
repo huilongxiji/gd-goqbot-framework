@@ -118,7 +118,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
 
 | 插件 | 默认 | 作用 |
 |---|---|---|
-| [`webui`](examples/plugins/webui) | **关闭** | 网页管理面板：按群、按用户收发消息（右键消息可以艾特、回复、撤回、禁言、复读），管理连接、插件与权限、日志、配置和更新，内置 `#gq` 运行状态指令。第一次启动时终端里会打印自动生成的初始口令和登录链接，登录后需要先设置自己的口令，默认地址 `http://127.0.0.1:6099`（默认关闭，在 `config.yml` 的 `webui` 里打开，地址和端口也在这里修改） |
+| [`webui`](examples/plugins/webui) | **关闭** | 网页管理面板：按群、按用户收发消息（右键消息可以艾特、回复、撤回、禁言、复读），管理连接、插件与权限、日志、配置和更新，内置 `#gq` 运行状态指令。第一次启动时终端里会打印自动生成的初始口令和登录链接，登录后需要先设置自己的口令，默认地址 `http://127.0.0.1:7965`（默认关闭，在 `config.yml` 的 `webui` 里打开，地址和端口也在这里修改） |
 | [`hello_ts`](examples/plugins/hello_ts) | **关闭** | 写插件用的最小示例（TypeScript），只供参考，不影响机器人 |
 
 - **开关插件**：插件文件夹里的 `plugin.yml` 写 `enabled: true` 或 `enabled: false`，重启 goqbot 后生效。`hello_ts` 自带的 `plugin.yml` 是 `false`。
@@ -128,7 +128,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o goqbot .
   webui:
     enabled: false         # 默认关闭；改成 true 启用 WebUI
     host: "127.0.0.1"      # 127.0.0.1=只能在本机打开；0.0.0.0=其他设备也能打开（请保管好登录口令）
-    port: 6099             # 端口
+    port: 7965             # 端口
   ```
 
   地址和端口也可以在 WebUI 的「配置」页修改。旧版保存在 `plugin-data/webui/config.json` 里的地址和端口，升级后第一次启动会自动搬到 `config.yml`。

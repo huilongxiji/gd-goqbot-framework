@@ -101,7 +101,8 @@ interface Listen {
   host: string;
   port: number;
 }
-const DEFAULT_LISTEN: Listen = { host: "127.0.0.1", port: 6099 };
+const DEFAULT_LISTEN: Listen = { host: "127.0.0.1", port: 7965 };
+const OLD_DEFAULT_PORT = 6099; // 旧版存在 config.json 里时的默认端口
 let listen: Listen = { ...DEFAULT_LISTEN }; // 这次启动实际用的地址和端口
 
 /** 从 config.yml 解析出的对象里取 webui 的地址和端口，没写或写错时用默认值 */
@@ -133,7 +134,7 @@ function checkListen(hostRaw: unknown, portRaw: unknown): Listen {
  * 旧版把地址和端口存在 config.json 里（legacy）；改过的话，config.yml 还是默认值时把它搬过去。
  */
 async function resolveListen(ctx: Context, legacy: Partial<Listen> | undefined): Promise<Listen> {
-  const old: Listen = { host: legacy?.host || DEFAULT_LISTEN.host, port: legacy?.port || DEFAULT_LISTEN.port };
+  const old: Listen = { host: legacy?.host || DEFAULT_LISTEN.host, port: legacy?.port || (legacy ? OLD_DEFAULT_PORT : DEFAULT_LISTEN.port) };
   let fromConfig: Listen;
   try {
     const cfg = await ctx.call<{ data: Record<string, any> }>("host.config.get");
@@ -143,7 +144,8 @@ async function resolveListen(ctx: Context, legacy: Partial<Listen> | undefined):
     ctx.log.warn("读取 config.yml 里的 webui 设置失败，使用", legacy ? "config.json 里的旧设置" : "默认地址和端口", "：", err.data?.wording ?? err.message);
     return old;
   }
-  const legacyCustom = legacy !== undefined && (old.host !== DEFAULT_LISTEN.host || old.port !== DEFAULT_LISTEN.port);
+  // 旧版没改过地址和端口（127.0.0.1:6099）时不搬，直接用新的默认值
+  const legacyCustom = legacy !== undefined && (old.host !== DEFAULT_LISTEN.host || old.port !== OLD_DEFAULT_PORT);
   const configDefault = fromConfig.host === DEFAULT_LISTEN.host && fromConfig.port === DEFAULT_LISTEN.port;
   if (!legacyCustom || !configDefault) {
     return fromConfig;
