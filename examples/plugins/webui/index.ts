@@ -4,7 +4,8 @@
 // 管理：运行状态、下游连接（改完立即生效）、插件、日志、图形化配置、更新 goqbot。
 // 内置指令：有人发 #gq（可在配置页修改或关闭）时，回复 goqbot 的运行平台和运行时长。
 //
-// 首次启动时在数据目录生成 config.json（监听地址、端口、登录口令），启动日志里会打印带口令的登录链接。
+// 开关、监听地址和端口在 goqbot 的 config.yml 的 webui 里；首次启动时在数据目录生成 config.json（登录口令等），
+// 启动日志里会打印初始口令和登录链接。
 // 页面是 public/ 下的原生 HTML / CSS / JS，不依赖任何 npm 包，放进 plugins/ 即可运行。
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
@@ -15,10 +16,8 @@ import { ChatStore, idOf, type ChatType } from "./lib/chat.ts";
 import { checkRelease, download, stage } from "./lib/update.ts";
 import { MediaCache } from "./lib/media.ts";
 
-/** WebUI 自己的设置，保存在 plugin-data/webui/config.json */
+/** WebUI 自己的设置，保存在 plugin-data/webui/config.json（监听地址和端口在 config.yml 的 webui 里） */
 interface Settings {
-  host: string;
-  port: number;
   token: string;
   must_change_token: boolean; // true = 还在用自动生成的初始口令，登录后要先改口令才能用
   github_proxy: string; // 下载更新时加在 GitHub 地址前的代理，空=直连
@@ -97,8 +96,70 @@ const SECURITY_HEADERS = {
   "cache-control": "no-store",
 };
 
-/** 读取设置；第一次运行时生成随机口令并保存。文件写坏了时报错，不覆盖 */
-async function loadSettings(ctx: Context): Promise<{ settings: Settings; created: boolean }> {
+/** 监听地址和端口 */
+interface Listen {
+  host: string;
+  port: number;
+}
+const DEFAULT_LISTEN: Listen = { host: "127.0.0.1", port: 6099 };
+let listen: Listen = { ...DEFAULT_LISTEN }; // 这次启动实际用的地址和端口
+
+/** 从 config.yml 解析出的对象里取 webui 的地址和端口，没写或写错时用默认值 */
+function listenOf(data: Record<string, any> | undefined): Listen {
+  const w = data?.webui ?? {};
+  const host = typeof w.host === "string" && w.host.trim() ? w.host.trim() : DEFAULT_LISTEN.host;
+  const port = Number(w.port);
+  return { host, port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : DEFAULT_LISTEN.port };
+}
+
+/** 检查页面填的监听地址和端口 */
+function checkListen(hostRaw: unknown, portRaw: unknown): Listen {
+  const host = String(hostRaw ?? "").trim();
+  const port = Number(portRaw);
+  if (!host) {
+    throw new HttpError(400, "监听地址不能为空");
+  }
+  if (/[\s/]/.test(host)) {
+    throw new HttpError(400, "监听地址只填地址，不带端口和 http://，例如 127.0.0.1 或 0.0.0.0");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new HttpError(400, "端口要填 1 到 65535 之间的数字");
+  }
+  return { host, port };
+}
+
+/**
+ * 决定这次用的监听地址和端口：以 config.yml 的 webui 为准。
+ * 旧版把地址和端口存在 config.json 里（legacy）；改过的话，config.yml 还是默认值时把它搬过去。
+ */
+async function resolveListen(ctx: Context, legacy: Partial<Listen> | undefined): Promise<Listen> {
+  const old: Listen = { host: legacy?.host || DEFAULT_LISTEN.host, port: legacy?.port || DEFAULT_LISTEN.port };
+  let fromConfig: Listen;
+  try {
+    const cfg = await ctx.call<{ data: Record<string, any> }>("host.config.get");
+    fromConfig = listenOf(cfg.data);
+  } catch (e) {
+    const err = e as GoqbotError;
+    ctx.log.warn("读取 config.yml 里的 webui 设置失败，使用", legacy ? "config.json 里的旧设置" : "默认地址和端口", "：", err.data?.wording ?? err.message);
+    return old;
+  }
+  const legacyCustom = legacy !== undefined && (old.host !== DEFAULT_LISTEN.host || old.port !== DEFAULT_LISTEN.port);
+  const configDefault = fromConfig.host === DEFAULT_LISTEN.host && fromConfig.port === DEFAULT_LISTEN.port;
+  if (!legacyCustom || !configDefault) {
+    return fromConfig;
+  }
+  try {
+    await ctx.call("host.config.update", { values: { "webui.host": old.host, "webui.port": old.port }, restart: false });
+    ctx.log.info(`WebUI 的监听地址和端口已从 config.json 移到 config.yml 的 webui 里（${old.host}:${old.port}）`);
+  } catch (e) {
+    const err = e as GoqbotError;
+    ctx.log.warn("把监听地址和端口写进 config.yml 失败，这次先用 config.json 里的旧设置：", err.data?.detail ?? err.data?.wording ?? err.message);
+  }
+  return old;
+}
+
+/** 读取设置；第一次运行时生成随机口令并保存。文件写坏了时报错，不覆盖。legacy 是旧版存在这里的地址和端口 */
+async function loadSettings(ctx: Context): Promise<{ settings: Settings; created: boolean; legacy?: Partial<Listen> }> {
   const file = join(ctx.dataDir, "config.json");
   let text: string;
   try {
@@ -107,7 +168,7 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       throw e;
     }
-    const settings: Settings = { host: "127.0.0.1", port: 6099, token: strongToken(), must_change_token: true, github_proxy: "", commands: readCommands(undefined), history: readHistory(undefined) };
+    const settings: Settings = { token: strongToken(), must_change_token: true, github_proxy: "", commands: readCommands(undefined), history: readHistory(undefined) };
     await writeFile(file, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
     return { settings, created: true };
   }
@@ -120,10 +181,16 @@ async function loadSettings(ctx: Context): Promise<{ settings: Settings; created
   if (typeof saved.token !== "string" || saved.token.length < 8) {
     throw new Error(`${file} 里的 token 至少要 8 个字符`);
   }
+  const old = saved as { host?: unknown; port?: unknown };
+  const legacy = "host" in old || "port" in old
+    ? {
+        host: typeof old.host === "string" && old.host.trim() ? old.host.trim() : undefined,
+        port: Number.isInteger(old.port) && (old.port as number) >= 1 && (old.port as number) <= 65535 ? (old.port as number) : undefined,
+      }
+    : undefined;
   return {
+    legacy,
     settings: {
-      host: typeof saved.host === "string" && saved.host !== "" ? saved.host : "127.0.0.1",
-      port: Number.isInteger(saved.port) ? Number(saved.port) : 6099,
       token: saved.token,
       must_change_token: saved.must_change_token === true,
       github_proxy: typeof saved.github_proxy === "string" ? saved.github_proxy : "",
@@ -753,7 +820,7 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       return send(res, 200, {
         path: cfg.path,
         goqbot: { qq: data.qq ?? {}, onebot, idmap: data.idmap ?? {}, log: data.log ?? {}, plugins: data.plugins ?? {} },
-        webui: { host: settings.host, port: settings.port },
+        webui: listenOf(data),
         commands: settings.commands,
         history: settings.history,
         usage: { chat_bytes: store.usage(), media_bytes: media.usage(), idmap: info.idmap ?? null },
@@ -772,17 +839,10 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
       const body = await readJSON(req);
       let restartNeeded = false;
       if (body.host !== undefined || body.port !== undefined) {
-        const host = String(body.host ?? settings.host).trim();
-        const port = Number(body.port ?? settings.port);
-        if (!host) {
-          throw new HttpError(400, "监听地址不能为空");
-        }
-        if (!Number.isInteger(port) || port < 1 || port > 65535) {
-          throw new HttpError(400, "端口要填 1 到 65535 之间的数字");
-        }
-        restartNeeded = host !== settings.host || port !== settings.port;
-        settings.host = host;
-        settings.port = port;
+        // 地址和端口写进 config.yml 的 webui，重启 goqbot 后生效
+        const next = checkListen(body.host ?? listen.host, body.port ?? listen.port);
+        await call(ctx, "host.config.update", { values: { "webui.host": next.host, "webui.port": next.port }, restart: false });
+        restartNeeded = next.host !== listen.host || next.port !== listen.port;
       }
       if (body.token !== undefined) {
         await changeToken(ctx, body.token);
@@ -954,7 +1014,12 @@ const plugin: Plugin = {
   async onReady(ctx) {
     let created: boolean;
     try {
-      ({ settings, created } = await loadSettings(ctx));
+      let legacy: Partial<Listen> | undefined;
+      ({ settings, created, legacy } = await loadSettings(ctx));
+      listen = await resolveListen(ctx, legacy);
+      if (legacy) {
+        await saveSettings(ctx, settings); // config.json 里不再保存地址和端口
+      }
       store = new ChatStore(ctx.dataDir);
       await store.load();
       media = new MediaCache(ctx.dataDir);
@@ -1063,22 +1128,22 @@ const plugin: Plugin = {
 
     server.on("error", (e: NodeJS.ErrnoException) => {
       if (e.code === "EADDRINUSE") {
-        ctx.log.error(`WebUI 端口 ${settings.port} 已被占用，请修改 ${join(ctx.dataDir, "config.json")} 里的 port 后重启 goqbot`);
+        ctx.log.error(`WebUI 端口 ${listen.port} 已被占用，请修改 config.yml 里 webui 的 port 后重启 goqbot`);
       } else {
         ctx.log.error("WebUI 启动失败：", e.message);
       }
     });
 
-    server.listen(settings.port, settings.host, () => {
-      const shown = settings.host === "0.0.0.0" || settings.host === "::" ? "127.0.0.1" : settings.host;
-      ctx.log.info(`WebUI 已启动：http://${shown}:${settings.port}`);
+    server.listen(listen.port, listen.host, () => {
+      const shown = listen.host === "0.0.0.0" || listen.host === "::" ? "127.0.0.1" : listen.host;
+      ctx.log.info(`WebUI 已启动：http://${shown}:${listen.port}（地址和端口在 config.yml 的 webui 里修改）`);
       if (settings.must_change_token) {
         // 初始口令改掉之前，每次启动都打印一遍，方便找回
         const line = "=".repeat(56);
         ctx.log.info(line);
         ctx.log.info(created ? "WebUI 已生成初始登录口令：" : "WebUI 还在使用初始登录口令，请尽快登录修改：");
         ctx.log.info(`  口令：${settings.token}`);
-        ctx.log.info(`  登录链接：http://${shown}:${settings.port}/#token=${encodeURIComponent(settings.token)}`);
+        ctx.log.info(`  登录链接：http://${shown}:${listen.port}/#token=${encodeURIComponent(settings.token)}`);
         ctx.log.info("  第一次登录后需要设置新口令：至少 8 位，包含大写字母、小写字母和特殊字符");
         ctx.log.info(`  口令也保存在 ${join(ctx.dataDir, "config.json")}`);
         ctx.log.info(line);

@@ -610,7 +610,7 @@ function capLabel(perm) {
 
 const RESTART_LABELS = {
   qq: "QQ 账号与事件", "onebot.message_format": "消息格式", "onebot.debug": "调试日志", "onebot.downtime_message": "掉线自动回复",
-  idmap: "ID 对照表", log: "日志", plugins: "插件",
+  idmap: "ID 对照表", log: "日志", plugins: "插件", webui: "WebUI 的开关、地址和端口",
 };
 
 /** 字节数换成 MB 文字 */
@@ -823,11 +823,11 @@ export function renderConfig(root) {
           field("保留天数", histNum("keep_days", 36500), "超过天数的聊天记录和缓存的图片会删掉；0 = 一直保留"),
           field("聊天记录大小上限（MB）", histNum("max_mb", 1048576), `0 = 不限制；超出时从最早的一天删起。现在占用 ${mb(r.usage?.chat_bytes)}`),
           field("图片缓存大小上限（MB）", histNum("media_max_mb", 1048576), `0 = 不限制；超出时先删最早下载的。现在占用 ${mb(r.usage?.media_bytes)}`))),
-      section("WebUI", "这个管理页面本身的设置。",
+      section("WebUI", "这个管理页面本身的设置。要关闭 WebUI，把 config.yml 里 webui 的 enabled 改成 false 后重启 goqbot。",
         h("div", { class: "form-grid" },
           field("监听地址", h("input", { type: "text", value: web.host, spellcheck: "false", oninput: (e) => { web.host = e.target.value.trim(); changed(); } }),
             "127.0.0.1 = 只能在本机打开；0.0.0.0 = 其他设备也能打开"),
-          field("端口", h("input", { type: "number", min: 1, max: 65535, value: web.port, oninput: (e) => { web.port = e.target.value; changed(); } }), "地址和端口重启 goqbot 后生效"),
+          field("端口", h("input", { type: "number", min: 1, max: 65535, value: web.port, oninput: (e) => { web.port = e.target.value; changed(); } }), "地址和端口保存在 config.yml 的 webui 里，重启 goqbot 后生效"),
           field("新的登录口令", tokenInput, "至少 8 位，包含大写字母、小写字母和特殊字符（如 !@#$%）。保存后立即生效，其他已登录的页面需要重新登录", true))),
       h("p", { class: "muted small" }, `配置文件：${r.path}`));
     changed();

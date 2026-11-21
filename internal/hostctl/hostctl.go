@@ -104,6 +104,9 @@ func restartRequired(running, next *config.Config) []string {
 	if !reflect.DeepEqual(running.Plugins, next.Plugins) {
 		out = append(out, "plugins")
 	}
+	if !reflect.DeepEqual(running.WebUI, next.WebUI) {
+		out = append(out, "webui")
+	}
 	return out
 }
 

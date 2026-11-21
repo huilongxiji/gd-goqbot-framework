@@ -196,6 +196,13 @@ func run(configPath, exeDir string) (restart bool) {
 		discoverOpts.Node, discoverOpts.RunnerPath, nodeVersion = node.Path, runner, node.Version
 	}
 	pluginConfigs, skipped, perr := plugins.Discover(pluginDir, discoverOpts)
+	// WebUI 的开关在 config.yml 的 webui.enabled；插件文件夹里的 plugin.yml 写了 enabled: false 时同样不启动
+	for i := range pluginConfigs {
+		if pluginConfigs[i].Name == "webui" && pluginConfigs[i].Enabled && !cfg.WebUI.EnabledOrDefault() {
+			pluginConfigs[i].Enabled = false
+			log.Printf("[plugins] WebUI 已关闭（config.yml 里 webui.enabled 为 false）")
+		}
+	}
 	for _, pc := range pluginConfigs {
 		if pc.Kind == plugins.KindJS && pc.Enabled && discoverOpts.Node != "" {
 			log.Printf("[plugins] JS / TS 插件使用 Node %s（%s）", nodeVersion, discoverOpts.Node)
