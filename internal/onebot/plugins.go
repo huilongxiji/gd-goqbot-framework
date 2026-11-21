@@ -99,7 +99,8 @@ func stripInlineBase64(v any) any {
 
 // reportSent 机器人发出一条消息后，向订阅了 message_sent.* 的插件报一条 message_sent 事件
 // （格式与 NapCat 的 message_sent 相同）。只给插件，不推给下游框架。
-func (c *Caller) reportSent(snap map[string]any) {
+// notes 是这次发送里没生效的部分，有的话写在 send_notes 里。
+func (c *Caller) reportSent(snap map[string]any, notes []string) {
 	m := c.pluginManager()
 	if m == nil {
 		return
@@ -119,9 +120,82 @@ func (c *Caller) reportSent(snap map[string]any) {
 	} else {
 		ev["sub_type"] = "friend"
 	}
+	if len(notes) > 0 {
+		ev["send_notes"] = notes
+	}
 	ev["message"] = stripInlineBase64(ev["message"])
 	if raw, ok := ev["raw_message"].(string); ok {
 		ev["raw_message"] = inlineBase64.ReplaceAllString(raw, "base64://")
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	m.DispatchEvent(b)
+}
+
+// failedNotes 这次发送里没生效的部分（例如引用不了、卡片段被忽略）
+func failedNotes(out *OutMessage) []string {
+	if out == nil {
+		return nil
+	}
+	var notes []string
+	for _, n := range out.Notes {
+		if n.Fail {
+			notes = append(notes, n.Content)
+		}
+	}
+	return notes
+}
+
+// reportSendFailed 发消息失败时，向订阅了 notice.send_failed 的插件报一条事件（例如 WebUI 在聊天里显示灰字提示）。
+// 只给插件，不推给下游框架。（发出去了但有部分没生效的，写在那条 message_sent 事件的 send_notes 里。）
+//
+// 群聊还是私聊写在 chat_type 里（不用 message_type：插件按 post_type + message_type/notice_type 匹配订阅）。
+// 事件里带上这次发送在回复哪条消息：reply_to 是 reply 段里的 message_id，qq_msg_id / event_id 是用到的被动凭证
+// （对应收到的消息事件里的 qq_msg_id），插件可以据此把提示放在那条消息下面。
+func (c *Caller) reportSendFailed(sceneLabel string, sceneID int64, action string, out *OutMessage, params gjson.Result, sendErr error) {
+	m := c.pluginManager()
+	if m == nil {
+		return
+	}
+	ev := map[string]any{
+		"post_type":   "notice",
+		"notice_type": "send_failed",
+		"time":        time.Now().Unix(),
+		"self_id":     c.getSelfID(),
+		"action":      action,
+		"error":       sendErr.Error(),
+		"notes":       failedNotes(out),
+	}
+	if sceneLabel == "群" {
+		ev["chat_type"] = "group"
+		ev["group_id"] = sceneID
+		if oid, ok := c.ids.OpenID(sceneID); ok {
+			ev["group_openid"] = oid
+		}
+		if uid := params.Get("user_id").Int(); uid != 0 {
+			ev["user_id"] = uid
+		}
+	} else {
+		ev["chat_type"] = "private"
+		ev["user_id"] = sceneID
+	}
+	if msg := params.Get("message"); msg.Exists() {
+		message, raw := outboundMessageField(msg)
+		ev["message"] = stripInlineBase64(message)
+		ev["raw_message"] = inlineBase64.ReplaceAllString(raw, "base64://")
+	}
+	if out != nil {
+		if out.replyID != 0 {
+			ev["reply_to"] = out.replyID
+		}
+		if out.MsgID != "" {
+			ev["qq_msg_id"] = out.MsgID
+		}
+		if out.EventID != "" {
+			ev["event_id"] = out.EventID
+		}
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {

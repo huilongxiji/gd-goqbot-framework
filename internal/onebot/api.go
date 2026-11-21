@@ -94,7 +94,7 @@ func (c *Caller) CacheMsg(id int64, snap map[string]any) {
 
 // cacheOutbound 把刚发出去的消息写入 get_msg 缓存，字段对齐 OneBot v11 / go-cqhttp：
 // time / message_type / message_id / real_id / sender / message / raw_message，群另带 group / group_id。
-func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, messageType string, peerID int64, peerOpenID, groupOpenID string) {
+func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, messageType string, peerID int64, peerOpenID, groupOpenID string, notes []string) {
 	if mid == 0 {
 		return
 	}
@@ -130,7 +130,7 @@ func (c *Caller) cacheOutbound(mid int64, qqMsgID string, msg gjson.Result, mess
 		}
 	}
 	c.CacheMsg(mid, snap)
-	c.reportSent(snap)
+	c.reportSent(snap, notes)
 }
 
 // outboundMessageField 把发送入参还原为 get_msg 的 message / raw_message。
@@ -1320,6 +1320,9 @@ func (c *Caller) logSend(action, sceneLabel string, sceneID int64, out *OutMessa
 		}
 	}
 	blk.Emit()
+	if err != nil {
+		c.reportSendFailed(sceneLabel, sceneID, action, out, params, err)
+	}
 }
 
 // toneForNote 发消息日志中嵌套说明的配色：失败用错误色，否则用发送色
@@ -1608,7 +1611,7 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, GroupOpenID: groupOpenID, Scene: idmap.SceneGroup, Time: time.Now(), Outbound: true,
 	})
-	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "group", groupID, "", groupOpenID)
+	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "group", groupID, "", groupOpenID, failedNotes(out))
 	c.logSend(action, "群", groupID, out, params, qqMsgID, mid, start, nil)
 	return ok(map[string]any{"message_id": mid})
 }
@@ -1725,7 +1728,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 	mid := c.ids.AllocMsgID(idmap.MsgMeta{
 		MsgID: qqMsgID, RefIdx: refIdx, UserOpenID: userOpenID, Scene: idmap.SceneC2C, Time: time.Now(), Outbound: true,
 	})
-	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "private", userID, userOpenID, "")
+	c.cacheOutbound(mid, qqMsgID, params.Get("message"), "private", userID, userOpenID, "", failedNotes(out))
 	c.logSend(action, "私聊", userID, out, params, qqMsgID, mid, start, nil)
 	data := map[string]any{"message_id": mid}
 	if out.Stream != nil {
@@ -1941,6 +1944,7 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 				})
 				break
 			}
+			out.replyID = rid
 			if meta, found := c.ids.Msg(rid); found && meta.MsgID != "" {
 				// 引用条用 REFIDX；被动 msg_id 只能用「用户入站且未过期」的凭证。
 				// 机器人自己发出的消息（Outbound）没有被动窗口，拿它当 msg_id 会 40034005「已过期」。

@@ -70,6 +70,8 @@ type OutMessage struct {
 	Notes           []SendNote // 仅日志：reply 等随消息发送的动作说明
 	// reply 段命中的原消息（场景、群、发送者），发送前用来核对被动 msg_id 能不能用在这个会话
 	reply *replyTarget
+	// reply 段里的 message_id（不论是否命中缓存），发送失败时告诉插件这是在回复哪条消息
+	replyID int64
 }
 
 // replyTarget reply 段引用的那条消息的来源
