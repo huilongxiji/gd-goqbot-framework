@@ -174,6 +174,20 @@ await matcher.send(MessageSegment.image("https://example.com/cat.png"))
 
 更多写法（Markdown 按钮、流式消息、素材引用等）见 [NoneBot2 接入](https://huilongxiji.github.io/gd-goqbot-docs/guide/nonebot)。仓库里的 [`nb_plugins_demo/goqbot_test`](nb_plugins_demo/goqbot_test) 是一个覆盖全部功能的 NoneBot2 测试插件，可以直接拿来对照。
 
+## 🔒 连接安全
+
+goqbot 能以机器人身份发消息、撤回、禁言，所以默认会**自动拒绝来路不明的连接**：
+
+- **浏览器网页的连接**：浏览器里的网页连 WebSocket 时，会自动带上它来自哪个网站（`Origin`），网页自己改不了。连接**没有设置口令**时，goqbot 只允许本机打开的网页（`localhost`、`127.0.0.1`、本地 HTML 文件）连接，其他网站一律拒绝（HTTP 403），日志里会提示「拒绝了来自网页 … 的 WS 连接」。这样，你在浏览器里随手打开的网站就没法悄悄连上本机的 goqbot。
+- **框架程序**：NoneBot、AstrBot 等框架不是网页，不带来源信息，不受上面这条限制。
+- **设置了口令的连接**：口令正确就放行，不管来自哪里。插件的敏感能力（如获取 Cookie）也只开放给设置了口令的连接。
+- **监听在 `0.0.0.0` 又没设口令**：同一网络里的任何人都能连上来，启动时日志会警告。只给本机的框架用时，把地址改成 `127.0.0.1:6700`。
+- **WebUI**：第一次启动自动生成强口令，登录后必须改成自己的口令（至少 8 位，包含大写字母、小写字母和特殊字符）。WebUI 不通过 WebSocket 连 goqbot，不受上面的来源规则影响。
+
+> 用部署在其他网站上的网页版客户端（比如 Stapxs QQ Lite）连接 goqbot 时，请先在 WebUI 的「连接」页给这条连接设置口令，客户端里填同一个值。在本机运行的网页客户端（`localhost` 打开）不受影响。
+
+详见 [连接说明](https://huilongxiji.github.io/gd-goqbot-docs/guide/connect)。
+
 ## ❓ 常见问题
 
 <details>
@@ -207,6 +221,13 @@ await matcher.send(MessageSegment.image("https://example.com/cat.png"))
 <summary><b>框架里看到的 user_id / group_id 不是真实 QQ 号？</b></summary>
 
 QQ 官方机器人拿不到真实 QQ 号和群号，只有 openid。goqbot 会把 openid 稳定地映射成数字 ID，在所有框架里都一样，但不等于真实号码；同一个人在群聊和私聊里的 ID 也不同。
+
+</details>
+
+<details>
+<summary><b>网页版客户端连不上，日志提示「拒绝了来自网页 … 的 WS 连接」？</b></summary>
+
+这条连接没有设置口令，而客户端是从其他网站打开的，goqbot 会把它当成来路不明的连接拒绝（见 [连接安全](#-连接安全)）。在 WebUI 的「连接」页给这条连接设置口令，客户端里填同一个值即可；或者在本机运行客户端，用 `localhost` 打开。
 
 </details>
 
