@@ -13,7 +13,7 @@ import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { extname, join, resolve, sep } from "node:path";
 import type { Context, GoqbotError, OneBotEvent, Plugin } from "../goqbot.js";
 import { ChatStore, idOf, type ChatType } from "./lib/chat.ts";
-import { checkRelease, download, stage } from "./lib/update.ts";
+import { applyWebUI, checkRelease, download, stage } from "./lib/update.ts";
 import { MediaCache } from "./lib/media.ts";
 
 /** WebUI 自己的设置，保存在 plugin-data/webui/config.json（监听地址和端口在 config.yml 的 webui 里） */
@@ -928,7 +928,10 @@ async function handleApi(ctx: Context, req: IncomingMessage, res: ServerResponse
   throw new HttpError(404, "没有这个接口");
 }
 
-/** 校验并安装新程序；成功后 goqbot 会自动重启 */
+/**
+ * 校验并安装新版本；成功后 goqbot 会自动重启。
+ * 安装包里带 WebUI 文件（完整包）时，先换掉 WebUI 自己的文件，再替换程序；程序替换失败就把 WebUI 文件还原
+ */
 async function install(ctx: Context, data: Buffer): Promise<Record<string, unknown>> {
   let staged;
   try {
@@ -936,7 +939,21 @@ async function install(ctx: Context, data: Buffer): Promise<Record<string, unkno
   } catch (e) {
     throw new HttpError(400, (e as Error).message);
   }
-  return await call(ctx, "host.update", staged);
+  let restore: (() => Promise<void>) | null = null;
+  if (staged.webui) {
+    try {
+      restore = await applyWebUI(ctx.dataDir, ctx.dir, staged.webui);
+    } catch (e) {
+      throw new HttpError(500, (e as Error).message);
+    }
+  }
+  try {
+    const r = await call(ctx, "host.update", { file: staged.file, sha256: staged.sha256 });
+    return { ...r, webui: staged.webui !== null };
+  } catch (e) {
+    await restore?.();
+    throw e;
+  }
 }
 
 /** 缓存的图片 /media/<文件名>?s=<签名> */

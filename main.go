@@ -35,7 +35,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.15"
+	AppVersion = "1.14.16"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成

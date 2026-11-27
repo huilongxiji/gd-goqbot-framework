@@ -986,14 +986,14 @@ export function renderUpdate(root) {
   const fileInput = h("input", { type: "file", class: "visually-hidden", accept: ".zip,.exe,application/zip,application/octet-stream",
     onchange: () => { fileName.textContent = fileInput.files?.[0] ? `${fileInput.files[0].name}（${bytes(fileInput.files[0].size)}）` : "还没有选择文件"; } });
   const checkBtn = h("button", { class: "btn primary", type: "button", onclick: check }, "检查更新");
-  fill(root, page("更新 goqbot", "更新后 goqbot 会自动重启，配置和数据都会保留。",
+  fill(root, page("更新 goqbot", "goqbot 程序和 WebUI 会一起更新，完成后自动重启，配置和数据都会保留。",
     h("section", { class: "panel" }, h("h2", null, "当前版本"), current),
     h("section", { class: "panel" },
       h("div", { class: "panel-bar" }, h("h2", null, "在线更新"), checkBtn),
       latest),
     h("section", { class: "panel" },
       h("h2", null, "手动上传"),
-      h("p", { class: "muted" }, "选择从发布页下载的压缩包（.zip），或解压出来的 goqbot 程序。"),
+      h("p", { class: "muted" }, "选择从发布页下载的压缩包（.zip），会连 WebUI 一起更新；也可以只选解压出来的 goqbot 程序，这样只更新程序。"),
       h("div", { class: "inline" },
         h("label", { class: "btn" }, fileInput, "选择文件"), fileName,
         h("span", { class: "spacer" }),
@@ -1023,7 +1023,7 @@ export function renderUpdate(root) {
           " ", h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, "查看发布页")),
         r.notes ? h("pre", { class: "notes" }, r.notes) : null,
         r.has_update && r.asset ? h("div", { class: "form-actions" },
-          h("span", { class: "muted" }, `${r.asset.name}（${bytes(r.asset.size)}）`),
+          h("span", { class: "muted" }, `${r.asset.name}（${bytes(r.asset.size)}）${r.asset.webui ? "" : "，只有程序，WebUI 不会更新"}`),
           h("span", { class: "spacer" }),
           h("button", { class: "btn primary", type: "button", onclick: install }, `更新到 ${r.latest}`)) : null,
         r.has_update && !r.asset ? h("p", { class: "warn" }, "这个版本没有当前平台的安装包，请到发布页手动下载。") : null);
@@ -1035,11 +1035,11 @@ export function renderUpdate(root) {
   }
 
   async function install() {
-    if (!(await confirmDialog("更新 goqbot", "会下载新版本、替换程序并重启。重启期间机器人会短暂离线。", "开始更新"))) return;
+    if (!(await confirmDialog("更新 goqbot", "会下载新版本，替换 goqbot 程序和 WebUI 后重启。重启期间机器人会短暂离线。", "开始更新"))) return;
     fill(latest, h("p", { class: "muted" }, "正在下载和校验，请不要关闭页面…"));
     try {
       const r = await api("POST", "/api/update/install");
-      toast(`已更新到 ${r.to}，正在重启`);
+      toast(`已更新到 ${r.to}${r.webui ? "（含 WebUI）" : ""}，正在重启`);
       restartFlow(true);
     } catch (e) {
       fill(latest, errorBox(e));
@@ -1049,10 +1049,10 @@ export function renderUpdate(root) {
   async function upload() {
     const f = fileInput.files?.[0];
     if (!f) { toast("先选择一个文件", "error"); return; }
-    if (!(await confirmDialog("更新 goqbot", `用 ${f.name} 替换当前程序并重启？`, "开始更新"))) return;
+    if (!(await confirmDialog("更新 goqbot", `用 ${f.name} 更新并重启？压缩包里带 WebUI 时会一起更新。`, "开始更新"))) return;
     try {
       const r = await api("POST", "/api/update/upload", f);
-      toast(`已更新到 ${r.to}，正在重启`);
+      toast(`已更新到 ${r.to}${r.webui ? "（含 WebUI）" : "（WebUI 未更新）"}，正在重启`);
       restartFlow(true);
     } catch (e) {
       toast(e.message, "error");

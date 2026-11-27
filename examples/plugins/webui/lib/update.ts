@@ -1,8 +1,9 @@
-// goqbot 更新：查 GitHub 上的最新版本，下载对应平台的精简包，取出程序后交给 host.update 替换并重启。
-// 也可以由页面直接上传新程序（单个可执行文件，或发布页下载的 zip 包）。
+// goqbot 更新：查 GitHub 上的最新版本，下载对应平台的完整包，取出 goqbot 程序和 WebUI 自己的文件，
+// 先换掉 WebUI 的文件，再把程序交给 host.update 替换并重启（程序替换失败时 WebUI 的文件会还原）。
+// 也可以由页面直接上传：完整包会连 WebUI 一起更新；精简包或单个程序文件只更新 goqbot 程序。
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 
 const REPO = "huilongxiji/gd-goqbot-framework";
@@ -15,7 +16,7 @@ export interface ReleaseInfo {
   notes: string;
   published_at: string;
   url: string; // 发布页
-  asset?: { name: string; size: number; download_url: string };
+  asset?: { name: string; size: number; download_url: string; webui: boolean }; // webui=安装包里带 WebUI 文件
 }
 
 /** 比较 1.2.3 这样的版本号 */
@@ -75,8 +76,10 @@ export async function checkRelease(current: string, platform: string, proxy: str
     assets: { name: string; size: number; browser_download_url: string }[];
   };
   const latest = r.tag_name.replace(/^v/, "");
-  const wanted = `goqbot-v${latest}-${platform}-lite.zip`;
-  const asset = r.assets.find((a) => a.name === wanted);
+  // 优先用完整包（带 WebUI 文件，能一起更新）；没有完整包时退回精简包，只更新程序
+  const full = r.assets.find((a) => a.name === `goqbot-v${latest}-${platform}.zip`);
+  const lite = r.assets.find((a) => a.name === `goqbot-v${latest}-${platform}-lite.zip`);
+  const asset = full ?? lite;
   return {
     current,
     latest,
@@ -85,7 +88,7 @@ export async function checkRelease(current: string, platform: string, proxy: str
     notes: r.body ?? "",
     published_at: r.published_at,
     url: r.html_url,
-    asset: asset && { name: asset.name, size: asset.size, download_url: withProxy(asset.browser_download_url, proxy) },
+    asset: asset && { name: asset.name, size: asset.size, download_url: withProxy(asset.browser_download_url, proxy), webui: asset === full },
   };
 }
 
@@ -114,8 +117,15 @@ export async function download(url: string): Promise<Buffer> {
   }
 }
 
-/** 从 zip 里取出 goqbot 程序（发布包里是 <目录>/goqbot 或 <目录>/goqbot.exe） */
-export function extractProgram(zip: Buffer): Buffer {
+interface ZipEntry {
+  name: string;
+  method: number;
+  compSize: number;
+  local: number;
+}
+
+/** 读出 zip 的文件列表（中央目录） */
+function listZip(zip: Buffer): ZipEntry[] {
   // 找中央目录结束记录
   let eocd = -1;
   for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65_557); i--) {
@@ -129,38 +139,93 @@ export function extractProgram(zip: Buffer): Buffer {
   }
   const count = zip.readUInt16LE(eocd + 10);
   let p = zip.readUInt32LE(eocd + 16);
+  const entries: ZipEntry[] = [];
   for (let n = 0; n < count; n++) {
-    if (zip.readUInt32LE(p) !== 0x02014b50) {
+    if (p + 46 > zip.length || zip.readUInt32LE(p) !== 0x02014b50) {
       throw new Error("zip 文件已损坏");
     }
-    const method = zip.readUInt16LE(p + 10);
-    const compSize = zip.readUInt32LE(p + 20);
     const nameLen = zip.readUInt16LE(p + 28);
     const extraLen = zip.readUInt16LE(p + 30);
     const commentLen = zip.readUInt16LE(p + 32);
-    const local = zip.readUInt32LE(p + 42);
-    const name = zip.subarray(p + 46, p + 46 + nameLen).toString("utf8");
+    entries.push({
+      name: zip.subarray(p + 46, p + 46 + nameLen).toString("utf8"),
+      method: zip.readUInt16LE(p + 10),
+      compSize: zip.readUInt32LE(p + 20),
+      local: zip.readUInt32LE(p + 42),
+    });
     p += 46 + nameLen + extraLen + commentLen;
-    const base = name.split("/").pop();
-    if (base !== "goqbot" && base !== "goqbot.exe") {
-      continue;
-    }
-    const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
-    const data = zip.subarray(start, start + compSize);
-    if (method === 0) {
-      return Buffer.from(data);
-    }
-    if (method === 8) {
-      return inflateRawSync(data);
-    }
-    throw new Error("zip 用了不支持的压缩方式");
   }
-  throw new Error("zip 里没有找到 goqbot 程序");
+  return entries;
 }
 
-/** 把新程序写到数据目录，返回路径和 sha256，交给 host.update */
-export async function stage(dataDir: string, data: Buffer): Promise<{ file: string; sha256: string }> {
-  const program = data.length > 4 && data.readUInt32LE(0) === 0x04034b50 ? extractProgram(data) : data;
+/** 解压 zip 里的一个文件 */
+function readEntry(zip: Buffer, e: ZipEntry): Buffer {
+  const start = e.local + 30 + zip.readUInt16LE(e.local + 26) + zip.readUInt16LE(e.local + 28);
+  const data = zip.subarray(start, start + e.compSize);
+  if (e.method === 0) {
+    return Buffer.from(data);
+  }
+  if (e.method === 8) {
+    return inflateRawSync(data);
+  }
+  throw new Error("zip 用了不支持的压缩方式");
+}
+
+/** WebUI 文件里不随更新覆盖的：本地生成的 plugin.yml、依赖目录、系统文件 */
+function skipWebUIFile(rel: string): boolean {
+  const parts = rel.split("/");
+  return rel === "plugin.yml" || parts.includes("node_modules") || parts.includes(".DS_Store") || parts.includes("__MACOSX");
+}
+
+/**
+ * 从发布包里取出 goqbot 程序和 WebUI 的文件。
+ * 发布包里是 <目录>/goqbot[.exe] 和 <目录>/plugins/webui/...；没有 WebUI 文件（精简包）时 webui 为 null
+ */
+export function extractPackage(zip: Buffer): { program: Buffer; webui: Map<string, Buffer> | null } {
+  let program: Buffer | null = null;
+  const webui = new Map<string, Buffer>();
+  for (const e of listZip(zip)) {
+    if (e.name.endsWith("/")) {
+      continue; // 目录
+    }
+    const parts = e.name.split("/");
+    const base = parts[parts.length - 1];
+    if ((base === "goqbot" || base === "goqbot.exe") && parts.length <= 2) {
+      program = readEntry(zip, e);
+      continue;
+    }
+    const at = parts.indexOf("plugins");
+    if (at >= 0 && at <= 1 && parts[at + 1] === "webui" && parts.length > at + 2) {
+      const relParts = parts.slice(at + 2);
+      if (relParts.some((x) => x === "" || x === "." || x === ".." || x.includes("\\") || x.includes(":"))) {
+        throw new Error(`安装包里有不安全的文件路径：${e.name}`);
+      }
+      const rel = relParts.join("/");
+      if (!skipWebUIFile(rel)) {
+        webui.set(rel, readEntry(zip, e));
+      }
+    }
+  }
+  if (!program) {
+    throw new Error("zip 里没有找到 goqbot 程序");
+  }
+  // 没有入口文件的不算完整的 WebUI，只更新程序
+  return { program, webui: webui.has("index.ts") ? webui : null };
+}
+
+export interface Staged {
+  file: string; // 新程序，交给 host.update
+  sha256: string;
+  webui: Map<string, Buffer> | null; // 新的 WebUI 文件（相对 WebUI 目录的路径 → 内容），没有则为 null
+}
+
+/** 把新程序写到数据目录，算好 sha256；完整包里的 WebUI 文件一并取出 */
+export async function stage(dataDir: string, data: Buffer): Promise<Staged> {
+  let program = data;
+  let webui: Map<string, Buffer> | null = null;
+  if (data.length > 4 && data.readUInt32LE(0) === 0x04034b50) {
+    ({ program, webui } = extractPackage(data));
+  }
   if (program.length < 1024 * 1024) {
     throw new Error("文件太小，不像是 goqbot 程序");
   }
@@ -169,5 +234,42 @@ export async function stage(dataDir: string, data: Buffer): Promise<{ file: stri
   const file = join(dir, "goqbot.new");
   await writeFile(file, program, { mode: 0o755 });
   const sha256 = createHash("sha256").update(await readFile(file)).digest("hex");
-  return { file, sha256 };
+  return { file, sha256, webui };
+}
+
+/**
+ * 用新文件覆盖 WebUI 目录。覆盖前把原来的文件备份到 dataDir/update/backup/，
+ * 返回还原函数：程序替换失败时调用，把被覆盖的文件放回去、删掉新加的文件。
+ * 旧版本里有、新版本里没有的文件保留不动。
+ */
+export async function applyWebUI(dataDir: string, webuiDir: string, files: Map<string, Buffer>): Promise<() => Promise<void>> {
+  const backupDir = join(dataDir, "update", "backup");
+  await rm(backupDir, { recursive: true, force: true });
+  const replaced: string[] = []; // 覆盖了原有文件的
+  const added: string[] = []; // 原来没有、新加的
+  const restore = async () => {
+    for (const rel of replaced) {
+      await copyFile(join(backupDir, rel), join(webuiDir, rel)).catch(() => {});
+    }
+    for (const rel of added) {
+      await unlink(join(webuiDir, rel)).catch(() => {});
+    }
+  };
+  try {
+    for (const [rel, content] of files) {
+      const target = join(webuiDir, rel);
+      const existed = await stat(target).then((st) => st.isFile(), () => false);
+      if (existed) {
+        await mkdir(dirname(join(backupDir, rel)), { recursive: true });
+        await copyFile(target, join(backupDir, rel));
+      }
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content);
+      (existed ? replaced : added).push(rel);
+    }
+  } catch (e) {
+    await restore();
+    throw new Error(`更新 WebUI 文件失败，已还原：${(e as Error).message}`);
+  }
+  return restore;
 }
