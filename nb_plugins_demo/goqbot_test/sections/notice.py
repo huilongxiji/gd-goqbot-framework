@@ -1,4 +1,4 @@
-"""板块十：通知事件与观察器。
+"""板块十一：通知事件与观察器。
 
 - 记录全部 notice（入退群、好友增删、群/C2C 主动推送开关等），可查询最近记录；
 - get_c2c_msg_state 查询 C2C 主动推送开关（本地事件缓存）；
@@ -24,6 +24,7 @@ NOTICE_NAMES = {
     "c2c_msg_reject": "用户关闭单聊主动消息",
     "c2c_msg_receive": "用户开启单聊主动消息",
     "interaction": "按钮互动回调",
+    "plugin_event": "goqbot 的 JS / TS 插件用 ctx.emit 发出的自定义事件（sub_type 为事件名，data 为附带数据）",
 }
 
 _notices: list[dict] = []
@@ -34,7 +35,7 @@ notice = on_notice(priority=1, block=False)
 
 @notice.handle()
 async def _(bot: Bot, event: NoticeEvent) -> None:
-    fields = ["notice_type", "sub_type", "time", "group_id", "user_id", "operator_id", "group_openid", "user_openid"]
+    fields = ["notice_type", "sub_type", "time", "group_id", "user_id", "operator_id", "group_openid", "user_openid", "plugin", "data"]
     info = {k: getattr(event, k, None) for k in fields if getattr(event, k, None) not in (None, "")}
     info["说明"] = NOTICE_NAMES.get(event.notice_type, "未登记的通知类型")
     _notices.append(info)

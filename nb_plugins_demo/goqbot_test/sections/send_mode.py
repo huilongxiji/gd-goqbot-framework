@@ -1,4 +1,4 @@
-"""板块七：发送模式 —— 被动 / 主动推送 / 互动召回(is_wakeup) / 单聊流式消息。"""
+"""板块七：发送模式 —— 被动 / 仅被动(passive_only) / 主动推送 / 互动召回(is_wakeup) / 单聊流式消息。"""
 
 import asyncio
 from typing import Any
@@ -7,7 +7,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 from ..common import Ctx, Section, b64, make_png, md_seg
 
-sec = Section("发送测试", "发送模式", "被动 / 主动 / 互动召回 / 单聊流式（stream 段）")
+sec = Section("发送测试", "发送模式", "被动 / 仅被动 / 主动 / 互动召回 / 单聊流式（stream 段）")
 
 STREAM_TEXT = ["流式", "消息", "测试：", "这是一段", "逐帧追加的", "文本。"]
 
@@ -48,6 +48,27 @@ async def send_stream(
 @sec.case("被动", "普通回复：自动套用 msg_id / event_id 被动凭证")
 async def _(ctx: Ctx):
     await ctx.send("被动回复（goqbot 日志中模式应为「被动 msg_id=…」）")
+
+
+@sec.case("仅被动", "passive_only=true：有被动凭证时正常被动回复；没有可用凭证时返回 retcode=1460，不会自动改发主动消息")
+async def _(ctx: Ctx):
+    if ctx.is_group:
+        params = {"message_type": "group", "group_id": ctx.group_id}
+    else:
+        params = {"message_type": "private", "user_id": ctx.user_id}
+    r = await ctx.call(
+        "send_msg",
+        passive_only=True,
+        message=MessageSegment.reply(ctx.event.message_id) + "passive_only 测试：这条应作为被动回复发出",
+        **params,
+    )
+    if r.ok:
+        verdict = "✅ 有被动凭证，已按被动回复发出"
+    elif r.retcode == 1460:
+        verdict = "✅ 返回 1460：当前没有可用的被动凭证，没有降级为主动消息"
+    else:
+        verdict = "❌ 不符合预期"
+    await ctx.send(f"{verdict}\n{r.brief()}")
 
 
 @sec.case("主动群", "send_group_active_msg：强制主动推送（忽略 reply / lazy 凭证）", scene="group")

@@ -1,5 +1,5 @@
 // goqbot JS / TS 插件的类型说明，随 goqbot 发布包放在 plugins/goqbot.d.ts。
-// 只用于编辑器提示和类型检查；插件里用 `import type { Plugin } from "../goqbot"` 引用，运行时会被去掉。
+// 只用于编辑器提示和类型检查；插件里用 `import type { Plugin } from "../goqbot.js"` 引用（要写 .js，指的就是这个文件），运行时会被去掉。
 // 示例见 examples/plugins/hello_ts。
 
 /** JSON Schema（只要求是对象，具体写法同 JSON Schema 规范） */
@@ -106,9 +106,9 @@ export interface Capability {
 export interface Plugin {
   /** 需要调用的 goqbot 能力，支持 * 通配（不匹配敏感能力，敏感能力要写全名） */
   requires?: string[];
-  /** 提供的能力：键是能力名（小写字母、数字、下划线），会注册成同名的 OneBot 动作 */
+  /** 提供的能力：键是能力名（小写字母、数字、下划线，以字母开头，最长 64 个字符），会注册成同名的 OneBot 动作 */
   capabilities?: Record<string, Capability>;
-  /** 可能通过 ctx.emit 发出的事件，只用于展示 */
+  /** 可能通过 ctx.emit 发出的事件，只用于展示。name 的规则同能力名 */
   events?: { name: string; description: string }[];
   /** 同时处理几个能力调用，1～64，默认 4 */
   maxConcurrency?: number;

@@ -1,10 +1,13 @@
-"""板块二：消息段 —— text / at / reply / CQ 字符串 / 多段顺序 / 图文卡片 / 空消息。"""
+"""板块二：消息段 —— text / at（markdown 艾特、私聊 at）/ reply / CQ 字符串（含宽松写法、文字段里的 CQ 码）/ 多段顺序 / 图文卡片 / 空消息。
+
+QQ 官方规定：群里艾特某个人只在 markdown 消息里生效，普通文字消息里的艾特会原样显示成标签；私聊不支持艾特。
+"""
 
 from nonebot.adapters.onebot.v11 import MessageSegment
 
-from ..common import Ctx, Section, b64, cfg, make_png
+from ..common import Ctx, Section, b64, cfg, make_png, md_seg
 
-sec = Section("消息测试", "消息段", "文本、@、引用回复、CQ 码字符串入参、多段拆分顺序与异常入参")
+sec = Section("消息测试", "消息段", "文本、@（群里只有 markdown 能真正艾特）、引用回复、CQ 码字符串入参、多段拆分顺序与异常入参")
 
 
 @sec.case("文本", "纯文本被动回复（自动套 msg_id）")
@@ -13,27 +16,50 @@ async def _(ctx: Ctx):
     await ctx.send(f"返回：{r}")
 
 
-@sec.case("at", "@ 发送者（转 <qqbot-at-user/>），并验证 at 自己 / at all 被跳过", scene="group")
+@sec.case("at", "markdown 里艾特发送者（写 OneBot 数字 ID，goqbot 自动换成 openid）：应显示成真正的艾特", scene="group")
+async def _(ctx: Ctx):
+    await ctx.send(md_seg(f'<qqbot-at-user id="{ctx.user_id}" /> 这条 markdown 里的艾特应该生效'))
+
+
+@sec.case("at文字", "普通文字消息里的 at 段：群文字消息不支持艾特（官方限制），标签会原样显示；at 机器人自己 / at 全体被去掉并在 goqbot 日志里说明", scene="group")
 async def _(ctx: Ctx):
     msg = (
         MessageSegment.at(ctx.user_id)
-        + " 这是 at 测试；后面的 at 机器人自身与 at 全体应被跳过："
+        + " ← 群文字消息里的艾特会原样显示成标签（官方限制）；后面的 at 机器人自己与 at 全体应被去掉："
         + MessageSegment.at(int(ctx.bot.self_id))
         + MessageSegment.at("all")
     )
     await ctx.send(msg)
 
 
-@sec.case("at他人", "@ 参数里的成员（需对方在本群发过消息，才能反查 openid）", scene="group")
+@sec.case("at他人", "markdown 里艾特参数里 @ 到的成员（对方需在本群发过消息，才能反查 openid）", scene="group")
 async def _(ctx: Ctx):
     targets = ctx.at_targets()
     if not targets:
         await ctx.send("用法：/消息测试 at他人 @某人 [@某人…]")
         return
-    msg = MessageSegment.text("点名：")
-    for uid in targets:
-        msg += MessageSegment.at(uid) + " "
-    await ctx.send(msg)
+    await ctx.send(md_seg("点名：" + " ".join(f'<qqbot-at-user id="{uid}" />' for uid in targets)))
+
+
+@sec.case("md艾特写法", "markdown 里三种数字 ID 写法 [CQ:at] / <qqbot-at-user id=\"数字\" /> / <@数字> 都应变成艾特；不存在的 ID 被去掉", scene="group")
+async def _(ctx: Ctx):
+    uid = ctx.user_id
+    await ctx.send(
+        md_seg(
+            f"① CQ 码：[CQ:at,qq={uid}]\n\n"
+            f'② 标签：<qqbot-at-user id="{uid}" />\n\n'
+            f"③ 旧写法：<@{uid}>\n\n"
+            "④ 不存在的 ID：[CQ:at,qq=12345]（应被去掉，goqbot 日志里写明原因）"
+        )
+    )
+
+
+@sec.case("私聊at", "私聊不支持艾特：带 name 的 at 段改成文字「@名字」，不带 name 的去掉，markdown 里的艾特也去掉，都不会出现标签", scene="private")
+async def _(ctx: Ctx):
+    name = getattr(ctx.event.sender, "nickname", "") or "测试用户"
+    await ctx.send(MessageSegment("at", {"qq": str(ctx.user_id), "name": name}) + " ← 带 name：应显示成文字「@名字」")
+    await ctx.send(MessageSegment.at(ctx.user_id) + "← 不带 name：前面的艾特应被去掉")
+    await ctx.send(md_seg(f'<qqbot-at-user id="{ctx.user_id}" />← markdown 里的艾特也应被去掉'))
 
 
 @sec.case("引用", "reply 段引用当前消息（被动 msg_id + REFIDX 引用气泡）")
@@ -67,6 +93,23 @@ async def _(ctx: Ctx):
     else:
         params.update(message_type="private", user_id=ctx.user_id)
     await ctx.run("send_msg", "CQ 字符串 send_msg", **params)
+
+
+@sec.case("CQ宽松", "CQ 码不规范写法：类型大写、参数名前有空格、末尾多逗号；图片应正常发出，看不到 [CQ: 文字")
+async def _(ctx: Ctx):
+    img = b64(make_png(96, 96))
+    params = {"message": f"CQ 宽松写法测试：下面应是一张图片[CQ:IMAGE, file={img},]"}
+    if ctx.is_group:
+        params.update(message_type="group", group_id=ctx.group_id)
+    else:
+        params.update(message_type="private", user_id=ctx.user_id)
+    await ctx.run("send_msg", "CQ 宽松写法 send_msg", **params)
+
+
+@sec.case("CQ文字段", "文字段里写的 CQ 码：config.yml 的 onebot.parse_cq_in_text 关闭（默认）时原样显示成文字，开启后转换成图片")
+async def _(ctx: Ctx):
+    img = b64(make_png(32, 32))
+    await ctx.send(MessageSegment.text(f"文字段里的 CQ 码 → [CQ:image,file={img}] ← 关闭时显示这段文字，开启时显示成图片"))
 
 
 @sec.case("多段", "文本 → 图片 → 文本 → 文件：非文本段各成一条，按序发出")

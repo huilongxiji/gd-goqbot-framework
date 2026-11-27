@@ -23,7 +23,8 @@ __plugin_meta__ = PluginMetadata(
 MANUAL_ITEMS = [
     "以下能力无法由插件主动触发，需手动验证：",
     "· 正向 / 反向 WS 连接、access_token 鉴权、断线自动重连",
-    "· 反向连接失败缓存重发；全部下游掉线时 QQ 兜底文本（停掉 NoneBot 后给机器人发消息）",
+    "· 反向连接失败缓存重发",
+    "· 全部下游掉线时 QQ 兜底文本（先在 config.yml 填上 onebot.downtime_message，默认为空不回复；再停掉 NoneBot 给机器人发消息）",
     "· array / string 两种上报格式（切换 config.yml 后用 /基础测试 事件 对比）",
     "· mention_mode: at（群全量模式下 @机器人 时 to_me 为真）",
     "· 文件日志 logs/goqbot-YYYY-MM-DD.log 与终端分级上色",

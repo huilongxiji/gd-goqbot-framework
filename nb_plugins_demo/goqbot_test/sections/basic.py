@@ -1,4 +1,4 @@
-"""板块一：基础信息 —— 登录信息 / 状态 / 版本 / 网关频控 / openid 反查 / 事件扩展字段 / 元事件。"""
+"""板块一：基础信息 —— 登录信息 / 状态 / 版本 / 网关频控 / openid 反查 / 消息配额 / 用户信息 / 插件列表与调用 / 事件扩展字段 / 元事件。"""
 
 import time
 
@@ -7,7 +7,7 @@ from nonebot.adapters.onebot.v11 import MetaEvent
 
 from ..common import Ctx, Section, dump
 
-sec = Section("基础测试", "基础信息", "握手类动作、网关频控、id 反查与入站事件扩展字段")
+sec = Section("基础测试", "基础信息", "握手类动作、网关频控、id 反查、消息配额、用户信息、goqbot 插件与入站事件扩展字段")
 
 # 元事件统计（lifecycle / heartbeat）
 _meta: dict = {"lifecycle": [], "heartbeat_count": 0, "last_heartbeat": None}
@@ -60,6 +60,58 @@ async def _(ctx: Ctx):
     if ctx.is_group:
         params["group_id"] = ctx.group_id
     await ctx.run("get_openid", **params)
+
+
+@sec.case("配额", "get_message_quota：当前会话的被动回复剩余次数、今天已发的主动消息条数")
+async def _(ctx: Ctx):
+    params = {"group_id": ctx.group_id} if ctx.is_group else {"user_id": ctx.user_id}
+    await ctx.run("get_message_quota", **params)
+
+
+@sec.case("用户信息", "get_user_info 查询自己，及别名 get_stranger_info")
+async def _(ctx: Ctx):
+    await ctx.run("get_user_info", user_id=ctx.user_id)
+    alias = await ctx.call("get_stranger_info", user_id=ctx.user_id)
+    await ctx.send(f"别名 get_stranger_info：{alias.brief()}")
+
+
+@sec.case("插件列表", "get_plugin_list：goqbot 插件目录里的全部插件（含未开启的）、状态与能力")
+async def _(ctx: Ctx):
+    r = await ctx.call("get_plugin_list")
+    if not r.ok:
+        await ctx.send(r.brief())
+        return
+    plugins = (r.data or {}).get("plugins") or []
+    brief = [
+        {
+            "name": p.get("name"),
+            "state": p.get("state"),
+            "version": p.get("version"),
+            "能力": [c.get("name") for c in p.get("capabilities") or []],
+        }
+        for p in plugins
+    ]
+    await ctx.send(f"✅ 共 {len(plugins)} 个插件\n{dump(brief)}")
+
+
+@sec.case("插件调用", "call_plugin：/基础测试 插件调用 [插件名] [能力名] [文字]，缺省调用示例插件 hello_ts 的 hello_ts_echo（需先在 goqbot 里开启 hello_ts）")
+async def _(ctx: Ctx):
+    plugin = ctx.arg(0, "hello_ts")
+    capability = ctx.arg(1, "hello_ts_echo")
+    text = " ".join(ctx.args[2:]) or "你好"
+    await ctx.run("call_plugin", f"call_plugin {plugin} / {capability}", plugin=plugin, capability=capability, arguments={"text": text})
+    if (plugin, capability) == ("hello_ts", "hello_ts_echo"):
+        # 插件的能力同时注册成同名 OneBot 动作，也可以直接调用
+        direct = await ctx.call("hello_ts_echo", text=text)
+        await ctx.send("直接调用插件注册的动作 hello_ts_echo：" + direct.brief())
+
+
+@sec.case("插件异常", "call_plugin 缺参期望 retcode=1400；不存在的插件期望 1404")
+async def _(ctx: Ctx):
+    a = await ctx.call("call_plugin")
+    b = await ctx.call("call_plugin", plugin="goqbot_no_such_plugin", capability="x")
+    ok = (not a.ok and a.retcode == 1400) and (not b.ok and b.retcode == 1404)
+    await ctx.send(("✅ 符合预期\n" if ok else "❌ 不符合预期\n") + a.brief() + "\n" + b.brief())
 
 
 @sec.case("事件", "回显当前消息事件的 goqbot 扩展字段（openid / 角色 / union_openid / 原始类型等）")
