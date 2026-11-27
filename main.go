@@ -35,7 +35,7 @@ import (
 // 版本格式：大版本.版本号.迭代次数；何时改哪一位见 CLAUDE.md
 const (
 	AppName    = "goqbot"
-	AppVersion = "1.14.14"
+	AppVersion = "1.14.15"
 )
 
 // configTemplate 为缺省配置模板，缺失 config.yml 时按此生成
@@ -191,6 +191,7 @@ func run(configPath, exeDir string) (restart bool) {
 	}()
 	bus := onebot.NewEventBus()
 	caller := onebot.NewCaller(selfID, appID, ids, cfg.OneBot.Debug, AppName, AppVersion)
+	caller.SetParseCQInText(cfg.OneBot.ParseCQInText)
 	conv := onebot.NewConverter(ids, bus, func() int64 { return selfID }, cfg.QQ.ResolvedMentionMode(), cfg.OneBot.MessageFormat, cfg.OneBot.DowntimeMessage, caller)
 	conv.SetDeveloperOpenID(cfg.QQ.DeveloperOpenID)
 

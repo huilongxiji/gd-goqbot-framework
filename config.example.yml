@@ -36,6 +36,8 @@ qq:
 onebot:
   message_format: "array"          # 消息格式：array 消息段 / string 额外附带 CQ 码
   debug: false                     # OneBot 调试：true=输出框架发来的动作请求、参数、耗时和连接重试过程，排查 WS 配置问题时打开
+  parse_cq_in_text: false          # 强制转换 CQ 码，默认 false：框架用消息段发来的文字里如果写了 [CQ:at,qq=…]、[CQ:image,…] 等，按普通文字原样发出
+                                   # true=把文字里出现的所有 CQ 码都转换成对应的艾特、图片、回复等；想在消息里显示 [CQ:…] 这几个字时不要打开
   downtime_message: ""             # 所有框架都掉线时自动回复的文字，空=不回复
   servers:                         # ★ 框架的连接方式，可以写多条，每条的开关、口令、心跳都单独设置；也可以在 WebUI 的「连接」页管理（立即生效）
     - ws:                          # 正向 WS：框架连进来

@@ -144,6 +144,7 @@ type OneBotConfig struct {
 	HeartbeatInterval int            `yaml:"heartbeat_interval"` // 心跳间隔毫秒，默认 5000
 	MessageFormat     string         `yaml:"message_format"`     // array(默认) 或 string
 	Debug             bool           `yaml:"debug"`              // true 时打印收到的 action 日志
+	ParseCQInText     bool           `yaml:"parse_cq_in_text"`   // true=文字段里的 [CQ:...] 也按 CQ 码转换，默认 false 原样发出
 	DowntimeMessage   string         `yaml:"downtime_message"`   // 全下游掉线时回发 QQ 的兜底文本，空=关闭
 	Servers           []ServerConfig `yaml:"servers"`            // 正向/反向 WS server 列表
 }

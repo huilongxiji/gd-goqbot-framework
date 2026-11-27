@@ -47,6 +47,7 @@ type Caller struct {
 	sender     MessageSender    // QQ 发送通道，由 qq.Client 注入
 	gateway    GatewayQuerier   // /gateway/bot 查询器，由 qq.Client 注入
 	debug      bool             // true=打印收到的动作日志
+	cqInText   bool             // true=文字段里的 [CQ:...] 也按 CQ 码转换（onebot.parse_cq_in_text）
 	plugins    *plugins.Manager // 插件宿主，由 main 注入；未注入时插件动作返回不可用
 	ready      func() bool      // QQ 连接是否已就绪，由 main 注入；get_status 用
 
@@ -75,6 +76,19 @@ func NewCaller(selfID int64, appID string, ids *idmap.Store, debug bool, appName
 		msgCache:   make(map[int64][]byte),
 		fwdCache:   make(map[string][]byte),
 	}
+}
+
+// SetParseCQInText 设置是否把文字段里的 [CQ:...] 也按 CQ 码转换（默认关闭）
+func (c *Caller) SetParseCQInText(on bool) {
+	c.mu.Lock()
+	c.cqInText = on
+	c.mu.Unlock()
+}
+
+func (c *Caller) parseCQInText() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cqInText
 }
 
 // CacheMsg 缓存一条已构造的消息事件快照，供 get_msg 取回（有界，FIFO 淘汰）
@@ -1612,7 +1626,7 @@ func (c *Caller) sendGroup(params gjson.Result, active bool) map[string]any {
 		c.logSend(action, "群", groupID, nil, params, "", 0, start, fmt.Errorf("未知 group_id（尚未收到该群消息）"))
 		return failed(1400, "未知 group_id（尚未收到该群消息）")
 	}
-	out := c.parseMessage(params.Get("message"))
+	out := c.parseMessage(params.Get("message"), false)
 	passiveOnly := !active && params.Get("passive_only").Bool()
 	if r := out.reply; r != nil && out.MsgID != "" && (r.scene != string(idmap.SceneGroup) || r.groupOpenID != groupOpenID) {
 		// 别的群或私聊里的消息不能当这个群的被动凭证
@@ -1708,7 +1722,7 @@ func (c *Caller) sendPrivate(params gjson.Result, active bool) map[string]any {
 		c.logSend(action, "私聊", userID, nil, params, "", 0, start, fmt.Errorf("未知 user_id（尚未收到该用户消息）"))
 		return failed(1400, "未知 user_id（尚未收到该用户消息）")
 	}
-	out := c.parseMessage(params.Get("message"))
+	out := c.parseMessage(params.Get("message"), true)
 	passiveOnly := !active && params.Get("passive_only").Bool()
 	if wakeup && passiveOnly {
 		c.logSend(action, "私聊", userID, out, params, "", 0, start, fmt.Errorf("is_wakeup 与 passive_only 互斥"))
@@ -1878,8 +1892,98 @@ func (c *Caller) deleteMsg(params gjson.Result) map[string]any {
 	return ok(map[string]any{})
 }
 
-// cqRE 匹配 CQ 码段 [CQ:type,k=v,...]，用于解析 CQ 字符串形式的消息
-var cqRE = regexp.MustCompile(`\[CQ:([a-zA-Z0-9_-]+)((?:,[^,\]]+)*)\]`)
+// cqRE 匹配 CQ 码段 [CQ:type,k=v,...]，用于解析 CQ 字符串形式的消息。
+// 宽松匹配：类型不分大小写，参数允许多余的逗号（如 [CQ:at,qq=123,]）和参数名两边的空格
+var cqRE = regexp.MustCompile(`\[CQ:([a-zA-Z0-9_.-]+)\s*((?:,[^\[\]]*)?)\]`)
+
+// mdAtRE 匹配 markdown 正文里的各种艾特写法：CQ 艾特码、<qqbot-at-user id="…" />、旧写法 <@…>、<qqbot-at-everyone />
+var mdAtRE = regexp.MustCompile(`(?i:\[CQ:at\s*((?:,[^\[\]]*)?)\])|<qqbot-at-user\s+id="([^"]*)"\s*/>|<@!?([0-9A-Za-z_-]+)>|<qqbot-at-everyone\s*/>`)
+
+// atTag 把 OneBot at 段的 qq 值转成 QQ 的艾特标签。
+// private=true 是私聊：QQ 私聊不支持艾特，有 name 时改成文字「@name」，否则去掉。
+// 返回要写进消息的文字（可能为空）和一条发送说明（没有问题时为 nil）
+func (c *Caller) atTag(qq, name string, private bool) (string, *SendNote) {
+	qq = strings.TrimSpace(qq)
+	name = strings.TrimSpace(name)
+	note := func(fail bool, format string, a ...any) *SendNote {
+		return &SendNote{Title: "at", Content: fmt.Sprintf(format, a...), Fail: fail}
+	}
+	if qq == "" {
+		return "", note(true, "at 段缺少 qq，已去掉")
+	}
+	if strings.EqualFold(qq, "all") {
+		if private {
+			return "", note(false, "私聊不支持艾特全体成员，已去掉")
+		}
+		return "", note(true, "暂不支持艾特全体成员，已去掉")
+	}
+	id, err := strconv.ParseInt(qq, 10, 64)
+	if err != nil || id <= 0 {
+		return "", note(true, "qq=%q 不是有效的数字 ID，已去掉", qq)
+	}
+	if id == c.getSelfID() {
+		return "", note(false, "艾特的是机器人自己，已去掉")
+	}
+	if private {
+		if name != "" {
+			return "@" + name, note(false, "私聊不支持艾特，qq=%d 已改成文字「@%s」", id, name)
+		}
+		return "", note(false, "私聊不支持艾特，qq=%d 已去掉", id)
+	}
+	openid, found := c.ids.OpenID(id)
+	if !found {
+		return "", note(true, "qq=%d 找不到对应的 QQ 用户（这个人还没在机器人能看到的地方发过消息），已去掉", id)
+	}
+	return `<qqbot-at-user id="` + openid + `" />`, nil
+}
+
+// convertMarkdownAt 处理 markdown 正文里的艾特：
+// 群聊里把 CQ 艾特码和填了数字 ID 的写法换成 <qqbot-at-user id="openid" />，已经是 openid 的保持不变；
+// 私聊不支持艾特，所有艾特写法都去掉（CQ 码带 name 时改成文字「@name」）
+func (c *Caller) convertMarkdownAt(content string, private bool) (string, []SendNote) {
+	var notes []SendNote
+	res := mdAtRE.ReplaceAllStringFunc(content, func(m string) string {
+		sub := mdAtRE.FindStringSubmatch(m)
+		switch {
+		case strings.HasPrefix(m, "["):
+			p := parseCQParams(sub[1])
+			tag, n := c.atTag(p["qq"], p["name"], private)
+			if n != nil {
+				n.Content = "markdown 里：" + n.Content
+				notes = append(notes, *n)
+			}
+			return tag
+		case private:
+			notes = append(notes, SendNote{Title: "at", Content: "私聊不支持艾特，已去掉 markdown 里的 " + m})
+			return ""
+		}
+		id := sub[2] + sub[3]
+		if id == "" || !isSmallDigits(id) {
+			return m // openid 或 @全体成员，原样保留
+		}
+		tag, n := c.atTag(id, "", false)
+		if n != nil {
+			n.Content = "markdown 里：" + n.Content
+			notes = append(notes, *n)
+		}
+		return tag
+	})
+	return res, notes
+}
+
+// isSmallDigits 判断是不是能放进 int64 的纯数字（OneBot 数字 ID）；32 位的 openid 即使全是数字也放不下，不会被误判
+func isSmallDigits(s string) bool {
+	if len(s) == 0 || len(s) > 19 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	_, err := strconv.ParseInt(s, 10, 64)
+	return err == nil
+}
 
 // cqUnescape 还原 CQ 码转义字符
 func cqUnescape(s string) string {
@@ -1890,32 +1994,48 @@ func cqUnescape(s string) string {
 // parseMessage 解析 OneBot message（array 或 CQ 字符串）为 OutMessage。
 // 按 NoneBot 发来的段顺序构建 Parts：同类连续文本/at 合并为一个 PartText，
 // 遇到 image/markdown 段时先 flush 文本缓冲，再追加对应 Part。
-func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
+// private=true 表示发往私聊（私聊不支持艾特，at 会被去掉或改成文字）。
+func (c *Caller) parseMessage(msg gjson.Result, private bool) *OutMessage {
 	out := &OutMessage{}
 	var text strings.Builder
+	cqInText := c.parseCQInText()
 	flushText := func() {
 		if text.Len() > 0 {
 			out.Parts = append(out.Parts, MessagePart{Kind: PartText, Text: text.String()})
 			text.Reset()
 		}
 	}
-	addSeg := func(typ string, data gjson.Result) {
+	var addSeg func(typ string, data gjson.Result)
+	// parseCQ 把一段 CQ 字符串拆成 CQ 段和普通文字，CQ 段按对应类型处理
+	parseCQ := func(raw string) {
+		idx := 0
+		for _, loc := range cqRE.FindAllStringSubmatchIndex(raw, -1) {
+			if loc[0] > idx {
+				text.WriteString(cqUnescape(raw[idx:loc[0]]))
+			}
+			typ := strings.ToLower(raw[loc[2]:loc[3]])
+			data := parseCQParams(raw[loc[4]:loc[5]])
+			addSeg(typ, gjson.Parse(mustJSON(data)))
+			idx = loc[1]
+		}
+		if idx < len(raw) {
+			text.WriteString(cqUnescape(raw[idx:]))
+		}
+	}
+	addSeg = func(typ string, data gjson.Result) {
 		switch typ {
 		case "text":
-			text.WriteString(data.Get("text").String())
+			t := data.Get("text").String()
+			if cqInText && strings.Contains(t, "[CQ:") {
+				parseCQ(t) // onebot.parse_cq_in_text=true：文字段里的 CQ 码也转换
+			} else {
+				text.WriteString(t)
+			}
 		case "at":
-			qq := data.Get("qq").String()
-			if qq == "" || qq == "all" {
-				return
-			}
-			id, err := strconv.ParseInt(qq, 10, 64)
-			if err != nil || id == c.getSelfID() {
-				return
-			}
-			if openid, found := c.ids.OpenID(id); found {
-				text.WriteString(`<qqbot-at-user id="`)
-				text.WriteString(openid)
-				text.WriteString(`" />`)
+			tag, note := c.atTag(data.Get("qq").String(), data.Get("name").String(), private)
+			text.WriteString(tag)
+			if note != nil {
+				out.Notes = append(out.Notes, *note)
 			}
 		case "image":
 			img := parseImageData(data.Get("file").String(), data.Get("url").String())
@@ -1940,6 +2060,11 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 			}
 		case "markdown":
 			if md, kb := parseMarkdownSeg(data); md != nil {
+				if md.Content != "" {
+					var notes []SendNote
+					md.Content, notes = c.convertMarkdownAt(md.Content, private)
+					out.Notes = append(out.Notes, notes...)
+				}
 				flushText()
 				out.Parts = append(out.Parts, MessagePart{Kind: PartMarkdown, Markdown: md, Keyboard: kb})
 			}
@@ -2025,20 +2150,7 @@ func (c *Caller) parseMessage(msg gjson.Result) *OutMessage {
 		}
 	} else {
 		// CQ 字符串：交替提取 CQ 段与普通文本
-		raw := msg.String()
-		idx := 0
-		for _, loc := range cqRE.FindAllStringSubmatchIndex(raw, -1) {
-			if loc[0] > idx {
-				text.WriteString(cqUnescape(raw[idx:loc[0]]))
-			}
-			typ := raw[loc[2]:loc[3]]
-			data := parseCQParams(raw[loc[4]:loc[5]])
-			addSeg(typ, gjson.Parse(mustJSON(data)))
-			idx = loc[1]
-		}
-		if idx < len(raw) {
-			text.WriteString(cqUnescape(raw[idx:]))
-		}
+		parseCQ(msg.String())
 	}
 	flushText()
 	return out
@@ -2252,15 +2364,15 @@ func fileNameFromURL(u string) string {
 	return base
 }
 
-// parseCQParams 解析 ",k=v,k=v" 为 map（值做 CQ 反转义）
+// parseCQParams 解析 ",k=v,k=v" 为 map（值做 CQ 反转义）。
+// 多余的逗号会跳过，参数名两边的空格会去掉
 func parseCQParams(s string) map[string]string {
 	m := map[string]string{}
 	for _, part := range strings.Split(s, ",") {
-		if part == "" {
-			continue
-		}
 		if k, v, ok := strings.Cut(part, "="); ok {
-			m[k] = cqUnescape(v)
+			if k = strings.TrimSpace(k); k != "" {
+				m[k] = cqUnescape(v)
+			}
 		}
 	}
 	return m
